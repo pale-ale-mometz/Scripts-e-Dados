@@ -1,0 +1,7 @@
+SELECT
+    HOUR(dt_filiacao) AS sale_hour,
+    COUNT(DISTINCT CONCAT(cpf, '|', DATE(dt_filiacao))) AS total_sales
+FROM mysql_bi_g.NOMINAL_VENDAS_DIARIO nvd
+WHERE canal_vendas IN ('Website', 'App do Filiado')
+GROUP BY HOUR(dt_filiacao)
+ORDER BY total_sales DESC;

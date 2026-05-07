@@ -1,0 +1,77 @@
+-- =============================================================================
+-- vw_prophet_segments
+-- Daily sales per tipo_venda for the 8 selected forecast segments.
+--
+-- Selected segments:
+--   PORTA A PORTA, APP do Filiado, LINK DO VENDEDOR, APP DO VENDEDOR,
+--   Website, TELEVENDAS, MGM, DIGITAL B2B2C
+--
+-- Note on DIGITAL B2B2C: this channel launched around September 2025.
+-- The view includes all dates from 2025-01-01 so the Python script can
+-- auto-detect the launch date. The script trims the pre-launch zeros
+-- before training to avoid distorting the trend.
+--
+-- The CROSS JOIN on segment_names ensures every segment has a row for
+-- every calendar date (zero-sales days included), which Prophet requires.
+-- =============================================================================
+
+CREATE OR REPLACE VIEW vw_prophet_segments AS
+
+WITH sales_filtered AS (
+    SELECT
+        DATE(DT_FILIACAO) AS dt,
+        tipo_venda,
+        COUNT(*)          AS qtd_vendas
+    FROM NOMINAL_VENDAS
+    WHERE
+        DATE(DT_FILIACAO) BETWEEN '2025-01-01' AND '2026-03-31'
+        AND tipo_venda IN (
+            'PORTA A PORTA',
+            'APP do Filiado',
+            'LINK DO VENDEDOR',
+            'APP DO VENDEDOR',
+            'Website',
+            'TELEVENDAS',
+            'MGM',
+            'DIGITAL B2B2C'
+        )
+    GROUP BY DATE(DT_FILIACAO), tipo_venda
+),
+
+segment_names AS (
+    SELECT DISTINCT tipo_venda
+    FROM sales_filtered
+)
+
+SELECT
+    cal.data                        AS ds,
+    seg.tipo_venda                  AS tipo_venda,
+    COALESCE(s.qtd_vendas, 0)       AS y,
+    cal.eh_dia_util                 AS is_working_day,
+    cal.dia_semana_iso              AS weekday_iso,
+    cal.mes                         AS month_num,
+    cal.dia                         AS day_of_month,
+    CEIL(cal.dia / 7.0)             AS week_of_month
+FROM dim_calendario     cal
+CROSS JOIN segment_names seg
+LEFT JOIN sales_filtered s
+    ON  s.dt         = cal.data
+    AND s.tipo_venda = seg.tipo_venda
+WHERE cal.data BETWEEN '2025-01-01' AND '2026-03-31'
+ORDER BY cal.data, seg.tipo_venda;
+
+
+-- =============================================================================
+-- Sanity check — run after creating the view
+-- =============================================================================
+/*
+SELECT
+    tipo_venda,
+    SUM(y)                                          AS total_sales,
+    MIN(CASE WHEN y > 0 THEN ds END)                AS first_sale_date,
+    ROUND(SUM(y) / COUNT(*), 1)                     AS avg_daily_all,
+    SUM(CASE WHEN y = 0 THEN 1 ELSE 0 END)          AS zero_days
+FROM vw_prophet_segments
+GROUP BY tipo_venda
+ORDER BY total_sales DESC;
+*/

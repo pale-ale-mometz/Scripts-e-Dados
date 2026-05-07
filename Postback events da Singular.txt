@@ -1,0 +1,10 @@
+Postback events da Singular
+Installs
+sng_ecommerce_purchase
+sng_checkout_initiated
+generate_lead
+session
+add_shipping_info
+sng_login
+error_purchase
+sng_complete_registration
