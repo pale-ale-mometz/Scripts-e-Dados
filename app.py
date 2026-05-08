@@ -54,20 +54,21 @@ def get_brazil_geojson():
 
 brazil_geo = get_brazil_geojson()
 
-# --- 1. DATA LOAD FUNCTION (Cached for 12 Hours) ---
+# --- 1. DATA LOAD FUNCTION (Reads from the new, fast table) ---
 @st.cache_data(ttl=43200) 
 def load_data():
     start_of_last_year = datetime.date.today().replace(year=datetime.date.today().year - 1, month=1, day=1)
     
+    # Notice there is no GROUP BY or COUNT() here anymore. 
+    # We are just downloading the pre-calculated numbers!
     query = f"""
     SELECT 
-        DATE(DT_FILIACAO) as data_venda, 
+        data_venda, 
         uf, 
         tipo_venda, 
-        COUNT(DISTINCT cpf) as Vendas
-    FROM NOMINAL_VENDAS 
-    WHERE DT_FILIACAO >= '{start_of_last_year}'
-    GROUP BY DATE(DT_FILIACAO), uf, tipo_venda
+        Vendas
+    FROM RESUMO_VENDAS_DIARIAS 
+    WHERE data_venda >= '{start_of_last_year}'
     """
     
     df = conn.query(query)
@@ -99,64 +100,89 @@ with tab1:
     
     view_option = st.radio("Selecione o período:", ["Semana Atual", "Mês Atual", "Ano Atual"], horizontal=True)
     
+    # --- DATE LOGIC: PARTIAL AND FULL PERIODS ---
+    days_elapsed = (ref_datetime - current_start).days if 'current_start' in locals() else 0 # Fallback, calculated below
+    
     if view_option == "Semana Atual":
         current_start = this_week_start
+        days_elapsed = (ref_datetime - current_start).days
+        
         prev_start = current_start - pd.DateOffset(weeks=1)
-        prev_end = current_start - pd.DateOffset(days=1)
+        prev_full_end = current_start - pd.DateOffset(days=1)
+        prev_partial_end = prev_start + pd.DateOffset(days=days_elapsed)
+        
         last_year_start = current_start - pd.DateOffset(weeks=52)
-        last_year_end = last_year_start + pd.DateOffset(days=6)
+        last_year_full_end = last_year_start + pd.DateOffset(days=6)
+        last_year_partial_end = last_year_start + pd.DateOffset(days=days_elapsed)
         
     elif view_option == "Mês Atual":
         current_start = this_month_start
+        
         prev_start = current_start - pd.DateOffset(months=1)
-        prev_end = current_start - pd.DateOffset(days=1)
+        prev_full_end = current_start - pd.DateOffset(days=1)
+        prev_partial_end = min(ref_datetime - pd.DateOffset(months=1), prev_full_end)
+        
         last_year_start = current_start - pd.DateOffset(years=1)
-        last_year_end = ref_datetime - pd.DateOffset(years=1)
+        last_year_full_end = last_year_start + pd.DateOffset(months=1) - pd.DateOffset(days=1)
+        last_year_partial_end = min(ref_datetime - pd.DateOffset(years=1), last_year_full_end)
         
     else: # Ano Atual
         current_start = this_year_start
+        
         prev_start = current_start - pd.DateOffset(years=1)
-        prev_end = ref_datetime - pd.DateOffset(years=1)
+        prev_full_end = current_start - pd.DateOffset(days=1) 
+        prev_partial_end = min(ref_datetime - pd.DateOffset(years=1), prev_full_end)
+        
         last_year_start = prev_start 
-        last_year_end = prev_end
+        last_year_full_end = prev_full_end
+        last_year_partial_end = prev_partial_end
 
     def fmt_date(d):
         return d.strftime('%d/%m/%Y')
 
+    # Create descriptive labels for tooltips
     atual_label = f"{fmt_date(current_start)} a {fmt_date(ref_datetime)}"
-    prev_label = f"{fmt_date(prev_start)} a {fmt_date(prev_end)}"
-    last_year_label = f"{fmt_date(last_year_start)} a {fmt_date(last_year_end)}"
+    prev_partial_label = f"{fmt_date(prev_start)} a {fmt_date(prev_partial_end)}"
+    prev_full_label = f"{fmt_date(prev_start)} a {fmt_date(prev_full_end)}"
+    last_partial_label = f"{fmt_date(last_year_start)} a {fmt_date(last_year_partial_end)}"
+    last_full_label = f"{fmt_date(last_year_start)} a {fmt_date(last_year_full_end)}"
 
-    # Total Sales 
+    # --- 1. TOTAL SALES CALCULATIONS ---
     df_current = filter_by_date(df, current_start, ref_datetime)
-    df_prev = filter_by_date(df, prev_start, prev_end)
-    df_last_year = filter_by_date(df, last_year_start, last_year_end)
+    df_prev_partial = filter_by_date(df, prev_start, prev_partial_end)
+    df_prev_full = filter_by_date(df, prev_start, prev_full_end)
+    df_last_partial = filter_by_date(df, last_year_start, last_year_partial_end)
+    df_last_full = filter_by_date(df, last_year_start, last_year_full_end)
     
     sales_current = df_current['Vendas'].sum() if not df_current.empty else 0
-    sales_prev = df_prev['Vendas'].sum() if not df_prev.empty else 0
-    sales_last_year = df_last_year['Vendas'].sum() if not df_last_year.empty else 0
+    sales_prev_partial = df_prev_partial['Vendas'].sum() if not df_prev_partial.empty else 0
+    sales_prev_full = df_prev_full['Vendas'].sum() if not df_prev_full.empty else 0
+    sales_last_partial = df_last_partial['Vendas'].sum() if not df_last_partial.empty else 0
+    sales_last_full = df_last_full['Vendas'].sum() if not df_last_full.empty else 0
     
-    delta_prev = f"{((sales_current - sales_prev) / sales_prev * 100):.1f}%" if sales_prev > 0 else "N/A"
-    delta_last_year = f"{((sales_current - sales_last_year) / sales_last_year * 100):.1f}%" if sales_last_year > 0 else "N/A"
+    # Delta compares apples-to-apples (Current vs Partial)
+    delta_prev = f"{((sales_current - sales_prev_partial) / sales_prev_partial * 100):.1f}%" if sales_prev_partial > 0 else "N/A"
+    delta_last_year = f"{((sales_current - sales_last_partial) / sales_last_partial * 100):.1f}%" if sales_last_partial > 0 else "N/A"
 
-    # KPI RENDER
+    # --- RENDER KPI METRICS ---
     st.markdown("##### 📅 Datas de Referência")
-    if view_option != "Ano Atual":
-        st.caption(f"**Atual:** {atual_label} &nbsp; | &nbsp; **Anterior:** {prev_label} &nbsp; | &nbsp; **Ano Passado:** {last_year_label}")
-    else:
-        st.caption(f"**Atual:** {atual_label} &nbsp; | &nbsp; **Ano Passado:** {last_year_label}")
+    st.caption(f"**Atual:** {atual_label}")
     st.divider()
 
     st.markdown("###### 🌐 Vendas Totais")
     col1, col2, col3 = st.columns(3)
     col1.metric(f"Total ({view_option})", format_br(sales_current), help=atual_label)
-    col2.metric("vs Período Anterior", format_br(sales_prev), delta_prev, help=prev_label)
+    
+    # We combine the partial and full values into one string: "Partial | Full"
+    col2.metric("Anterior (Parcial | Total)", f"{format_br(sales_prev_partial)} | {format_br(sales_prev_full)}", delta_prev, help=f"Parcial: {prev_partial_label} \n Total: {prev_full_label}")
+    
     if view_option != "Ano Atual":
-        col3.metric("vs Mesmo Período Ano Passado", format_br(sales_last_year), delta_last_year, help=last_year_label)
+        col3.metric("Ano Passado (Parcial | Total)", f"{format_br(sales_last_partial)} | {format_br(sales_last_full)}", delta_last_year, help=f"Parcial: {last_partial_label} \n Total: {last_full_label}")
 
     st.write("") 
     st.divider()
 
+    # --- 2. SPECIFIC CHANNELS CALCULATIONS ---
     st.markdown("###### 📱 Canais Específicos")
     opcoes_canais = ['Website', 'App do Filiado', 'Televendas']
     canais_selecionados = st.multiselect("Filtre os canais desejados:", options=opcoes_canais, default=opcoes_canais)
@@ -170,32 +196,47 @@ with tab1:
         return df_period.loc[mask, 'Vendas'].sum()
 
     canais_current = get_canais_sales(df_current)
-    canais_prev = get_canais_sales(df_prev)
-    canais_last_year = get_canais_sales(df_last_year)
+    canais_prev_partial = get_canais_sales(df_prev_partial)
+    canais_prev_full = get_canais_sales(df_prev_full)
+    canais_last_partial = get_canais_sales(df_last_partial)
+    canais_last_full = get_canais_sales(df_last_full)
 
-    delta_canais_prev = f"{((canais_current - canais_prev) / canais_prev * 100):.1f}%" if canais_prev > 0 else "N/A"
-    delta_canais_last_year = f"{((canais_current - canais_last_year) / canais_last_year * 100):.1f}%" if canais_last_year > 0 else "N/A"
+    delta_canais_prev = f"{((canais_current - canais_prev_partial) / canais_prev_partial * 100):.1f}%" if canais_prev_partial > 0 else "N/A"
+    delta_canais_last_year = f"{((canais_current - canais_last_partial) / canais_last_partial * 100):.1f}%" if canais_last_partial > 0 else "N/A"
 
     col4, col5, col6 = st.columns(3)
     col4.metric(f"Canais Selecionados", format_br(canais_current), help=atual_label)
-    col5.metric("vs Período Anterior", format_br(canais_prev), delta_canais_prev, help=prev_label)
+    col5.metric("Anterior (Parcial | Total)", f"{format_br(canais_prev_partial)} | {format_br(canais_prev_full)}", delta_canais_prev, help=f"Parcial: {prev_partial_label} \n Total: {prev_full_label}")
     if view_option != "Ano Atual":
-        col6.metric("vs Mesmo Período Ano Passado", format_br(canais_last_year), delta_canais_last_year, help=last_year_label)
+        col6.metric("Ano Passado (Parcial | Total)", f"{format_br(canais_last_partial)} | {format_br(canais_last_full)}", delta_canais_last_year, help=f"Parcial: {last_partial_label} \n Total: {last_full_label}")
 
     st.divider()
+    
+    # --- COMPARISON CHART ---
     st.subheader("Comparativo Gráfico")
     
     chart_view = st.radio("Selecione os dados para o gráfico:", ["Vendas Totais", "Canais Selecionados"], horizontal=True)
     
     if chart_view == "Vendas Totais":
-        v_curr, v_prev, v_last = sales_current, sales_prev, sales_last_year
+        v_curr, v_pp, v_pf, v_lp, v_lf = sales_current, sales_prev_partial, sales_prev_full, sales_last_partial, sales_last_full
     else:
-        v_curr, v_prev, v_last = canais_current, canais_prev, canais_last_year
+        v_curr, v_pp, v_pf, v_lp, v_lf = canais_current, canais_prev_partial, canais_prev_full, canais_last_partial, canais_last_full
+
+    # Expand the chart to show all 5 bars
+    if view_option != "Ano Atual":
+        periodos = ["Atual", "Anterior (Parcial)", "Anterior (Total)", "Ano Passado (Parcial)", "Ano Passado (Total)"]
+        vendas_plot = [v_curr, v_pp, v_pf, v_lp, v_lf]
+        intervalos = [atual_label, prev_partial_label, prev_full_label, last_partial_label, last_full_label]
+    else:
+        # If it's Ano Atual, Anterior and Ano Passado are the exact same thing
+        periodos = ["Atual", "Ano Passado (Parcial)", "Ano Passado (Total)"]
+        vendas_plot = [v_curr, v_pp, v_pf]
+        intervalos = [atual_label, prev_partial_label, prev_full_label]
 
     chart_data = pd.DataFrame({
-        "Período": ["Atual", "Anterior", "Ano Passado"] if view_option != "Ano Atual" else ["Atual", "Ano Passado"],
-        "Vendas": [v_curr, v_prev, v_last] if view_option != "Ano Atual" else [v_curr, v_prev],
-        "Intervalo de Datas": [atual_label, prev_label, last_year_label] if view_option != "Ano Atual" else [atual_label, last_year_label]
+        "Período": periodos,
+        "Vendas": vendas_plot,
+        "Intervalo de Datas": intervalos
     })
     
     chart_data["Vendas_Formatadas"] = chart_data["Vendas"].apply(format_br)
