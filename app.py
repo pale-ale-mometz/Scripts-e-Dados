@@ -44,40 +44,34 @@ st.info("Passo 1: Autenticado com sucesso. Tentando conectar ao banco de dados..
 try:
     conn = st.connection("mysql", type="sql")
     test_df = conn.query("SELECT 1")
-    st.success("Successfully connected to the MySQL database!", icon="✅")
 except Exception as e:
     st.error(f"Falha na conexão: {e}")
     st.stop()
 
-st.info("Passo 3: Baixando dados do último ano. Isso pode levar alguns segundos...")
-
 # 1. Load the Data safely with Cache
-@st.cache_data(ttl=600) # Caches for 10 minutes
+@st.cache_data(ttl=600)
 def load_data():
-    # Calculate Jan 1st of the previous year to cover all our KPI comparisons
     start_of_last_year = datetime.date.today().replace(year=datetime.date.today().year - 1, month=1, day=1)
     
-    # We pass the date into the SQL query to drastically reduce download size
+    # GROUP BY is significantly faster in MySQL than ROW_NUMBER() sorting
     query = f"""
     SELECT 
         cpf, 
-        IDPV, 
-        uf, 
-        tipo_venda, 
-        tipo_filiacao, 
+        MAX(IDPV) as IDPV, 
+        MAX(uf) as uf, 
+        MAX(tipo_venda) as tipo_venda, 
+        MAX(tipo_filiacao) as tipo_filiacao, 
         DATE(DT_FILIACAO) as data_venda, 
-        NOME_REGIONAL, 
-        NOME_FRANQUIA 
+        MAX(NOME_REGIONAL) as NOME_REGIONAL, 
+        MAX(NOME_FRANQUIA) as NOME_FRANQUIA 
     FROM NOMINAL_VENDAS 
     WHERE DT_FILIACAO >= '{start_of_last_year}'
+    GROUP BY cpf, DATE(DT_FILIACAO)
     """
+    
     df = conn.query(query)
     
-    # Apply your de-duplication logic
-    df['unique_id'] = df['cpf'].astype(str) + '|' + df['data_venda'].astype(str)
-    df = df.drop_duplicates(subset=['unique_id'])
-    
-    # Ensure date column is proper datetime object
+    # No deduplication needed in Pandas! Just format the date.
     df['data_venda'] = pd.to_datetime(df['data_venda'])
     return df
 
