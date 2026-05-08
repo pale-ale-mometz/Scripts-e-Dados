@@ -38,13 +38,18 @@ if not check_password():
 # --- MAIN DASHBOARD SECTION ---
 st.title("📊 Vendas Dashboard")
 
+st.info("Passo 1: Autenticado com sucesso. Tentando conectar ao banco de dados...")
+
 # Initialize the database connection
 try:
     conn = st.connection("mysql", type="sql")
+    test_df = conn.query("SELECT 1")
     st.success("Successfully connected to the MySQL database!", icon="✅")
 except Exception as e:
-    st.error(f"Failed to connect to the database: {e}")
+    st.error(f"Falha na conexão: {e}")
     st.stop()
+
+st.info("Passo 3: Baixando dados do último ano. Isso pode levar alguns segundos...")
 
 # 1. Load the Data safely with Cache
 @st.cache_data(ttl=600) # Caches for 10 minutes
@@ -77,6 +82,8 @@ def load_data():
     return df
 
 df = load_data()
+
+st.success("Passo 4: Dados carregados com sucesso! Renderizando gráficos...")
 
 # 2. Time Logic (D-1 constraint)
 # We set "today" as yesterday because the data only updates up to D-1
