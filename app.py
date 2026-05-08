@@ -53,78 +53,47 @@ except Exception as e:
 def load_data():
     start_of_last_year = datetime.date.today().replace(year=datetime.date.today().year - 1, month=1, day=1)
     
-    # GROUP BY is significantly faster in MySQL than ROW_NUMBER() sorting
+    # We ask AWS to count the distinct CPFs for us and just return the daily totals!
     query = f"""
     SELECT 
-        cpf, 
-        MAX(IDPV) as IDPV, 
-        MAX(uf) as uf, 
-        MAX(tipo_venda) as tipo_venda, 
-        MAX(tipo_filiacao) as tipo_filiacao, 
         DATE(DT_FILIACAO) as data_venda, 
-        MAX(NOME_REGIONAL) as NOME_REGIONAL, 
-        MAX(NOME_FRANQUIA) as NOME_FRANQUIA 
+        uf, 
+        tipo_venda, 
+        COUNT(DISTINCT cpf) as Vendas
     FROM NOMINAL_VENDAS 
     WHERE DT_FILIACAO >= '{start_of_last_year}'
-    GROUP BY cpf, DATE(DT_FILIACAO)
+    GROUP BY DATE(DT_FILIACAO), uf, tipo_venda
     """
     
     df = conn.query(query)
-    
-    # No deduplication needed in Pandas! Just format the date.
     df['data_venda'] = pd.to_datetime(df['data_venda'])
     return df
 
 df = load_data()
 
-st.success("Passo 4: Dados carregados com sucesso! Renderizando gráficos...")
-
 # 2. Time Logic (D-1 constraint)
-# We set "today" as yesterday because the data only updates up to D-1
 reference_date = datetime.date.today() - datetime.timedelta(days=1)
 ref_datetime = pd.to_datetime(reference_date)
 
-# Calculate dynamic timeframes
 this_week_start = ref_datetime - pd.to_timedelta(ref_datetime.weekday(), unit='D')
 this_month_start = ref_datetime.replace(day=1)
 this_year_start = ref_datetime.replace(month=1, day=1)
 
-# Helper function to filter dataframe by dates
 def filter_by_date(dataframe, start_date, end_date):
     mask = (dataframe['data_venda'] >= start_date) & (dataframe['data_venda'] <= end_date)
     return dataframe.loc[mask]
 
-# --- MAP HELPER FUNCTION ---
-@st.cache_data(ttl=86400) # Cache the map file for 24 hours so it stays fast
-def get_brazil_geojson():
-    try:
-        # This bypasses local Windows SSL blocks
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        
-        url_geo = "https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/brazil-states.geojson"
-        with urllib.request.urlopen(url_geo, context=ctx) as response:
-            return json.loads(response.read().decode())
-    except Exception as e:
-        return None
-
-brazil_geo = get_brazil_geojson()
-
-## --- UI: TABS FOR ORGANIZATION ---
+# --- UI: TABS FOR ORGANIZATION ---
 tab1, tab2, tab3 = st.tabs(["📈 Desempenho de Vendas (KPIs)", "🗺️ Mapa Regional (UF)", "🛒 Tipo de Venda"])
 
-# Helper function to format numbers to Brazilian standard (e.g., 32.566)
 def format_br(num):
-    return f"{num:,}".replace(",", ".")
+    return f"{int(num):,}".replace(",", ".")
 
 with tab1:
     st.header("Visão de Vendas")
     
-    # Toggle for Timeframe
     view_option = st.radio("Selecione o período:", ["Semana Atual", "Mês Atual", "Ano Atual"], horizontal=True)
     
-    # Logic for calculations based on selection
     if view_option == "Semana Atual":
         current_start = this_week_start
         prev_start = current_start - pd.DateOffset(weeks=1)
@@ -146,7 +115,6 @@ with tab1:
         last_year_start = prev_start 
         last_year_end = prev_end
 
-    # Format dates for UI display
     def fmt_date(d):
         return d.strftime('%d/%m/%Y')
 
@@ -154,14 +122,14 @@ with tab1:
     prev_label = f"{fmt_date(prev_start)} a {fmt_date(prev_end)}"
     last_year_label = f"{fmt_date(last_year_start)} a {fmt_date(last_year_end)}"
 
-    # 1. Total Sales Calculations
+    # 1. Total Sales Calculations (Using SUM instead of LEN)
     df_current = filter_by_date(df, current_start, ref_datetime)
     df_prev = filter_by_date(df, prev_start, prev_end)
     df_last_year = filter_by_date(df, last_year_start, last_year_end)
     
-    sales_current = len(df_current)
-    sales_prev = len(df_prev)
-    sales_last_year = len(df_last_year)
+    sales_current = df_current['Vendas'].sum() if not df_current.empty else 0
+    sales_prev = df_prev['Vendas'].sum() if not df_prev.empty else 0
+    sales_last_year = df_last_year['Vendas'].sum() if not df_last_year.empty else 0
     
     delta_prev = f"{((sales_current - sales_prev) / sales_prev * 100):.1f}%" if sales_prev > 0 else "N/A"
     delta_last_year = f"{((sales_current - sales_last_year) / sales_last_year * 100):.1f}%" if sales_last_year > 0 else "N/A"
@@ -174,7 +142,6 @@ with tab1:
         st.caption(f"**Atual:** {atual_label} &nbsp; | &nbsp; **Ano Passado:** {last_year_label}")
     st.divider()
 
-    # First row: ALL SALES
     st.markdown("###### 🌐 Vendas Totais")
     col1, col2, col3 = st.columns(3)
     col1.metric(f"Total ({view_option})", format_br(sales_current), help=atual_label)
@@ -182,30 +149,26 @@ with tab1:
     if view_option != "Ano Atual":
         col3.metric("vs Mesmo Período Ano Passado", format_br(sales_last_year), delta_last_year, help=last_year_label)
 
-    st.write("") # Tiny spacing
+    st.write("") 
     st.divider()
 
-    # Second row: TARGET CHANNELS
     st.markdown("###### 📱 Canais Específicos")
     
-    # NEW: Multiselect for specific channels
     opcoes_canais = ['Website', 'App do Filiado', 'Televendas']
     canais_selecionados = st.multiselect(
         "Filtre os canais desejados:",
         options=opcoes_canais,
-        default=opcoes_canais # Starts with all three selected
+        default=opcoes_canais 
     )
     
-    # Convert selection to lowercase for matching the database
     canais_alvo = [c.lower() for c in canais_selecionados]
     
-    # 2. Specific Channel Calculations based on the multiselect
+    # 2. Specific Channel Calculations (Using SUM instead of LEN)
     def get_canais_sales(df_period):
-        # If nothing is selected, return 0 to prevent errors
         if df_period.empty or 'tipo_venda' not in df_period.columns or not canais_alvo:
             return 0
         mask = df_period['tipo_venda'].astype(str).str.lower().str.strip().isin(canais_alvo)
-        return len(df_period[mask])
+        return df_period.loc[mask, 'Vendas'].sum()
 
     canais_current = get_canais_sales(df_current)
     canais_prev = get_canais_sales(df_prev)
@@ -222,13 +185,10 @@ with tab1:
 
     st.divider()
 
-    # --- RENDER COMPARISON CHART ---
     st.subheader("Comparativo Gráfico")
     
-    # Toggle for the chart data
     chart_view = st.radio("Selecione os dados para o gráfico:", ["Vendas Totais", "Canais Selecionados"], horizontal=True)
     
-    # Assign the correct variables based on the toggle
     if chart_view == "Vendas Totais":
         v_curr, v_prev, v_last = sales_current, sales_prev, sales_last_year
     else:
@@ -263,7 +223,8 @@ with tab2:
     
     if not df_map.empty:
         df_map['uf'] = df_map['uf'].str.upper()
-        uf_sales = df_map.groupby('uf').size().reset_index(name='Vendas')
+        # Group by UF and SUM the vendas instead of counting rows
+        uf_sales = df_map.groupby('uf')['Vendas'].sum().reset_index()
         
         if brazil_geo:
             fig_map = px.choropleth(
@@ -301,7 +262,6 @@ with tab2:
 with tab3:
     st.header("Composição por Tipo de Venda")
     
-    # We use a unique key for the date pickers so they don't conflict with Tab 2
     col1, col2 = st.columns(2)
     start_tipo = col1.date_input("Data de Início", value=this_month_start.date(), key="tipo_start")
     end_tipo = col2.date_input("Data de Fim", value=reference_date, key="tipo_end")
@@ -309,15 +269,13 @@ with tab3:
     df_tipo = filter_by_date(df, pd.to_datetime(start_tipo), pd.to_datetime(end_tipo))
     
     if not df_tipo.empty:
-        # Group by tipo_venda and calculate sizes
-        # Fill empty/null categories with "Não Informado"
         df_tipo['tipo_venda_clean'] = df_tipo['tipo_venda'].fillna("Não Informado").astype(str).str.title()
         
-        tipo_sales = df_tipo.groupby('tipo_venda_clean').size().reset_index(name='Vendas')
+        # Group by tipo_venda and SUM the vendas instead of counting rows
+        tipo_sales = df_tipo.groupby('tipo_venda_clean')['Vendas'].sum().reset_index()
         tipo_sales = tipo_sales.sort_values(by='Vendas', ascending=False).copy()
         tipo_sales["Vendas_Formatadas"] = tipo_sales["Vendas"].apply(format_br)
         
-        # Draw a Donut Chart for proportions
         fig_pie = px.pie(tipo_sales, names='tipo_venda_clean', values='Vendas', 
                          title=f"Distribuição de Vendas ({start_tipo.strftime('%d/%m/%Y')} - {end_tipo.strftime('%d/%m/%Y')})",
                          hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
@@ -325,7 +283,6 @@ with tab3:
         fig_pie.update_traces(textposition='inside', textinfo='percent+label',
                               hovertemplate="<b>%{label}</b><br>Vendas: %{value}<extra></extra>")
         
-        # Draw a Bar Chart for absolute numbers
         fig_bar_tipo = px.bar(tipo_sales.sort_values(by='Vendas', ascending=True), 
                               x='Vendas', y='tipo_venda_clean', orientation='h', 
                               title="Ranking por Tipo de Venda", text="Vendas_Formatadas",
