@@ -2,3 +2,4 @@ streamlit
 SQLAlchemy
 pymysql
 pandas
+plotly
