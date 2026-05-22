@@ -414,8 +414,8 @@ with tab4:
     canais_invest = col_filt1.multiselect("Canal:", ["Website", "App do Filiado"], default=["Website"])
     categorias_invest = col_filt2.multiselect("Categoria:", ["Branding", "Leads", "Venda"], default=["Branding", "Leads", "Venda"])
     
-    # Add Platform Filter
-    todas_plataformas = ["Google", "Meta", "TikTok", "Adsplay", "Actionpay"]
+# Add Platform Filter
+    todas_plataformas = ["Google", "Meta", "TikTok", "Adsplay", "Actionpay", "CRM"]
     plataformas_invest = col_filt3.multiselect("Plataforma:", todas_plataformas, default=todas_plataformas)
     
     df_inv_filt = df_invest[
