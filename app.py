@@ -1,10 +1,25 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import datetime
 import plotly.express as px
 import json
 import urllib.request
 import ssl
+import warnings
+import logging
+
+# Mute Prophet console spam to keep Streamlit logs clean
+warnings.filterwarnings("ignore")
+logging.getLogger("prophet").setLevel(logging.WARNING)
+logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
+
+try:
+    from prophet import Prophet
+    from prophet.utilities import regressor_coefficients
+    PROPHET_AVAILABLE = True
+except ImportError:
+    PROPHET_AVAILABLE = False
 
 # --- 1. CONFIGURE PAGE & AUTHENTICATION ---
 st.set_page_config(page_title="MySQL Dashboard", page_icon="📊", layout="wide")
@@ -121,6 +136,236 @@ def load_invest_data():
     except Exception:
         return pd.DataFrame(columns=['data_investimento', 'canal', 'plataforma', 'branding', 'leads', 'venda', 'vol_leads', 'vol_vendas'])
 
+# =============================================================================
+# 4. IN-APP PROPHET FORECASTING ENGINE
+# =============================================================================
+SPEND_ALLOCATION = {"website": 0.425, "app do filiado": 0.425, "televendas": 0.15}
+TRAINING_START = {
+    "franquias": "2025-01-01", "website": "2025-09-01", "app do filiado": "2025-09-01",
+    "televendas": "2025-09-01", "mgm": "2026-02-01", "outros": "2025-01-01"
+}
+MEGA_CAMPAIGNS = ["2026-04-22"]
+channel_configs = {
+    "franquias":      {'use_spend': False, 'working_days': 5, 'floor': 10, 'weekly_fourier': 5, 'cps': 0.05, 'hps': 5.0,  'seasonality_mode': 'additive',       'use_peak_season': False, 'spend_lag': 0, 'spend_prior_scale': 0.5, 'force_nonnegative_spend': False, 'is_saturday_prior_scale': 100.0},
+    "website":        {'use_spend': True,  'working_days': 7, 'floor': 50, 'weekly_fourier': 3, 'cps': 0.3,  'hps': 1.0,  'seasonality_mode': 'multiplicative','use_peak_season': True,  'spend_lag': 0, 'spend_prior_scale': 0.5, 'force_nonnegative_spend': True,  'is_saturday_prior_scale': 10.0,  'spend_lookback_weeks': 4},
+    "app do filiado": {'use_spend': True,  'working_days': 7, 'floor': 20, 'weekly_fourier': 3, 'cps': 0.5,  'hps': 10.0, 'seasonality_mode': 'multiplicative','use_peak_season': False, 'spend_lag': 0, 'spend_prior_scale': 0.5, 'force_nonnegative_spend': True,  'is_saturday_prior_scale': 10.0},
+    "televendas":     {'use_spend': True,  'working_days': 5, 'floor': 10, 'weekly_fourier': 3, 'cps': 0.5,  'hps': 10.0, 'seasonality_mode': 'multiplicative','use_peak_season': False, 'spend_lag': 0, 'spend_prior_scale': 0.5, 'force_nonnegative_spend': True,  'is_saturday_prior_scale': 10.0},
+    "mgm":            {'use_spend': False, 'working_days': 7, 'floor': 5,  'weekly_fourier': 5, 'cps': 0.05, 'hps': 1.0,  'seasonality_mode': 'additive',       'use_peak_season': False, 'spend_lag': 0, 'spend_prior_scale': 0.5, 'force_nonnegative_spend': False, 'is_saturday_prior_scale': 100.0},
+    "outros":         {'use_spend': False, 'working_days': 7, 'floor': 5,  'weekly_fourier': 5, 'cps': 0.3,  'hps': 1.0,  'seasonality_mode': 'additive',       'use_peak_season': False, 'spend_lag': 0, 'spend_prior_scale': 0.5, 'force_nonnegative_spend': False, 'is_saturday_prior_scale': 100.0},
+}
+ALL_HOLIDAY_NAMES = ["ano_novo", "tiradentes", "dia_trabalho", "independencia", "nossa_senhora", "finados", "proclamacao_republica", "natal", "fim_mes", "dia_pagamento", "carnaval", "sexta_santa", "corpus_christi", "mega_campanha"]
+HOLIDAYS_BY_CHANNEL = {
+    "franquias": ["ano_novo", "tiradentes", "dia_trabalho", "independencia", "nossa_senhora", "finados", "proclamacao_republica", "natal", "fim_mes", "carnaval", "sexta_santa", "corpus_christi"],
+    "website": ALL_HOLIDAY_NAMES, "app do filiado": ALL_HOLIDAY_NAMES, "televendas": ALL_HOLIDAY_NAMES,
+    "mgm": ["carnaval", "fim_mes", "dia_pagamento"], "outros": ALL_HOLIDAY_NAMES,
+}
+SPEND_LOOKBACK_WEEKS = 8
+SPEND_SCENARIOS = {
+    "balanced":     {"quantile": 0.50, "scale": 1.00},
+}
+
+def make_holidays(years):
+    records = []
+    for y in years:
+        records += [
+            {"ds": f"{y}-01-01", "holiday": "ano_novo"}, {"ds": f"{y}-04-21", "holiday": "tiradentes"},
+            {"ds": f"{y}-05-01", "holiday": "dia_trabalho"}, {"ds": f"{y}-09-07", "holiday": "independencia"},
+            {"ds": f"{y}-10-12", "holiday": "nossa_senhora"}, {"ds": f"{y}-11-02", "holiday": "finados"},
+            {"ds": f"{y}-11-15", "holiday": "proclamacao_republica"}, {"ds": f"{y}-12-25", "holiday": "natal"},
+        ]
+        for month in range(1, 13):
+            last_day = pd.Timestamp(year=y, month=month, day=1) + pd.offsets.MonthEnd(0)
+            if pd.Timestamp("2025-01-01") <= last_day <= pd.Timestamp("2026-12-31"):
+                records.append({"ds": str(last_day.date()), "holiday": "fim_mes", "lower_window": -2, "upper_window": 0})
+            day5 = pd.Timestamp(year=y, month=month, day=5)
+            if pd.Timestamp("2025-01-01") <= day5 <= pd.Timestamp("2026-12-31"):
+                records.append({"ds": str(day5.date()), "holiday": "dia_pagamento", "lower_window": -1, "upper_window": 2})
+    moveable = [
+        {"ds": "2025-03-03", "holiday": "carnaval"}, {"ds": "2025-03-04", "holiday": "carnaval"},
+        {"ds": "2026-02-16", "holiday": "carnaval"}, {"ds": "2026-02-17", "holiday": "carnaval"},
+        {"ds": "2025-04-18", "holiday": "sexta_santa"}, {"ds": "2026-04-03", "holiday": "sexta_santa"},
+        {"ds": "2025-06-19", "holiday": "corpus_christi"}, {"ds": "2026-06-04", "holiday": "corpus_christi"},
+    ]
+    mega = [{"ds": d, "holiday": "mega_campanha"} for d in MEGA_CAMPAIGNS]
+    h = pd.DataFrame(records + moveable + mega)
+    h["ds"] = pd.to_datetime(h["ds"])
+    for col in ["lower_window", "upper_window"]: h[col] = h.get(col, 0).fillna(0).astype(int)
+    return h
+
+def get_channel_holidays(channel, holidays):
+    names = HOLIDAYS_BY_CHANNEL.get(channel, ALL_HOLIDAY_NAMES)
+    return holidays[holidays["holiday"].isin(names)].reset_index(drop=True)
+
+def add_working_day(df, working_days):
+    df = df.copy()
+    if working_days == 5: df["is_working_day"] = (df["ds"].dt.dayofweek < 5).astype(int)
+    elif working_days == 6: df["is_working_day"] = (df["ds"].dt.dayofweek < 6).astype(int)
+    else: df["is_working_day"] = 1
+    return df
+
+def add_calendar_regressors(df):
+    df = df.copy()
+    df["is_saturday"]    = (df["ds"].dt.dayofweek == 5).astype(int)
+    df["day_22"]         = (df["ds"].dt.day == 22).astype(int)
+    df["late_month"]     = df["ds"].dt.day.isin([26, 27, 28, 29]).astype(int)
+    df["month_end_peak"] = df["ds"].dt.day.isin([30, 31]).astype(int)
+    df["peak_season"]    = df["ds"].dt.month.isin([4, 5]).astype(int)
+    return df
+
+def build_prophet(config, holidays_df):
+    m = Prophet(
+        yearly_seasonality=False, daily_seasonality=False, weekly_seasonality=False,
+        holidays=holidays_df, holidays_prior_scale=config["hps"],
+        changepoint_prior_scale=config["cps"], seasonality_mode=config.get("seasonality_mode", "additive"),
+        interval_width=0.90, mcmc_samples=0
+    )
+    m.add_seasonality(name="weekly", period=7, fourier_order=config["weekly_fourier"])
+    m.add_regressor("is_saturday", standardize=False, prior_scale=config.get("is_saturday_prior_scale", 100.0))
+    m.add_regressor("day_22", standardize=False, prior_scale=10.0)
+    m.add_regressor("late_month", standardize=False, prior_scale=10.0)
+    m.add_regressor("month_end_peak", standardize=False, prior_scale=10.0)
+    if config.get("use_peak_season", False):
+        m.add_regressor("peak_season", standardize=False, prior_scale=10.0)
+    if config["use_spend"]:
+        m.add_regressor("spend_workday", standardize=True, prior_scale=config.get("spend_prior_scale", 0.5))
+    return m
+
+def train_cols_for(config):
+    cols = ["ds", "y", "is_saturday", "day_22", "late_month", "month_end_peak"]
+    if config.get("use_peak_season", False): cols.append("peak_season")
+    if config["use_spend"]: cols.append("spend_workday")
+    return cols
+
+def forecast_future_spend(df_channel, future_dates, quantile, scale, weeks_back=SPEND_LOOKBACK_WEEKS):
+    max_ds = pd.Timestamp(df_channel["ds"].max())
+    cutoff = max_ds - pd.Timedelta(weeks=weeks_back)
+    recent = df_channel[df_channel["ds"] > cutoff].copy()
+    if recent.empty: recent = df_channel.copy()
+    recent["dow"] = recent["ds"].dt.dayofweek
+    profile = recent.groupby("dow")["spend_channel"].quantile(quantile)
+    fallback = float(profile.mean()) if len(profile) else 0.0
+
+    fut = pd.DataFrame({"ds": pd.to_datetime(future_dates)})
+    fut["dow"] = fut["ds"].dt.dayofweek
+    fut["spend_channel"] = fut["dow"].map(profile).fillna(fallback).astype(float) * scale
+    return fut[["ds", "spend_channel"]]
+
+def attach_lagged_spend_workday(future, df_history, lag_days, working_days):
+    hist, fut = df_history[["ds", "spend_channel"]].copy(), future[["ds", "spend_channel"]].copy()
+    combined = pd.concat([hist, fut], ignore_index=True).sort_values("ds").reset_index(drop=True)
+    combined = add_working_day(combined, working_days)
+    combined["spend_workday"] = combined["spend_channel"] * combined["is_working_day"]
+    if lag_days > 0: combined["spend_workday"] = combined["spend_workday"].shift(lag_days).fillna(0)
+    out = future.copy()
+    out["spend_workday"] = out["ds"].map(combined.set_index("ds")["spend_workday"]).fillna(0).astype(float)
+    return out
+
+def apply_floors(forecast, config, sat_floor, sun_floor):
+    forecast = forecast.copy()
+    forecast["yhat"] = forecast["yhat"].clip(lower=config["floor"])
+    forecast.loc[forecast["ds"].dt.dayofweek == 5, "yhat"] = forecast.loc[forecast["ds"].dt.dayofweek == 5, "yhat"].clip(lower=sat_floor)
+    forecast.loc[forecast["ds"].dt.dayofweek == 6, "yhat"] = forecast.loc[forecast["ds"].dt.dayofweek == 6, "yhat"].clip(lower=sun_floor)
+    return forecast
+
+@st.cache_data(ttl=43200, show_spinner="🤖 Treinando modelos de Inteligência Artificial para gerar previsões de vendas (Prophet)...")
+def generate_prophet_forecast(ref_date_str):
+    if not PROPHET_AVAILABLE: return pd.DataFrame()
+    
+    try:
+        df_raw = conn.query("SELECT ds, channel_group, y, spend_total FROM vw_prophet_input WHERE y IS NOT NULL ORDER BY ds")
+    except Exception:
+        return pd.DataFrame()
+        
+    if df_raw.empty: return pd.DataFrame()
+
+    df_raw["ds"] = pd.to_datetime(df_raw["ds"])
+    df_raw["y"] = pd.to_numeric(df_raw["y"], errors="coerce").fillna(0)
+    df_raw["spend_total"] = pd.to_numeric(df_raw["spend_total"], errors="coerce").fillna(0)
+
+    df_raw["spend_channel"] = 0.0
+    for ch, weight in SPEND_ALLOCATION.items():
+        mask = df_raw["channel_group"] == ch
+        df_raw.loc[mask, "spend_channel"] = df_raw.loc[mask, "spend_total"] * weight
+
+    holidays = make_holidays(years=[2025, 2026])
+
+    all_production_forecasts = []
+    
+    for channel, config in channel_configs.items():
+        np.random.seed(42)
+        df_channel = df_raw[df_raw["channel_group"] == channel].copy()
+        df_channel = df_channel[df_channel["ds"] >= pd.Timestamp(TRAINING_START[channel])].sort_values("ds").reset_index(drop=True)
+        if len(df_channel) < 60: continue
+
+        df_channel = add_working_day(df_channel, config["working_days"])
+        df_channel = add_calendar_regressors(df_channel)
+        df_channel["spend_workday_base"] = df_channel["spend_channel"] * df_channel["is_working_day"]
+
+        holidays_ch = get_channel_holidays(channel, holidays)
+        
+        if config["use_spend"] and config.get("force_nonnegative_spend", False):
+            df_channel["spend_workday"] = df_channel["spend_workday_base"].shift(config.get("spend_lag", 0)).fillna(0)
+            try:
+                m_check = build_prophet(config, holidays_ch)
+                m_check.fit(df_channel[train_cols_for(config)])
+                coefs = regressor_coefficients(m_check)
+                spend_row = coefs[coefs["regressor"] == "spend_workday"]
+                if not spend_row.empty and float(spend_row["coef"].iloc[0]) < 0:
+                    config = {**config, "use_spend": False}
+            except:
+                pass
+
+        lag = config.get("spend_lag", 0)
+        df_channel["spend_workday"] = df_channel["spend_workday_base"].shift(lag).fillna(0) if config["use_spend"] else df_channel["spend_workday_base"]
+
+        sat_data = df_channel[df_channel["ds"].dt.dayofweek == 5]["y"]
+        sun_data = df_channel[df_channel["ds"].dt.dayofweek == 6]["y"]
+        sat_floor = int(sat_data.quantile(0.10)) if len(sat_data) > 0 else 0
+        sun_floor = int(sun_data.quantile(0.25)) if len(sun_data) > 0 else 0
+
+        # Clipping outliers
+        cap_limit = df_channel["y"].quantile(0.98)
+        exempt = ((df_channel["day_22"] == 1) | (df_channel["late_month"] == 1) | (df_channel["month_end_peak"] == 1) | df_channel["ds"].isin(holidays_ch["ds"]))
+        df_channel["y"] = np.where((df_channel["y"] > cap_limit) & (~exempt), cap_limit, df_channel["y"])
+
+        cols = train_cols_for(config)
+        m_prod = build_prophet(config, holidays_ch)
+        m_prod.fit(df_channel[cols])
+
+        # Generate a hardcoded 365 days into the future so it can support "Ano Atual" logic fully
+        PROD_HORIZON = 365
+        base_future = m_prod.make_future_dataframe(periods=PROD_HORIZON, freq="D", include_history=False)
+        base_future = add_calendar_regressors(base_future)
+        base_future = add_working_day(base_future, config["working_days"])
+
+        def _finalize_forecast(forecast, scenario_name, spend_assumed_series):
+            f = apply_floors(forecast, config, sat_floor, sun_floor)
+            f["channel_group"] = channel.title()
+            f["scenario"] = scenario_name
+            f["spend_assumed"] = spend_assumed_series
+            return f
+
+        channel_lookback = int(config.get("spend_lookback_weeks", 8))
+        
+        if config["use_spend"]:
+            for scenario_name, scen in SPEND_SCENARIOS.items():
+                future = base_future.copy()
+                spend_fut = forecast_future_spend(df_channel, future["ds"], quantile=scen["quantile"], scale=scen["scale"], weeks_back=channel_lookback)
+                future = future.merge(spend_fut, on="ds", how="left")
+                future = attach_lagged_spend_workday(future, df_channel[["ds", "spend_channel"]], lag_days=lag, working_days=config["working_days"])
+                forecast = m_prod.predict(future)
+                all_production_forecasts.append(_finalize_forecast(forecast, scenario_name, future["spend_channel"].values))
+        else:
+            forecast = m_prod.predict(base_future)
+            for scenario_name in SPEND_SCENARIOS:
+                all_production_forecasts.append(_finalize_forecast(forecast.copy(), scenario_name, 0.0))
+
+    if all_production_forecasts:
+        final_df = pd.concat(all_production_forecasts, ignore_index=True)
+        return final_df
+    return pd.DataFrame()
+
+# Call the cached data loaders
 df_cal = load_calendar()
 df_raw = load_data()
 df_invest_raw = load_invest_data()
@@ -131,7 +376,7 @@ df_invest = pd.merge(df_invest_raw, df_cal, left_on='data_investimento', right_o
 df['is_dia_util'] = df['is_dia_util'].fillna(1)
 df_invest['is_dia_util'] = df_invest['is_dia_util'].fillna(1)
 
-# --- 4. DEFINING BUSINESS AGGREGATES ---
+# --- 5. DEFINING BUSINESS AGGREGATES & GOALS ---
 dig_list = ['website', 'app do filiado']
 out_list = ['mgm', 'digital b2b2c', 'cdt sonhos', 'cdt sonhos maistodos', 'b2b2c', 'carlinhos maia', 'influenciadores', 'tutti']
 tv_list  = ['televendas']
@@ -146,9 +391,28 @@ group_map = {
     'CDT': nac_list + fra_list
 }
 
+# Mapping specific child channels strictly back to the Prophet Model group that trained them
+prophet_map = {
+    'porta a porta': 'Franquias',
+    'link do vendedor': 'Franquias',
+    'app do vendedor': 'Franquias',
+    'website': 'Website',
+    'app do filiado': 'App Do Filiado',
+    'televendas': 'Televendas',
+    'mgm': 'Mgm',
+    'digital b2b2c': 'Outros',
+    'cdt sonhos': 'Outros',
+    'cdt sonhos maistodos': 'Outros',
+    'b2b2c': 'Outros',
+    'carlinhos maia': 'Outros',
+    'influenciadores': 'Outros',
+    'tutti': 'Outros'
+}
+
 def get_agg_sums(df_slice):
     if df_slice.empty:
         return {'Digital': 0, 'Franquias': 0, 'Outros': 0, 'Nacional': 0, 'CDT': 0}
+    
     dig = df_slice[df_slice['tipo_venda'].str.lower().isin(dig_list)]['Vendas'].sum()
     out = df_slice[df_slice['tipo_venda'].str.lower().isin(out_list)]['Vendas'].sum()
     nac = df_slice[df_slice['tipo_venda'].str.lower().isin(nac_list)]['Vendas'].sum()
@@ -160,6 +424,22 @@ def get_channel_sums(df_slice):
     if df_slice.empty: return {}
     return df_slice.groupby(df_slice['tipo_venda'].str.lower())['Vendas'].sum().to_dict()
 
+def get_fcst_agg_sums(df_fcst_slice):
+    """Calculates macro-aggregates specifically for the Prophet Forecast DataFrame"""
+    if df_fcst_slice.empty:
+        return {'Digital': 0, 'Franquias': 0, 'Outros': 0, 'Nacional': 0, 'CDT': 0}
+    
+    df_f = df_fcst_slice.copy()
+    df_f['cg'] = df_f['channel_group'].str.title()
+    
+    dig = df_f[df_f['cg'].isin(['Website', 'App Do Filiado'])]['yhat'].sum()
+    out = df_f[df_f['cg'].isin(['Mgm', 'Outros'])]['yhat'].sum()
+    nac = df_f[df_f['cg'].isin(['Website', 'App Do Filiado', 'Mgm', 'Outros', 'Televendas'])]['yhat'].sum()
+    fra = df_f[df_f['cg'].isin(['Franquias'])]['yhat'].sum()
+    cdt = df_f['yhat'].sum()
+    
+    return {'Digital': dig, 'Franquias': fra, 'Outros': out, 'Nacional': nac, 'CDT': cdt}
+
 def get_sales_goal(start_date, end_date, canais, filter_cal_type):
     days = (end_date - start_date).days + 1
     return days * 50 * max(1, len(canais))
@@ -168,7 +448,8 @@ def get_invest_goal(start_date, end_date, canais, plataformas, categorias, filte
     days = (end_date - start_date).days + 1
     return days * 1000 * max(1, len(plataformas))
 
-# --- 5. GLOBAL SIDEBAR (TIME & CALENDAR LOGIC) ---
+
+# --- 6. GLOBAL SIDEBAR (TIME & CALENDAR LOGIC) ---
 st.sidebar.title("🎛️ Controles Globais")
 
 now_utc = datetime.datetime.utcnow()
@@ -201,6 +482,17 @@ elif filtro_dias == "Apenas Fins de Semana/Feriados":
 
 # --- UNIFIED DATE LOGIC ---
 ref_datetime = pd.to_datetime(reference_date)
+
+# NOW trigger the embedded Prophet Forecast generator using the reliable ref date
+df_fcst = generate_prophet_forecast(ref_datetime.strftime('%Y-%m-%d'))
+
+# Dynamic projection days based on selected view
+if view_option == "Semana Atual": proj_days = 7
+elif view_option == "Mês Atual": proj_days = 30
+elif view_option == "Ano Atual": proj_days = 365
+elif view_option == "Últimos 30 Dias": proj_days = 30
+elif view_option == "Últimos 90 Dias": proj_days = 90
+else: proj_days = 365
 
 if view_option == "Semana Atual":
     c_s = ref_datetime - pd.to_timedelta(ref_datetime.weekday(), unit='D')
@@ -250,6 +542,9 @@ t_days_l, e_days_l, w_tot_l, w_ela_l = get_period_stats(l_s, l_partial, l_e)
 
 # --- UI: TABS FOR ORGANIZATION ---
 st.title("📊 Vendas Dashboard")
+if not PROPHET_AVAILABLE:
+    st.warning("⚠️ O pacote `prophet` não está instalado no ambiente. O modelo de previsão de Vendas baseado em IA não será executado.")
+
 tab1, tab2, tab3 = st.tabs(["📈 Desempenho de Vendas", "🗺️ Mapa Regional (UF)", "💰 Investimento"])
 
 # =====================================================================
@@ -284,47 +579,90 @@ with tab1:
     st.divider()
 
     st.subheader("Análise Detalhada por Canal")
-    mostrar_detalhes = st.checkbox("Mostrar detalhamento por canal (Expandir Grupos)")
     
+    col_t1, col_t2 = st.columns(2)
+    mostrar_detalhes = col_t1.checkbox("Mostrar detalhamento por canal (Expandir Grupos)")
+    
+    if not df_fcst.empty:
+        mostrar_previsao = col_t2.checkbox("Incluir Previsão da Inteligência Artificial")
+        if mostrar_previsao:
+            horizonte_previsao = col_t2.radio("Horizonte da Previsão:", ["Fim do Período Atual", f"Próximos {proj_days} Dias"], horizontal=True)
+    else:
+        mostrar_previsao = False
+
+    if mostrar_previsao and not df_fcst.empty:
+        if horizonte_previsao == "Fim do Período Atual":
+            fcst_end_date = c_e
+        else:
+            fcst_end_date = ref_datetime + pd.DateOffset(days=proj_days)
+            
+        df_f_slice = df_fcst[(df_fcst['scenario'] == 'balanced') & 
+                             (df_fcst['ds'] > ref_datetime) & 
+                             (df_fcst['ds'] <= fcst_end_date)]
+        agg_fcst_faltante = get_fcst_agg_sums(df_f_slice)
+    else:
+        agg_fcst_faltante = {g: 0 for g in group_map.keys()}
+
     rows = []
     for grupo in ['Digital', 'Franquias', 'Outros', 'Nacional', 'CDT']:
         nome_exibicao = "CDT (Total)" if grupo == 'CDT' else grupo
         label_grupo = f"📁 {nome_exibicao.upper()}" if mostrar_detalhes else nome_exibicao
         
-        rows.append({
+        row_dict = {
             'Grupo': label_grupo,
             'Atual': agg_c[grupo],
             'vs Anterior (Parcial)': fmt_val_delta(agg_c[grupo], agg_pp[grupo]),
             'vs Anterior (Total)': fmt_val_delta(agg_c[grupo], agg_pf[grupo]),
             'vs Ano Passado (Parcial)': fmt_val_delta(agg_c[grupo], agg_lp[grupo]),
             'vs Ano Passado (Total)': fmt_val_delta(agg_c[grupo], agg_lf[grupo]),
-        })
+        }
+        if mostrar_previsao:
+            falt_val = agg_fcst_faltante[grupo]
+            row_dict['Previsão (Faltante)'] = format_br(falt_val)
+            row_dict['Previsão (Total Projetado)'] = format_br(agg_c[grupo] + falt_val)
+        rows.append(row_dict)
         
         if mostrar_detalhes:
             for ch in group_map[grupo]:
                 v_c, v_pp, v_pf, v_lp, v_lf = ch_c.get(ch, 0), ch_pp.get(ch, 0), ch_pf.get(ch, 0), ch_lp.get(ch, 0), ch_lf.get(ch, 0)
-                if v_c == 0 and v_pf == 0 and v_lf == 0: continue 
                 
-                rows.append({
+                # Accurately apportion Prophet's Group Forecast to specific sub-channels based on historical share
+                v_f_faltante = 0
+                if mostrar_previsao:
+                    parent_c = agg_c[grupo]
+                    if parent_c > 0:
+                        v_f_faltante = (v_c / parent_c) * agg_fcst_faltante[grupo]
+                        
+                if v_c == 0 and v_pf == 0 and v_lf == 0 and v_f_faltante == 0: continue 
+                
+                ch_dict = {
                     'Grupo': f"\xa0\xa0\xa0\xa0\xa0\xa0└─ {ch.title()}",
                     'Atual': v_c,
                     'vs Anterior (Parcial)': fmt_val_delta(v_c, v_pp),
                     'vs Anterior (Total)': fmt_val_delta(v_c, v_pf),
                     'vs Ano Passado (Parcial)': fmt_val_delta(v_c, v_lp),
                     'vs Ano Passado (Total)': fmt_val_delta(v_c, v_lf),
-                })
+                }
+                if mostrar_previsao:
+                    ch_dict['Previsão (Faltante)'] = format_br(v_f_faltante)
+                    ch_dict['Previsão (Total Projetado)'] = format_br(v_c + v_f_faltante)
+                rows.append(ch_dict)
                 
     df_triplet = pd.DataFrame(rows)
     
     display_cols = ['Grupo', 'Atual', 'vs Anterior (Parcial)', 'vs Anterior (Total)']
     if view_option != "Ano Atual":
         display_cols.extend(['vs Ano Passado (Parcial)', 'vs Ano Passado (Total)'])
+    if mostrar_previsao:
+        display_cols.extend(['Previsão (Faltante)', 'Previsão (Total Projetado)'])
         
     df_table_fmt = df_triplet[display_cols].copy()
     df_table_fmt['Atual'] = df_table_fmt['Atual'].apply(format_br)
     
-    styled_df = df_table_fmt.style.map(color_deltas, subset=display_cols[2:])
-    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    # st.table generates a static HTML table that CANNOT be sorted by clicks (Preserves Hierarchy!)
+    color_cols = [c for c in display_cols if 'vs' in c]
+    styled_df = df_table_fmt.style.map(color_deltas, subset=color_cols)
+    st.table(styled_df)
 
     col_pie, col_trend = st.columns([1, 2])
     
@@ -375,13 +713,32 @@ with tab1:
             opcoes_ch_raw = sorted([str(c).title() for c in df_slice_c['tipo_venda'].unique()])
             canais_grafico = st.multiselect("Selecione os Canais:", options=opcoes_ch_raw, default=opcoes_ch_raw[:3] if opcoes_ch_raw else [], key='t1_can_sel')
             
-        col_g1, col_g2 = st.columns(2)
-        show_prev = col_g1.checkbox("Comparar com Período Anterior")
-        show_last_yr = col_g2.checkbox("Comparar com Ano Passado")
+        col_g1, col_g2, col_g3 = st.columns(3)
+        show_prev = col_g1.checkbox("Comparar c/ Anterior")
+        show_last_yr = col_g2.checkbox("Comparar c/ Ano Passado")
+        
+        if not df_fcst.empty:
+            show_forecast_chart = col_g3.checkbox("Mostrar Previsão")
+        else:
+            show_forecast_chart = False
 
-        def get_trend_data(t_start, t_end, label_suffix, max_actual_date=None):
-            end_bound = min(t_end, max_actual_date) if max_actual_date else t_end
-            df_t = df[(df['data_venda'] >= t_start) & (df['data_venda'] <= end_bound)]
+        def get_trend_data(t_start, t_end, label_suffix, max_actual_date=None, is_forecast_src=False):
+            if is_forecast_src:
+                if df_fcst.empty or not max_actual_date: return pd.DataFrame()
+                
+                if horizonte_previsao == "Fim do Período Atual":
+                    fcst_end_d = c_e
+                else:
+                    fcst_end_d = max_actual_date + pd.DateOffset(days=proj_days)
+                
+                df_t = df_fcst[(df_fcst['scenario'] == 'balanced') & 
+                               (df_fcst['ds'] > max_actual_date) & 
+                               (df_fcst['ds'] <= fcst_end_d)].copy()
+                df_t.rename(columns={'channel_group': 'tipo_venda', 'yhat': 'Vendas', 'ds': 'data_venda'}, inplace=True)
+            else:
+                end_bound = min(t_end, max_actual_date) if max_actual_date else t_end
+                df_t = df[(df['data_venda'] >= t_start) & (df['data_venda'] <= end_bound)]
+            
             if df_t.empty: return pd.DataFrame()
             
             res_dfs = []
@@ -392,40 +749,56 @@ with tab1:
                     d['Grupo'] = 'CDT'
                     res_dfs.append(d)
                 if 'Nacional' in canais_grafico:
-                    d = df_t[df_t['tipo_venda'].str.lower().isin(nac_list)].groupby('data_venda')['Vendas'].sum().reset_index()
+                    d = df_t[df_t['tipo_venda'].str.title().isin(['Website', 'App Do Filiado', 'Televendas', 'Mgm', 'Outros'])].groupby('data_venda')['Vendas'].sum().reset_index()
                     d['Grupo'] = 'Nacional'
                     res_dfs.append(d)
                 if 'Franquias' in canais_grafico:
-                    d = df_t[df_t['tipo_venda'].str.lower().isin(fra_list)].groupby('data_venda')['Vendas'].sum().reset_index()
+                    d = df_t[df_t['tipo_venda'].str.title() == 'Franquias'].groupby('data_venda')['Vendas'].sum().reset_index()
                     d['Grupo'] = 'Franquias'
                     res_dfs.append(d)
                 if 'Digital' in canais_grafico:
-                    d = df_t[df_t['tipo_venda'].str.lower().isin(dig_list)].groupby('data_venda')['Vendas'].sum().reset_index()
+                    d = df_t[df_t['tipo_venda'].str.title().isin(['Website', 'App Do Filiado'])].groupby('data_venda')['Vendas'].sum().reset_index()
                     d['Grupo'] = 'Digital'
                     res_dfs.append(d)
                 if 'Outros' in canais_grafico:
-                    d = df_t[df_t['tipo_venda'].str.lower().isin(out_list)].groupby('data_venda')['Vendas'].sum().reset_index()
+                    d = df_t[df_t['tipo_venda'].str.title().isin(['Mgm', 'Outros'])].groupby('data_venda')['Vendas'].sum().reset_index()
                     d['Grupo'] = 'Outros'
                     res_dfs.append(d)
             else:
-                if canais_grafico:
-                    mask = df_t['tipo_venda'].str.title().isin(canais_grafico)
-                    d = df_t[mask].groupby(['data_venda', 'tipo_venda'])['Vendas'].sum().reset_index()
-                    d.rename(columns={'tipo_venda': 'Grupo'}, inplace=True)
-                    d['Grupo'] = d['Grupo'].str.title()
-                    res_dfs.append(d)
+                # specific sub-channels
+                for ch in canais_grafico:
+                    if is_forecast_src:
+                        # Map subchannel to its Prophet model parent and apportion daily
+                        p_parent = prophet_map.get(ch.lower(), 'Outros')
+                        df_hist = df[(df['data_venda'] >= c_s) & (df['data_venda'] <= ref_datetime)]
+                        child_sum = df_hist[df_hist['tipo_venda'].str.lower() == ch.lower()]['Vendas'].sum()
+                        parent_children = [k for k, v in prophet_map.items() if v == p_parent]
+                        parent_sum = df_hist[df_hist['tipo_venda'].str.lower().isin(parent_children)]['Vendas'].sum()
+                        
+                        share = child_sum / parent_sum if parent_sum > 0 else 0
+                        
+                        d = df_t[df_t['tipo_venda'].str.title() == p_parent.title()].copy()
+                        if not d.empty and share > 0:
+                            d = d.groupby('data_venda')['Vendas'].sum().reset_index()
+                            d['Vendas'] = d['Vendas'] * share
+                            d['Grupo'] = ch.title()
+                            res_dfs.append(d)
+                    else:
+                        d = df_t[df_t['tipo_venda'].str.title() == ch.title()].copy()
+                        if not d.empty:
+                            d = d.groupby(['data_venda', 'tipo_venda'])['Vendas'].sum().reset_index()
+                            d.rename(columns={'tipo_venda': 'Grupo'}, inplace=True)
+                            d['Grupo'] = d['Grupo'].str.title()
+                            res_dfs.append(d)
 
             if not res_dfs: return pd.DataFrame()
             
-            res = pd.concat(res_dfs)
+            res = pd.concat(res_dfs).reset_index(drop=True)
             res['Dia'] = (res['data_venda'] - t_start).dt.days + 1
             res['Traço'] = res['Grupo'] + label_suffix
             res['Data_Real'] = res['data_venda']
-            res = res.sort_values(['Grupo', 'Dia'])
+            res = res.sort_values(['Grupo', 'Dia']).reset_index(drop=True)
             
-            if tipo_graf_tend == "Acumulado":
-                res['Vendas'] = res.groupby('Traço')['Vendas'].cumsum()
-                
             return res
 
         df_main = get_trend_data(c_s, c_e, "", max_actual_date=ref_datetime)
@@ -438,9 +811,54 @@ with tab1:
         if show_last_yr and view_option != "Ano Atual":
             df_last_plot = get_trend_data(l_s, l_e, " (Ano Passado)")
             if not df_last_plot.empty: plot_dfs.append(df_last_plot)
+            
+        if show_forecast_chart:
+            df_fcst_plot = get_trend_data(c_s, c_e, " (Previsão)", max_actual_date=ref_datetime, is_forecast_src=True)
+            if not df_fcst_plot.empty:
+                if not df_main.empty:
+                    last_points = []
+                    for g in df_fcst_plot['Grupo'].unique():
+                        g_main = df_main[df_main['Grupo'] == g]
+                        if not g_main.empty:
+                            # Strict iloc[-1] guarantees we only take the absolute final historical date
+                            last_row = g_main.iloc[-1].copy()
+                            last_row['Traço'] = last_row['Grupo'] + " (Previsão)"
+                            last_points.append(pd.DataFrame([last_row]))
+                    if last_points:
+                        df_fcst_plot = pd.concat(last_points + [df_fcst_plot], ignore_index=True).sort_values(['Grupo', 'Dia']).reset_index(drop=True)
+                plot_dfs.append(df_fcst_plot)
 
         if plot_dfs:
-            df_plot_trend = pd.concat(plot_dfs)
+            df_plot_trend = pd.concat(plot_dfs).reset_index(drop=True)
+            
+            if tipo_graf_tend == "Acumulado":
+                last_hist_map = {}
+                first_fcst_val_map = {}
+                
+                if not df_main.empty:
+                    for g in df_main['Grupo'].unique():
+                        g_m = df_main[df_main['Grupo'] == g]
+                        last_hist_map[g] = g_m['Vendas'].sum()
+                
+                df_plot_trend['Vendas'] = df_plot_trend.groupby('Traço')['Vendas'].cumsum()
+                
+                # Grab the duplicated daily value (which is now cumsummed to itself) of the forecast traces
+                if show_forecast_chart and not df_fcst_plot.empty:
+                    for g in df_fcst_plot['Grupo'].unique():
+                        trace_name = g + " (Previsão)"
+                        mask = df_plot_trend['Traço'] == trace_name
+                        if mask.any():
+                            first_fcst_val_map[g] = df_plot_trend.loc[mask, 'Vendas'].iloc[0]
+                
+                # Math offset to perfectly append the forecast cumsum to the end of the history line
+                def boost_fcst(row):
+                    if "(Previsão)" in row['Traço']:
+                        g = row['Grupo']
+                        return row['Vendas'] - first_fcst_val_map.get(g, 0) + last_hist_map.get(g, 0)
+                    return row['Vendas']
+                    
+                df_plot_trend['Vendas'] = df_plot_trend.apply(boost_fcst, axis=1)
+
             df_plot_trend['Formatado'] = df_plot_trend['Vendas'].apply(format_br)
             df_plot_trend['Data_Str'] = df_plot_trend['Data_Real'].dt.strftime('%d/%m/%Y')
             
@@ -449,6 +867,9 @@ with tab1:
             for trace in fig_trend.data:
                 if "(Anterior)" in trace.name or "(Ano Passado)" in trace.name:
                     trace.line.dash = 'dash'
+                    trace.opacity = 0.5
+                elif "(Previsão)" in trace.name:
+                    trace.line.dash = 'dot'
                     
             fig_trend.update_traces(hovertemplate="<b>Data Original: %{customdata[1]}</b><br>Vendas: %{customdata[0]}<extra></extra>",
                                     customdata=df_plot_trend[['Formatado', 'Data_Str']])
@@ -493,7 +914,6 @@ with tab2:
                 uf_sales = df_map.groupby('uf')['Vendas'].sum().reset_index()
                 total_map_sales = uf_sales['Vendas'].sum()
                 
-                # Plot Mapa
                 if brazil_geo:
                     fig_map = px.choropleth(
                         uf_sales, geojson=brazil_geo, locations='uf', featureidkey='properties.sigla',
@@ -506,7 +926,6 @@ with tab2:
                 else:
                     st.warning("Mapa do Brasil não carregado. Exibindo apenas barras.")
                 
-                # Plot Gráfico de Barras
                 df_sorted = uf_sales.sort_values(by='Vendas', ascending=True).copy()
                 df_sorted["Perc"] = (df_sorted["Vendas"] / total_map_sales * 100).round(1).astype(str) + "%"
                 df_sorted["Vendas_Formatadas"] = df_sorted["Vendas"].apply(format_br) + " (" + df_sorted["Perc"] + ")"
@@ -696,7 +1115,7 @@ with tab3:
         return styles
 
     styled_inv_df = df_inv_fmt.style.apply(style_inv_table, axis=1)
-    st.dataframe(styled_inv_df, use_container_width=True, hide_index=True)
+    st.table(styled_inv_df)
 
     st.divider()
 
@@ -708,8 +1127,8 @@ with tab3:
     tipo_graf_tend_inv = col_inv_t2.radio("Visualização:", ["Diário", "Acumulado"], horizontal=True, key='t3_rad_tend')
     
     col_ig1, col_ig2 = st.columns(2)
-    show_prev_inv = col_ig1.checkbox("Comparar com Período Anterior", key='t3_chk_prev')
-    show_last_yr_inv = col_ig2.checkbox("Comparar com Ano Passado", key='t3_chk_last')
+    show_prev_inv = col_ig1.checkbox("Comparar c/ Anterior", key='t3_chk_prev')
+    show_last_yr_inv = col_ig2.checkbox("Comparar c/ Ano Passado", key='t3_chk_last')
 
     def get_inv_trend_data(t_start, t_end, label_suffix, max_actual_date=None):
         end_bound = min(t_end, max_actual_date) if max_actual_date else t_end
@@ -746,7 +1165,7 @@ with tab3:
         grp['Traço'] = grafico_metrica + label_suffix
         grp['Data_Real'] = grp['data_investimento']
         
-        return grp
+        return grp.reset_index(drop=True)
 
     plot_dfs_inv = []
     df_main_inv = get_inv_trend_data(c_s, c_e, "", max_actual_date=ref_datetime)
@@ -761,7 +1180,7 @@ with tab3:
         if not df_last_plot_inv.empty: plot_dfs_inv.append(df_last_plot_inv)
 
     if plot_dfs_inv:
-        df_plot_trend_inv = pd.concat(plot_dfs_inv)
+        df_plot_trend_inv = pd.concat(plot_dfs_inv).reset_index(drop=True)
         df_plot_trend_inv['Data_Str'] = df_plot_trend_inv['Data_Real'].dt.strftime('%d/%m/%Y')
         
         fig_line = px.line(df_plot_trend_inv, x='Dia', y='Y', color='Traço', markers=True)
@@ -769,6 +1188,7 @@ with tab3:
         for trace in fig_line.data:
             if "(Anterior)" in trace.name or "(Ano Passado)" in trace.name:
                 trace.line.dash = 'dash'
+                trace.opacity = 0.5
                 
         fig_line.update_traces(hovertemplate="<b>Data Original: %{customdata[1]}</b><br>Valor: %{customdata[0]}<extra></extra>",
                                 customdata=df_plot_trend_inv[['Formatado', 'Data_Str']])
