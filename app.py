@@ -66,6 +66,13 @@ def fmt_val_delta_money(curr, prev):
     d_str = get_delta_str(curr, prev)
     return f"{v_str} ({d_str})"
 
+def fmt_goal(actual, goal, is_money=False):
+    if goal <= 0:
+        return "N/A"
+    pct = (actual / goal) * 100
+    val_str = format_money(goal) if is_money else format_br(goal)
+    return f"{val_str} ({pct:.1f}%)"
+
 def color_deltas(val):
     if not isinstance(val, str) or '(' not in val:
         return ''
@@ -82,6 +89,28 @@ def color_deltas(val):
     except:
         pass
     return ''
+
+def parse_br_float(val):
+    """Bulletproof string-to-float converter for messy database varchars and doubles"""
+    if pd.isna(val): return 0.0
+    if isinstance(val, (int, float)): return float(val)
+    
+    s = str(val).upper().replace('R$', '').replace('R', '').replace('$', '').strip()
+    if s in ['NAN', 'NONE', '']: return 0.0
+    
+    # Handle Brazilian (1.500,50) vs US (1,500.50) formats safely
+    if '.' in s and ',' in s:
+        if s.rfind(',') > s.rfind('.'):
+            s = s.replace('.', '').replace(',', '.')
+        else:
+            s = s.replace(',', '')
+    elif ',' in s:
+        s = s.replace(',', '.')
+        
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
 
 # --- 3. DATABASE CONNECTIONS & DATA LOADERS ---
 try:
@@ -135,6 +164,36 @@ def load_invest_data():
         return df_inv
     except Exception:
         return pd.DataFrame(columns=['data_investimento', 'canal', 'plataforma', 'branding', 'leads', 'venda', 'vol_leads', 'vol_vendas'])
+
+@st.cache_data(ttl=43200)
+def load_goals_data():
+    try:
+        query = "SELECT * FROM alex_metas"
+        df_goals = conn.query(query)
+        if df_goals.empty: return pd.DataFrame()
+        
+        df_goals.columns = df_goals.columns.str.strip()
+        
+        # Crucial Fix: format='mixed' and dayfirst=True guarantees dates like "15/05/2026" don't turn into NaT and get dropped
+        df_goals['Data_Corrigida'] = pd.to_datetime(df_goals['Data_Corrigida'].astype(str).str.strip(), format='mixed', dayfirst=True, errors='coerce')
+        df_goals = df_goals.dropna(subset=['Data_Corrigida'])
+        df_goals['mes_ano'] = df_goals['Data_Corrigida'].dt.to_period('M').dt.to_timestamp()
+        
+        # Aggressively force ALL metric columns to be clean floats to prevent TypeErrors
+        for col in df_goals.columns:
+            if col not in ['Data_Corrigida', 'mes_ano']:
+                df_goals[col] = df_goals[col].apply(parse_br_float)
+                
+        # SMART FIX: Brazilian decimal bug auto-corrector for 'double' sales columns
+        if 'CDT (Total)' in df_goals.columns and df_goals['CDT (Total)'].max() > 0 and df_goals['CDT (Total)'].max() < 1000:
+            for col in df_goals.columns:
+                if col not in ['Data_Corrigida', 'mes_ano', 'Investimento Total'] and pd.api.types.is_numeric_dtype(df_goals[col]):
+                    df_goals[col] = df_goals[col] * 1000
+                    
+        return df_goals
+    except Exception as e:
+        st.error(f"Erro no módulo de metas: {e}")
+        return pd.DataFrame()
 
 # =============================================================================
 # 4. IN-APP PROPHET FORECASTING ENGINE
@@ -323,7 +382,6 @@ def generate_prophet_forecast(ref_date_str):
         sat_floor = int(sat_data.quantile(0.10)) if len(sat_data) > 0 else 0
         sun_floor = int(sun_data.quantile(0.25)) if len(sun_data) > 0 else 0
 
-        # Clipping outliers
         cap_limit = df_channel["y"].quantile(0.98)
         exempt = ((df_channel["day_22"] == 1) | (df_channel["late_month"] == 1) | (df_channel["month_end_peak"] == 1) | df_channel["ds"].isin(holidays_ch["ds"]))
         df_channel["y"] = np.where((df_channel["y"] > cap_limit) & (~exempt), cap_limit, df_channel["y"])
@@ -332,7 +390,6 @@ def generate_prophet_forecast(ref_date_str):
         m_prod = build_prophet(config, holidays_ch)
         m_prod.fit(df_channel[cols])
 
-        # Generate a hardcoded 365 days into the future so it can support "Ano Atual" logic fully
         PROD_HORIZON = 365
         base_future = m_prod.make_future_dataframe(periods=PROD_HORIZON, freq="D", include_history=False)
         base_future = add_calendar_regressors(base_future)
@@ -369,6 +426,7 @@ def generate_prophet_forecast(ref_date_str):
 df_cal = load_calendar()
 df_raw = load_data()
 df_invest_raw = load_invest_data()
+df_goals = load_goals_data()
 
 df = pd.merge(df_raw, df_cal, left_on='data_venda', right_on='data_ref', how='left')
 df_invest = pd.merge(df_invest_raw, df_cal, left_on='data_investimento', right_on='data_ref', how='left')
@@ -376,7 +434,7 @@ df_invest = pd.merge(df_invest_raw, df_cal, left_on='data_investimento', right_o
 df['is_dia_util'] = df['is_dia_util'].fillna(1)
 df_invest['is_dia_util'] = df_invest['is_dia_util'].fillna(1)
 
-# --- 5. DEFINING BUSINESS AGGREGATES & GOALS ---
+# --- 5. DEFINING BUSINESS AGGREGATES & LINEAR GOALS ---
 dig_list = ['website', 'app do filiado']
 out_list = ['mgm', 'digital b2b2c', 'cdt sonhos', 'cdt sonhos maistodos', 'b2b2c', 'carlinhos maia', 'influenciadores', 'tutti']
 tv_list  = ['televendas']
@@ -391,7 +449,6 @@ group_map = {
     'CDT': nac_list + fra_list
 }
 
-# Mapping specific child channels strictly back to the Prophet Model group that trained them
 prophet_map = {
     'porta a porta': 'Franquias',
     'link do vendedor': 'Franquias',
@@ -409,23 +466,64 @@ prophet_map = {
     'tutti': 'Outros'
 }
 
-def get_agg_sums(df_slice):
+def get_prorated_goal(df_goals_db, start_d, end_d, column_name):
+    if df_goals_db.empty or column_name not in df_goals_db.columns:
+        return 0.0
+    
+    total_goal = 0.0
+    current_d = start_d
+    while current_d <= end_d:
+        month_mask = (df_goals_db['mes_ano'] == current_d.replace(day=1))
+        if month_mask.any():
+            month_goal = df_goals_db.loc[month_mask, column_name].iloc[0]
+            if pd.notna(month_goal):
+                days_in_month = pd.Period(current_d, freq='M').days_in_month
+                total_goal += float(month_goal) / float(days_in_month)
+        current_d += pd.Timedelta(days=1)
+    return float(total_goal)
+
+def get_goal_for_group(start_d, end_d, grupo_nome):
+    col_map = {
+        'Digital': ['Site', 'App'],
+        'Franquias': ['Franquias'],
+        'Outros': ['Outros', 'B2b2c Digital'], 
+        'Nacional': ['Canais Nacionais'],
+        'CDT': ['CDT (Total)'],
+        'Website': ['Site'],
+        'App Do Filiado': ['App'],
+        'Televendas': ['Televendas'],
+        'Porta A Porta': ['PAP'],
+        'Link Do Vendedor': ['Link do Vendedor'],
+        'App Do Vendedor': ['App do Vendedor'],
+        'Digital B2B2C': ['B2b2c Digital']
+    }
+    cols = col_map.get(grupo_nome.strip(), [])
+    total = 0.0
+    for c in cols:
+        total += get_prorated_goal(df_goals, start_d, end_d, c)
+    return total
+
+def get_agg_sums(df_slice, is_forecast=False):
     if df_slice.empty:
         return {'Digital': 0, 'Franquias': 0, 'Outros': 0, 'Nacional': 0, 'CDT': 0}
     
-    dig = df_slice[df_slice['tipo_venda'].str.lower().isin(dig_list)]['Vendas'].sum()
-    out = df_slice[df_slice['tipo_venda'].str.lower().isin(out_list)]['Vendas'].sum()
-    nac = df_slice[df_slice['tipo_venda'].str.lower().isin(nac_list)]['Vendas'].sum()
-    fra = df_slice[df_slice['tipo_venda'].str.lower().isin(fra_list)]['Vendas'].sum()
-    cdt = df_slice['Vendas'].sum() 
+    col_chan = 'channel_group' if is_forecast else 'tipo_venda'
+    col_val = 'yhat' if is_forecast else 'Vendas'
+
+    dig = df_slice[df_slice[col_chan].str.lower().isin(dig_list)][col_val].sum()
+    out = df_slice[df_slice[col_chan].str.lower().isin(out_list)][col_val].sum()
+    nac = df_slice[df_slice[col_chan].str.lower().isin(nac_list)][col_val].sum()
+    fra = df_slice[df_slice[col_chan].str.lower().isin(fra_list)][col_val].sum()
+    cdt = df_slice[col_val].sum() 
     return {'Digital': dig, 'Franquias': fra, 'Outros': out, 'Nacional': nac, 'CDT': cdt}
 
-def get_channel_sums(df_slice):
+def get_channel_sums(df_slice, is_forecast=False):
     if df_slice.empty: return {}
-    return df_slice.groupby(df_slice['tipo_venda'].str.lower())['Vendas'].sum().to_dict()
+    col_chan = 'channel_group' if is_forecast else 'tipo_venda'
+    col_val = 'yhat' if is_forecast else 'Vendas'
+    return df_slice.groupby(df_slice[col_chan].str.lower())[col_val].sum().to_dict()
 
 def get_fcst_agg_sums(df_fcst_slice):
-    """Calculates macro-aggregates specifically for the Prophet Forecast DataFrame"""
     if df_fcst_slice.empty:
         return {'Digital': 0, 'Franquias': 0, 'Outros': 0, 'Nacional': 0, 'CDT': 0}
     
@@ -439,15 +537,6 @@ def get_fcst_agg_sums(df_fcst_slice):
     cdt = df_f['yhat'].sum()
     
     return {'Digital': dig, 'Franquias': fra, 'Outros': out, 'Nacional': nac, 'CDT': cdt}
-
-def get_sales_goal(start_date, end_date, canais, filter_cal_type):
-    days = (end_date - start_date).days + 1
-    return days * 50 * max(1, len(canais))
-
-def get_invest_goal(start_date, end_date, canais, plataformas, categorias, filter_cal_type):
-    days = (end_date - start_date).days + 1
-    return days * 1000 * max(1, len(plataformas))
-
 
 # --- 6. GLOBAL SIDEBAR (TIME & CALENDAR LOGIC) ---
 st.sidebar.title("🎛️ Controles Globais")
@@ -483,10 +572,8 @@ elif filtro_dias == "Apenas Fins de Semana/Feriados":
 # --- UNIFIED DATE LOGIC ---
 ref_datetime = pd.to_datetime(reference_date)
 
-# NOW trigger the embedded Prophet Forecast generator using the reliable ref date
 df_fcst = generate_prophet_forecast(ref_datetime.strftime('%Y-%m-%d'))
 
-# Dynamic projection days based on selected view
 if view_option == "Semana Atual": proj_days = 7
 elif view_option == "Mês Atual": proj_days = 30
 elif view_option == "Ano Atual": proj_days = 365
@@ -572,7 +659,8 @@ with tab1:
     ch_lp = get_channel_sums(df_slice_lp)
     ch_lf = get_channel_sums(df_slice_lf)
 
-    goal_vendas = get_sales_goal(c_s, ref_datetime, ['CDT'], filtro_dias)
+    # Dynamic Sales Goal Progress Bar
+    goal_vendas = get_prorated_goal(df_goals, c_s, ref_datetime, 'CDT (Total)')
     pct_goal = agg_c['CDT'] / goal_vendas if goal_vendas > 0 else 0
     st.markdown(f"🎯 **Progresso da Meta de Vendas (CDT):** {format_br(agg_c['CDT'])} / {format_br(goal_vendas)} atingidos (**{pct_goal*100:.1f}%**)")
     st.progress(min(max(pct_goal, 0.0), 1.0))
@@ -584,14 +672,14 @@ with tab1:
     mostrar_detalhes = col_t1.checkbox("Mostrar detalhamento por canal (Expandir Grupos)")
     
     if not df_fcst.empty:
-        mostrar_previsao = col_t2.checkbox("Incluir Previsão da Inteligência Artificial")
+        mostrar_previsao = col_t2.checkbox("Incluir Previsão da Inteligência Artificial (Tabela)")
         if mostrar_previsao:
-            horizonte_previsao = col_t2.radio("Horizonte da Previsão:", ["Fim do Período Atual", f"Próximos {proj_days} Dias"], horizontal=True)
+            horizonte_previsao_tabela = col_t2.radio("Horizonte da Previsão (Tabela):", ["Fim do Período Atual", f"Próximos {proj_days} Dias"], horizontal=True, key="horiz_tabela")
     else:
         mostrar_previsao = False
 
     if mostrar_previsao and not df_fcst.empty:
-        if horizonte_previsao == "Fim do Período Atual":
+        if horizonte_previsao_tabela == "Fim do Período Atual":
             fcst_end_date = c_e
         else:
             fcst_end_date = ref_datetime + pd.DateOffset(days=proj_days)
@@ -608,9 +696,14 @@ with tab1:
         nome_exibicao = "CDT (Total)" if grupo == 'CDT' else grupo
         label_grupo = f"📁 {nome_exibicao.upper()}" if mostrar_detalhes else nome_exibicao
         
+        meta_parc = get_goal_for_group(c_s, ref_datetime, grupo)
+        meta_tot = get_goal_for_group(c_s, c_e, grupo)
+        
         row_dict = {
             'Grupo': label_grupo,
             'Atual': agg_c[grupo],
+            'Meta (Parcial)': fmt_goal(agg_c[grupo], meta_parc),
+            'Meta (Total)': fmt_goal(agg_c[grupo], meta_tot),
             'vs Anterior (Parcial)': fmt_val_delta(agg_c[grupo], agg_pp[grupo]),
             'vs Anterior (Total)': fmt_val_delta(agg_c[grupo], agg_pf[grupo]),
             'vs Ano Passado (Parcial)': fmt_val_delta(agg_c[grupo], agg_lp[grupo]),
@@ -626,18 +719,22 @@ with tab1:
             for ch in group_map[grupo]:
                 v_c, v_pp, v_pf, v_lp, v_lf = ch_c.get(ch, 0), ch_pp.get(ch, 0), ch_pf.get(ch, 0), ch_lp.get(ch, 0), ch_lf.get(ch, 0)
                 
-                # Accurately apportion Prophet's Group Forecast to specific sub-channels based on historical share
                 v_f_faltante = 0
                 if mostrar_previsao:
                     parent_c = agg_c[grupo]
                     if parent_c > 0:
                         v_f_faltante = (v_c / parent_c) * agg_fcst_faltante[grupo]
                         
-                if v_c == 0 and v_pf == 0 and v_lf == 0 and v_f_faltante == 0: continue 
+                if v_c == 0 and v_pp == 0 and v_pf == 0 and v_lp == 0 and v_lf == 0 and v_f_faltante == 0: continue 
+                
+                ch_m_parc = get_goal_for_group(c_s, ref_datetime, ch.title())
+                ch_m_tot = get_goal_for_group(c_s, c_e, ch.title())
                 
                 ch_dict = {
                     'Grupo': f"\xa0\xa0\xa0\xa0\xa0\xa0└─ {ch.title()}",
                     'Atual': v_c,
+                    'Meta (Parcial)': fmt_goal(v_c, ch_m_parc),
+                    'Meta (Total)': fmt_goal(v_c, ch_m_tot),
                     'vs Anterior (Parcial)': fmt_val_delta(v_c, v_pp),
                     'vs Anterior (Total)': fmt_val_delta(v_c, v_pf),
                     'vs Ano Passado (Parcial)': fmt_val_delta(v_c, v_lp),
@@ -650,7 +747,7 @@ with tab1:
                 
     df_triplet = pd.DataFrame(rows)
     
-    display_cols = ['Grupo', 'Atual', 'vs Anterior (Parcial)', 'vs Anterior (Total)']
+    display_cols = ['Grupo', 'Atual', 'Meta (Parcial)', 'Meta (Total)', 'vs Anterior (Parcial)', 'vs Anterior (Total)']
     if view_option != "Ano Atual":
         display_cols.extend(['vs Ano Passado (Parcial)', 'vs Ano Passado (Total)'])
     if mostrar_previsao:
@@ -659,8 +756,7 @@ with tab1:
     df_table_fmt = df_triplet[display_cols].copy()
     df_table_fmt['Atual'] = df_table_fmt['Atual'].apply(format_br)
     
-    # st.table generates a static HTML table that CANNOT be sorted by clicks (Preserves Hierarchy!)
-    color_cols = [c for c in display_cols if 'vs' in c]
+    color_cols = [c for c in display_cols if 'vs ' in c]
     styled_df = df_table_fmt.style.map(color_deltas, subset=color_cols)
     st.table(styled_df)
 
@@ -718,7 +814,9 @@ with tab1:
         show_last_yr = col_g2.checkbox("Comparar c/ Ano Passado")
         
         if not df_fcst.empty:
-            show_forecast_chart = col_g3.checkbox("Mostrar Previsão")
+            show_forecast_chart = col_g3.checkbox("Mostrar Previsão no Gráfico")
+            if show_forecast_chart:
+                horizonte_grafico = st.radio("Horizonte da Previsão (Gráfico):", ["Fim do Período Atual", f"Próximos {proj_days} Dias"], horizontal=True, key="horiz_grafico")
         else:
             show_forecast_chart = False
 
@@ -726,7 +824,7 @@ with tab1:
             if is_forecast_src:
                 if df_fcst.empty or not max_actual_date: return pd.DataFrame()
                 
-                if horizonte_previsao == "Fim do Período Atual":
+                if horizonte_grafico == "Fim do Período Atual":
                     fcst_end_d = c_e
                 else:
                     fcst_end_d = max_actual_date + pd.DateOffset(days=proj_days)
@@ -765,10 +863,8 @@ with tab1:
                     d['Grupo'] = 'Outros'
                     res_dfs.append(d)
             else:
-                # specific sub-channels
                 for ch in canais_grafico:
                     if is_forecast_src:
-                        # Map subchannel to its Prophet model parent and apportion daily
                         p_parent = prophet_map.get(ch.lower(), 'Outros')
                         df_hist = df[(df['data_venda'] >= c_s) & (df['data_venda'] <= ref_datetime)]
                         child_sum = df_hist[df_hist['tipo_venda'].str.lower() == ch.lower()]['Vendas'].sum()
@@ -820,7 +916,6 @@ with tab1:
                     for g in df_fcst_plot['Grupo'].unique():
                         g_main = df_main[df_main['Grupo'] == g]
                         if not g_main.empty:
-                            # Strict iloc[-1] guarantees we only take the absolute final historical date
                             last_row = g_main.iloc[-1].copy()
                             last_row['Traço'] = last_row['Grupo'] + " (Previsão)"
                             last_points.append(pd.DataFrame([last_row]))
@@ -838,11 +933,10 @@ with tab1:
                 if not df_main.empty:
                     for g in df_main['Grupo'].unique():
                         g_m = df_main[df_main['Grupo'] == g]
-                        last_hist_map[g] = g_m['Vendas'].sum()
+                        last_hist_map[g] = g_m.loc[g_m['Dia'].idxmax(), 'Vendas'] if tipo_graf_tend != "Acumulado" else g_m['Vendas'].sum()
                 
                 df_plot_trend['Vendas'] = df_plot_trend.groupby('Traço')['Vendas'].cumsum()
                 
-                # Grab the duplicated daily value (which is now cumsummed to itself) of the forecast traces
                 if show_forecast_chart and not df_fcst_plot.empty:
                     for g in df_fcst_plot['Grupo'].unique():
                         trace_name = g + " (Previsão)"
@@ -850,7 +944,6 @@ with tab1:
                         if mask.any():
                             first_fcst_val_map[g] = df_plot_trend.loc[mask, 'Vendas'].iloc[0]
                 
-                # Math offset to perfectly append the forecast cumsum to the end of the history line
                 def boost_fcst(row):
                     if "(Previsão)" in row['Traço']:
                         g = row['Grupo']
@@ -970,12 +1063,20 @@ with tab3:
 
     st.divider()
 
+    # Pre-compute Global Unfiltered Data for Pacing Progress Bars and Parent Table Rows
+    df_invest_global = df_invest.copy()
+    available_cats_global = [c for c in ['branding', 'leads', 'venda'] if c in df_invest_global.columns]
+    if available_cats_global and not df_invest_global.empty:
+        df_invest_global['Total_Investido'] = df_invest_global[available_cats_global].sum(axis=1)
+    else:
+        df_invest_global['Total_Investido'] = 0
+
     def filter_inv_date(df_i, start, end):
         mask = (df_i['data_investimento'] >= start) & (df_i['data_investimento'] <= end)
         return df_i.loc[mask]
 
     def get_inv_metrics(df_slice, cat=None):
-        if df_slice.empty: return 0, 0, 0
+        if df_slice.empty: return 0, 0, 0, 0
         v_leads = df_slice['vol_leads'].sum()
         v_vendas = df_slice['vol_vendas'].sum()
         
@@ -985,38 +1086,70 @@ with tab3:
             cpa = tot_inv / v_vendas if v_vendas > 0 else 0
         else:
             tot_inv = df_slice['Total_Investido'].sum()
-            c_leads = df_slice['leads'].sum()
-            c_vendas = df_slice['venda'].sum()
-            cpl = c_leads / v_leads if v_leads > 0 else 0
-            cpa = c_vendas / v_vendas if v_vendas > 0 else 0
+            cpl = tot_inv / v_leads if v_leads > 0 else 0
+            cpa = tot_inv / v_vendas if v_vendas > 0 else 0
             
-        return tot_inv, cpl, cpa
+        return tot_inv, cpl, cpa, v_leads
 
-    def compute_row(label, df_c, df_pp, df_pf, df_lp, df_lf, metric_idx, cat=None):
+    def compute_row(label, df_c, df_pp, df_pf, df_lp, df_lf, metric_idx, df_global=None, cat=None, goal_col=None, is_sub=False):
         m_c = get_inv_metrics(df_c, cat)[metric_idx]
         m_pp = get_inv_metrics(df_pp, cat)[metric_idx]
         m_pf = get_inv_metrics(df_pf, cat)[metric_idx]
         m_lp = get_inv_metrics(df_lp, cat)[metric_idx]
         m_lf = get_inv_metrics(df_lf, cat)[metric_idx]
         
+        is_money = metric_idx in [0, 1, 2]
+        
+        pct_p = "N/A"
+        pct_t = "N/A"
+        
+        # Display the true Global Pacing percentage for the top-level parent rows
+        if not is_sub and goal_col and df_global is not None:
+            m_c_global = get_inv_metrics(df_global, None)[metric_idx]
+            meta_p = get_prorated_goal(df_goals, c_s, ref_datetime, goal_col)
+            meta_t = get_prorated_goal(df_goals, c_s, c_e, goal_col)
+            
+            if meta_p > 0:
+                val_str_p = format_money(meta_p) if is_money else format_br(meta_p)
+                pct_p = f"{val_str_p} ({(m_c_global / meta_p * 100):.1f}% Global)"
+            if meta_t > 0:
+                val_str_t = format_money(meta_t) if is_money else format_br(meta_t)
+                pct_t = f"{val_str_t} ({(m_c_global / meta_t * 100):.1f}% Global)"
+        
         return {
             'Métrica': label,
-            'Atual': format_money(m_c),
-            'vs Anterior (Parcial)': fmt_val_delta_money(m_c, m_pp),
-            'vs Anterior (Total)': fmt_val_delta_money(m_c, m_pf),
-            'vs Ano Passado (Parcial)': fmt_val_delta_money(m_c, m_lp),
-            'vs Ano Passado (Total)': fmt_val_delta_money(m_c, m_lf),
+            'Atual': format_money(m_c) if is_money else format_br(m_c),
+            'Meta (Parcial)': pct_p,
+            'Meta (Total)': pct_t,
+            'vs Anterior (Parcial)': fmt_val_delta_money(m_c, m_pp) if is_money else fmt_val_delta(m_c, m_pp),
+            'vs Anterior (Total)': fmt_val_delta_money(m_c, m_pf) if is_money else fmt_val_delta(m_c, m_pf),
+            'vs Ano Passado (Parcial)': fmt_val_delta_money(m_c, m_lp) if is_money else fmt_val_delta(m_c, m_lp),
+            'vs Ano Passado (Total)': fmt_val_delta_money(m_c, m_lf) if is_money else fmt_val_delta(m_c, m_lf),
             '_val_c': m_c,
             '_val_pf': m_pf,
             '_val_lf': m_lf,
             '_is_eff': True if metric_idx in [1, 2] else False
         }
 
-    inv_current_total = filter_inv_date(df_inv_filt, c_s, ref_datetime)['Total_Investido'].sum()
-    goal_invest = get_invest_goal(c_s, ref_datetime, canais_invest, plataformas_invest, categorias_invest, filtro_dias)
-    pct_goal_inv = inv_current_total / goal_invest if goal_invest > 0 else 0
-    st.markdown(f"🎯 **Progresso da Meta de Investimento:** {format_money(inv_current_total)} / {format_money(goal_invest)} utilizados (**{pct_goal_inv*100:.1f}%**)")
-    st.progress(min(max(pct_goal_inv, 0.0), 1.0))
+    # High Level Bars (Global and Unshakeable)
+    df_c_global = filter_inv_date(df_invest_global, c_s, ref_datetime)
+    inv_global_total = df_c_global['Total_Investido'].sum()
+    leads_global_total = df_c_global['vol_leads'].sum()
+
+    goal_invest = get_prorated_goal(df_goals, c_s, ref_datetime, 'Investimento Total')
+    pct_goal_inv = inv_global_total / goal_invest if goal_invest > 0 else 0
+    
+    goal_leads = get_prorated_goal(df_goals, c_s, ref_datetime, 'Leads unicos Total')
+    pct_goal_leads = leads_global_total / goal_leads if goal_leads > 0 else 0
+
+    col_gb1, col_gb2 = st.columns(2)
+    with col_gb1:
+        st.markdown(f"🎯 **Meta de Investimento Global:** {format_money(inv_global_total)} / {format_money(goal_invest)} utilizados (**{pct_goal_inv*100:.1f}%**)")
+        st.progress(min(max(pct_goal_inv, 0.0), 1.0))
+    with col_gb2:
+        st.markdown(f"🎯 **Meta de Leads Global (Volume):** {format_br(leads_global_total)} / {format_br(goal_leads)} gerados (**{pct_goal_leads*100:.1f}%**)")
+        st.progress(min(max(pct_goal_leads, 0.0), 1.0))
+        
     st.divider()
 
     st.subheader("Indicadores de Eficiência")
@@ -1031,14 +1164,19 @@ with tab3:
     df_lp_inv = filter_inv_date(df_inv_filt, l_s, l_partial)
     df_lf_inv = filter_inv_date(df_inv_filt, l_s, l_e)
 
-    metrics = [(0, '💸 Total Investido'), (1, '🎯 CPL (Custo por Lead)'), (2, '🛒 CPA (Custo por Venda)')]
+    metrics = [
+        (0, '💸 Total Investido', 'Investimento Total'), 
+        (1, '🎯 CPL (Custo por Lead)', None), 
+        (2, '🛒 CPA (Custo por Venda)', None),
+        (3, '📢 Leads (Volume)', 'Leads unicos Total')
+    ]
     rows_inv = []
 
-    for m_idx, m_name in metrics:
+    for m_idx, m_name, m_goal in metrics:
         has_children = detalhe_plat or detalhe_tipo
         label_parent = f"📁 {m_name.upper()}" if has_children else m_name
         
-        row_parent = compute_row(label_parent, df_c_inv, df_pp_inv, df_pf_inv, df_lp_inv, df_lf_inv, m_idx)
+        row_parent = compute_row(label_parent, df_c_inv, df_pp_inv, df_pf_inv, df_lp_inv, df_lf_inv, m_idx, df_global=df_c_global, goal_col=m_goal)
         rows_inv.append(row_parent)
         
         if detalhe_plat and not detalhe_tipo:
@@ -1049,13 +1187,13 @@ with tab3:
                 p_df_lp = df_lp_inv[df_lp_inv['plataforma'] == plat]
                 p_df_lf = df_lf_inv[df_lf_inv['plataforma'] == plat]
                 
-                row_p = compute_row(f"\xa0\xa0\xa0\xa0\xa0\xa0└─ {plat}", p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx)
+                row_p = compute_row(f"\xa0\xa0\xa0\xa0\xa0\xa0└─ {plat}", p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, is_sub=True)
                 if row_p['_val_c'] == 0 and row_p['_val_pf'] == 0 and row_p['_val_lf'] == 0: continue
                 rows_inv.append(row_p)
                 
         elif detalhe_tipo and not detalhe_plat:
             for cat in cat_cols:
-                row_c = compute_row(f"\xa0\xa0\xa0\xa0\xa0\xa0└─ {cat.title()}", df_c_inv, df_pp_inv, df_pf_inv, df_lp_inv, df_lf_inv, m_idx, cat=cat)
+                row_c = compute_row(f"\xa0\xa0\xa0\xa0\xa0\xa0└─ {cat.title()}", df_c_inv, df_pp_inv, df_pf_inv, df_lp_inv, df_lf_inv, m_idx, cat=cat, is_sub=True)
                 if row_c['_val_c'] == 0 and row_c['_val_pf'] == 0 and row_c['_val_lf'] == 0: continue
                 rows_inv.append(row_c)
                 
@@ -1067,19 +1205,19 @@ with tab3:
                 p_df_lp = df_lp_inv[df_lp_inv['plataforma'] == plat]
                 p_df_lf = df_lf_inv[df_lf_inv['plataforma'] == plat]
                 
-                row_p = compute_row(f"\xa0\xa0\xa0\xa0\xa0\xa0└─ 📁 {plat.upper()}", p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx)
+                row_p = compute_row(f"\xa0\xa0\xa0\xa0\xa0\xa0└─ 📁 {plat.upper()}", p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, is_sub=True)
                 if row_p['_val_c'] == 0 and row_p['_val_pf'] == 0 and row_p['_val_lf'] == 0: continue
                 rows_inv.append(row_p)
                 
                 for cat in cat_cols:
-                    row_c = compute_row(f"\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0└─ {cat.title()}", p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, cat=cat)
+                    row_c = compute_row(f"\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0└─ {cat.title()}", p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, cat=cat, is_sub=True)
                     if row_c['_val_c'] == 0 and row_c['_val_pf'] == 0 and row_c['_val_lf'] == 0: continue
                     rows_inv.append(row_c)
     
     df_inv_table = pd.DataFrame(rows_inv)
     is_eff_map = df_inv_table['_is_eff'].to_dict()
     
-    display_cols_inv = ['Métrica', 'Atual', 'vs Anterior (Parcial)', 'vs Anterior (Total)']
+    display_cols_inv = ['Métrica', 'Atual', 'Meta (Parcial)', 'Meta (Total)', 'vs Anterior (Parcial)', 'vs Anterior (Total)']
     if view_option != "Ano Atual":
         display_cols_inv.extend(['vs Ano Passado (Parcial)', 'vs Ano Passado (Total)'])
         
@@ -1090,7 +1228,7 @@ with tab3:
         is_efficiency = is_eff_map[row.name]
         
         for i, col in enumerate(row.index):
-            if col in ['vs Anterior (Parcial)', 'vs Anterior (Total)', 'vs Ano Passado (Parcial)', 'vs Ano Passado (Total)']:
+            if 'vs ' in col:
                 val = row[col]
                 if isinstance(val, str) and '(' in val:
                     try:
@@ -1114,7 +1252,7 @@ with tab3:
                         pass
         return styles
 
-    styled_inv_df = df_inv_fmt.style.apply(style_inv_table, axis=1)
+    styled_inv_df = df_inv_fmt.style.map(color_deltas, subset=[c for c in display_cols_inv if 'vs ' in c]).apply(style_inv_table, axis=1)
     st.table(styled_inv_df)
 
     st.divider()
