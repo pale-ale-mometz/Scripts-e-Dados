@@ -924,7 +924,7 @@ with tab1:
     mostrar_detalhes = col_t1.checkbox("Mostrar detalhamento por canal (Expandir Grupos)")
     
     if not df_fcst.empty:
-        mostrar_previsao = col_t2.checkbox("Incluir Previsão da Inteligência Artificial (Tabela)")
+        mostrar_previsao = col_t2.checkbox("Incluir Projeção de Vendas (Tabela)")
         if mostrar_previsao:
             horizonte_previsao_tabela = col_t2.radio("Horizonte da Previsão (Tabela):", ["Fim do Período Atual", f"Próximos {proj_days} Dias"], horizontal=True, key="horiz_tabela")
     else:
