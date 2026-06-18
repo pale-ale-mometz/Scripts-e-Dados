@@ -22,7 +22,7 @@ except ImportError:
     PROPHET_AVAILABLE = False
 
 # --- 1. CONFIGURE PAGE & AUTHENTICATION ---
-st.set_page_config(page_title="MySQL Dashboard", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Vendas Dashboard", page_icon="📊", layout="wide")
 
 def check_password():
     if st.session_state.get("password_correct", False):
@@ -86,31 +86,117 @@ def color_deltas(val):
             return f'background-color: rgba(39, 174, 96, {alpha}); color: #000;'
         elif pct < 0:
             return f'background-color: rgba(231, 76, 60, {alpha}); color: #000;'
-    except:
+    except Exception:
         pass
     return ''
 
-def parse_br_float(val):
-    """Bulletproof string-to-float converter for messy database varchars and doubles"""
-    if pd.isna(val): return 0.0
-    if isinstance(val, (int, float)): return float(val)
-    
-    s = str(val).upper().replace('R$', '').replace('R', '').replace('$', '').strip()
-    if s in ['NAN', 'NONE', '']: return 0.0
-    
-    # Handle Brazilian (1.500,50) vs US (1,500.50) formats safely
-    if '.' in s and ',' in s:
-        if s.rfind(',') > s.rfind('.'):
-            s = s.replace('.', '').replace(',', '.')
+
+def _delta_bg(cell, is_eff=False):
+    """Parse a 'valor (±X%...)' string and return an rgba background.
+    Green = good, red = bad. For efficiency metrics (CPL/CPA) lower is good
+    (is_eff=True); otherwise higher is good. Empty for N/A / 0% / non-delta cells."""
+    if not isinstance(cell, str) or '(' not in cell:
+        return ''
+    try:
+        pct_str = cell.split('(')[1].split('%')[0].replace('+', '').strip()
+        if pct_str in ('N/A', ''):
+            return ''
+        pct = float(pct_str)
+    except Exception:
+        return ''
+    if pct == 0:
+        return ''
+    intensity = min(abs(pct) / 50.0, 1.0)
+    alpha = 0.12 + intensity * 0.33
+    good = (pct < 0) if is_eff else (pct > 0)
+    rgb = "39,174,96" if good else "231,76,60"
+    return f"rgba({rgb},{alpha:.2f})"
+
+
+def render_metric_table(rows, cols):
+    """Render a metric/summary table as styled HTML with a typographic hierarchy.
+    cols[0] is the label column; remaining columns are right-aligned values. Each row
+    may carry '_level' (0/1/2 -> bold band / indented / lighter+more-indented) and
+    '_is_eff' (controls delta-coloring direction on 'vs ' columns). N/A cells render
+    as an em-dash. Uses inline styles only, so Streamlit's HTML sanitizer keeps them."""
+    label_key = cols[0]
+    val_cols = cols[1:]
+    head = [f"<th style='text-align:left;padding:9px 12px;font-size:10.5px;font-weight:600;color:#64748b;"
+            f"text-transform:uppercase;letter-spacing:.05em;border-bottom:2px solid #e2e8f0;'>{label_key}</th>"]
+    for c in val_cols:
+        head.append(f"<th style='text-align:right;padding:9px 12px;font-size:10.5px;font-weight:600;color:#64748b;"
+                    f"text-transform:uppercase;letter-spacing:.05em;border-bottom:2px solid #e2e8f0;'>{c}</th>")
+    body = []
+    for r in rows:
+        lvl = r.get('_level', 0)
+        is_eff = r.get('_is_eff', False)
+        if lvl == 0:
+            bg, weight, tcolor, fsize, btop = "#eef2f7", "700", "#0f172a", "13px", "border-top:2px solid #cbd5e1;"
+        elif lvl == 1:
+            bg, weight, tcolor, fsize, btop = "#f8fafc", "600", "#334155", "12.5px", "border-top:1px solid #e8edf3;"
         else:
+            bg, weight, tcolor, fsize, btop = "#ffffff", "400", "#64748b", "12px", "border-top:1px solid #f1f5f9;"
+        pad = 12 + lvl * 22
+        cells = [f"<td style='text-align:left;padding:7px 12px;padding-left:{pad}px;font-weight:{weight};"
+                 f"color:{tcolor};font-size:{fsize};{btop}white-space:nowrap;'>{r.get(label_key, '')}</td>"]
+        for c in val_cols:
+            raw = r.get(c, '')
+            disp = '—' if (not isinstance(raw, str) or raw.strip() in ('N/A', '')) else raw
+            bgc = _delta_bg(raw, is_eff) if c.startswith('vs ') else ''
+            bgcss = f"background-color:{bgc};" if bgc else ''
+            cells.append(f"<td style='text-align:right;padding:7px 12px;font-size:{fsize};color:#0f172a;"
+                         f"{btop}{bgcss}white-space:nowrap;'>{disp}</td>")
+        body.append(f"<tr style='background:{bg};'>" + "".join(cells) + "</tr>")
+    return ("<div style='overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px;'>"
+            "<table style='border-collapse:collapse;width:100%;"
+            "font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;'>"
+            "<thead><tr>" + "".join(head) + "</tr></thead>"
+            "<tbody>" + "".join(body) + "</tbody></table></div>")
+
+
+def parse_br_float(val):
+    """Robust string->float for messy DB values.
+    Numeric columns (incl. MySQL DOUBLE -> numpy float) pass straight through;
+    text columns (e.g. `Investimento Total`) may hold BR or US numbers, with or
+    without R$. Crucially handles dot-thousands like 1.500.000 / 150.000 that the
+    previous parser turned into 0.0 / 150.0."""
+    if pd.isna(val):
+        return 0.0
+    if isinstance(val, (int, float)):            # covers numpy.float64 (DOUBLE cols)
+        return float(val)
+
+    s = str(val).upper().replace('R$', '').replace('$', '')
+    s = ''.join(s.split())                        # strip ALL whitespace (incl. NBSP)
+    if s in ['', '-', 'NAN', 'NONE', 'NULL']:
+        return 0.0
+
+    neg = s.startswith('-')
+    s = s.lstrip('+-')
+
+    if '.' in s and ',' in s:
+        # Both separators present: the LAST one is the decimal mark.
+        if s.rfind(',') > s.rfind('.'):           # BR  1.500.000,50
+            s = s.replace('.', '').replace(',', '.')
+        else:                                     # US  1,500,000.50
             s = s.replace(',', '')
     elif ',' in s:
-        s = s.replace(',', '.')
-        
+        # Comma(s) only. BR uses comma as the decimal; >1 comma -> US thousands.
+        s = s.replace(',', '') if s.count(',') > 1 else s.replace(',', '.')
+    elif '.' in s:
+        # Dot(s) only -- the case the old parser got wrong.
+        if s.count('.') > 1:                      # 1.500.000 -> thousands
+            s = s.replace('.', '')
+        else:
+            head, tail = s.rsplit('.', 1)
+            if len(tail) == 3:                    # 150.000 / 1.500 -> BR thousands
+                s = head + tail
+            # else genuine decimal (150.50, 1.5) -> leave as-is
+
     try:
-        return float(s)
+        out = float(s)
     except ValueError:
         return 0.0
+    return -out if neg else out
 
 # --- 3. DATABASE CONNECTIONS & DATA LOADERS ---
 try:
@@ -146,8 +232,11 @@ def load_calendar():
 
 @st.cache_data(ttl=43200) 
 def load_data():
-    start_of_last_year = datetime.date.today().replace(year=datetime.date.today().year - 1, month=1, day=1)
-    query = f"SELECT data_venda, uf, tipo_venda, Vendas FROM RESUMO_VENDAS_DIARIAS WHERE data_venda >= '{start_of_last_year}'"
+    # 3 full years back: the "Último 1 Ano" view compares against ~2 years prior,
+    # so it needs history reaching ~3 years back, otherwise the "vs Ano Passado"
+    # columns silently read 0 because the rows were never loaded.
+    start_history = datetime.date.today().replace(year=datetime.date.today().year - 3, month=1, day=1)
+    query = f"SELECT data_venda, uf, tipo_venda, Vendas FROM RESUMO_VENDAS_DIARIAS WHERE data_venda >= '{start_history}'"
     df = conn.query(query)
     df['data_venda'] = pd.to_datetime(df['data_venda'])
     df['tipo_venda'] = df['tipo_venda'].fillna("Não Informado").astype(str).str.strip().str.title()
@@ -155,8 +244,9 @@ def load_data():
 
 @st.cache_data(ttl=43200) 
 def load_invest_data():
-    start_of_last_year = datetime.date.today().replace(year=datetime.date.today().year - 1, month=1, day=1)
-    query = f"SELECT data_investimento, canal, plataforma, branding, leads, venda, vol_leads, vol_vendas FROM RESUMO_INVESTIMENTO_DIARIO WHERE data_investimento >= '{start_of_last_year}'"
+    # See load_data: 3 years back so the YoY ("vs Ano Passado") comparisons have data.
+    start_history = datetime.date.today().replace(year=datetime.date.today().year - 3, month=1, day=1)
+    query = f"SELECT data_investimento, canal, plataforma, branding, leads, venda, vol_leads, vol_vendas FROM RESUMO_INVESTIMENTO_DIARIO WHERE data_investimento >= '{start_history}'"
     try:
         df_inv = conn.query(query)
         df_inv['data_investimento'] = pd.to_datetime(df_inv['data_investimento'])
@@ -174,8 +264,11 @@ def load_goals_data():
         
         df_goals.columns = df_goals.columns.str.strip()
         
-        # Crucial Fix: format='mixed' and dayfirst=True guarantees dates like "15/05/2026" don't turn into NaT and get dropped
-        df_goals['Data_Corrigida'] = pd.to_datetime(df_goals['Data_Corrigida'].astype(str).str.strip(), format='mixed', dayfirst=True, errors='coerce')
+        # Data_Corrigida is ISO text ("2026-06-01 00:00:00"). dayfirst=True was a
+        # latent bug: on first-of-month rows it read the MONTH as the day and the
+        # "01" day as the month, collapsing EVERY row onto January (so any month
+        # other than January matched no goal). Parse strictly as ISO 8601.
+        df_goals['Data_Corrigida'] = pd.to_datetime(df_goals['Data_Corrigida'].astype(str).str.strip(), format='ISO8601', errors='coerce')
         df_goals = df_goals.dropna(subset=['Data_Corrigida'])
         df_goals['mes_ano'] = df_goals['Data_Corrigida'].dt.to_period('M').dt.to_timestamp()
         
@@ -184,7 +277,13 @@ def load_goals_data():
             if col not in ['Data_Corrigida', 'mes_ano']:
                 df_goals[col] = df_goals[col].apply(parse_br_float)
                 
-        # SMART FIX: Brazilian decimal bug auto-corrector for 'double' sales columns
+        # SCALE FIX (load-bearing): the numeric/DOUBLE target columns were imported
+        # from Brazilian-formatted text, so a value like "257.917" (= 257,917) was
+        # truncated by the DOUBLE type into 257.917. When the column max looks ~1000x
+        # too small, restore it. This only works for targets < 1,000,000 -- multi-dot
+        # values like "1.600.000" can't survive a DOUBLE at all, which is exactly why
+        # `Investimento Total` is a VARCHAR (parsed correctly by parse_br_float above).
+        # Proper fix: store these as real numbers upstream, then delete this block.
         if 'CDT (Total)' in df_goals.columns and df_goals['CDT (Total)'].max() > 0 and df_goals['CDT (Total)'].max() < 1000:
             for col in df_goals.columns:
                 if col not in ['Data_Corrigida', 'mes_ano', 'Investimento Total'] and pd.api.types.is_numeric_dtype(df_goals[col]):
@@ -196,22 +295,61 @@ def load_goals_data():
         return pd.DataFrame()
 
 # =============================================================================
-# 4. IN-APP PROPHET FORECASTING ENGINE
+# 4. IN-APP PROPHET FORECASTING ENGINE (v3.14)
 # =============================================================================
-SPEND_ALLOCATION = {"website": 0.425, "app do filiado": 0.425, "televendas": 0.15}
 TRAINING_START = {
-    "franquias": "2025-01-01", "website": "2025-09-01", "app do filiado": "2025-09-01",
-    "televendas": "2025-09-01", "mgm": "2026-02-01", "outros": "2025-01-01"
+    # franquias frozen to 2025-09-01 (removes the +11% day-1 bias). Kept in sync
+    # with the FORECAST_ENTRIES override so it can't revert to the biased
+    # 18-month window if that override is ever dropped.
+    "franquias":      "2025-09-01",
+    "website":        "2025-09-01",
+    "app do filiado": "2025-09-01",
+    "televendas":     "2025-09-01",
+    "mgm":            "2026-02-01",
+    "outros":         "2025-01-01",
 }
+APP_SPEND_START = "2026-02-28"
 MEGA_CAMPAIGNS = ["2026-04-22"]
-channel_configs = {
-    "franquias":      {'use_spend': False, 'working_days': 5, 'floor': 10, 'weekly_fourier': 5, 'cps': 0.05, 'hps': 5.0,  'seasonality_mode': 'additive',       'use_peak_season': False, 'spend_lag': 0, 'spend_prior_scale': 0.5, 'force_nonnegative_spend': False, 'is_saturday_prior_scale': 100.0},
-    "website":        {'use_spend': True,  'working_days': 7, 'floor': 50, 'weekly_fourier': 3, 'cps': 0.3,  'hps': 1.0,  'seasonality_mode': 'multiplicative','use_peak_season': True,  'spend_lag': 0, 'spend_prior_scale': 0.5, 'force_nonnegative_spend': True,  'is_saturday_prior_scale': 10.0,  'spend_lookback_weeks': 4},
-    "app do filiado": {'use_spend': True,  'working_days': 7, 'floor': 20, 'weekly_fourier': 3, 'cps': 0.5,  'hps': 10.0, 'seasonality_mode': 'multiplicative','use_peak_season': False, 'spend_lag': 0, 'spend_prior_scale': 0.5, 'force_nonnegative_spend': True,  'is_saturday_prior_scale': 10.0},
-    "televendas":     {'use_spend': True,  'working_days': 5, 'floor': 10, 'weekly_fourier': 3, 'cps': 0.5,  'hps': 10.0, 'seasonality_mode': 'multiplicative','use_peak_season': False, 'spend_lag': 0, 'spend_prior_scale': 0.5, 'force_nonnegative_spend': True,  'is_saturday_prior_scale': 10.0},
-    "mgm":            {'use_spend': False, 'working_days': 7, 'floor': 5,  'weekly_fourier': 5, 'cps': 0.05, 'hps': 1.0,  'seasonality_mode': 'additive',       'use_peak_season': False, 'spend_lag': 0, 'spend_prior_scale': 0.5, 'force_nonnegative_spend': False, 'is_saturday_prior_scale': 100.0},
-    "outros":         {'use_spend': False, 'working_days': 7, 'floor': 5,  'weekly_fourier': 5, 'cps': 0.3,  'hps': 1.0,  'seasonality_mode': 'additive',       'use_peak_season': False, 'spend_lag': 0, 'spend_prior_scale': 0.5, 'force_nonnegative_spend': False, 'is_saturday_prior_scale': 100.0},
+
+TUNED = {
+    "franquias": {'weekly_fourier': 5, 'cps': 0.05, 'hps': 1.0, 'seasonality_mode': 'multiplicative', 'use_peak_season': False, 'spend_lag': 0, 'spend_prior_scale': 0.5, 'is_saturday_prior_scale': 100.0},
+    "website": {'weekly_fourier': 5, 'cps': 0.05, 'hps': 1.0, 'seasonality_mode': 'additive', 'use_peak_season': True, 'spend_lag': 0, 'spend_prior_scale': 2.0, 'is_saturday_prior_scale': 10.0, 'spend_lookback_weeks': 2},
+    "app do filiado": {'weekly_fourier': 3, 'cps': 0.05, 'hps': 1.0, 'seasonality_mode': 'multiplicative', 'use_peak_season': False, 'spend_lag': 0, 'spend_prior_scale': 0.5, 'is_saturday_prior_scale': 10.0},
+    "televendas": {'weekly_fourier': 5, 'cps': 0.05, 'hps': 10.0, 'seasonality_mode': 'additive', 'use_peak_season': False, 'spend_lag': 0, 'spend_prior_scale': 0.5, 'is_saturday_prior_scale': 10.0},
+    "mgm": {'weekly_fourier': 5, 'cps': 0.3, 'hps': 1.0, 'seasonality_mode': 'multiplicative', 'use_peak_season': False, 'spend_lag': 0, 'spend_prior_scale': 0.5, 'is_saturday_prior_scale': 100.0},
+    "outros": {'weekly_fourier': 5, 'cps': 0.15, 'hps': 1.0, 'seasonality_mode': 'additive', 'use_peak_season': False, 'spend_lag': 0, 'spend_prior_scale': 0.5, 'is_saturday_prior_scale': 100.0},
 }
+
+_DEFAULTS = {
+    'use_spend': False, 'working_days': 7, 'floor': 5, 'weekly_fourier': 3,
+    'cps': 0.1, 'hps': 1.0, 'seasonality_mode': 'additive', 'use_peak_season': False,
+    'spend_lag': 0, 'spend_prior_scale': 0.5, 'is_saturday_prior_scale': 100.0,
+    'force_nonnegative_spend': False, 'spend_lookback_weeks': 8,
+    'spend_source': None, 'include_in_total': True,
+    'growth': 'linear', 'changepoint_range': 0.8,
+}
+
+FORECAST_ENTRIES = {
+    "franquias":  {'tuned': 'franquias',  'data_channel': 'franquias',  'use_spend': False, 'working_days': 5, 'floor': 10, 'spend_source': None,          'include_in_total': True, 'training_start': '2025-09-01', 'overrides': {'cps': 0.05, 'seasonality_mode': 'additive', 'hps': 5.0, 'weekly_fourier': 5}},
+    "website":    {'tuned': 'website',     'data_channel': 'website',     'use_spend': True,  'working_days': 7, 'floor': 50, 'spend_source': 'spend_total', 'include_in_total': True, 'force_nonnegative_spend': True},
+    "televendas": {'tuned': 'televendas',  'data_channel': 'televendas',  'use_spend': False, 'working_days': 5, 'floor': 10, 'spend_source': None,          'include_in_total': True},
+    "app do filiado (no-spend)": {'tuned': 'app do filiado', 'data_channel': 'app do filiado', 'use_spend': False, 'working_days': 7, 'floor': 20, 'training_start': '2025-09-01', 'spend_source': None, 'include_in_total': True, 'overrides': {'cps': 0.15}},
+    "app do filiado (spend)":    {'tuned': 'app do filiado', 'data_channel': 'app do filiado', 'use_spend': True,  'working_days': 7, 'floor': 20, 'training_start': APP_SPEND_START, 'spend_source': 'spend_total2', 'include_in_total': False, 'force_nonnegative_spend': True, 'overrides': {'cps': 0.05, 'spend_lag': 0, 'spend_lookback_weeks': 8}},
+    "mgm":        {'tuned': 'mgm',        'data_channel': 'mgm',        'use_spend': False, 'working_days': 7, 'floor': 5,  'spend_source': None,          'include_in_total': True, 'overrides': {'seasonality_mode': 'additive', 'cps': 0.05}},
+    "outros":     {'tuned': 'outros',     'data_channel': 'outros',     'use_spend': False, 'working_days': 7, 'floor': 5,  'spend_source': None,          'include_in_total': True},
+}
+
+def _build_channel_configs():
+    cfgs = {}
+    for label, entry in FORECAST_ENTRIES.items():
+        tuned = TUNED.get(entry["tuned"], {})
+        overrides = entry.get("overrides", {})
+        structural = {k: v for k, v in entry.items() if k not in ("tuned", "overrides")}
+        cfgs[label] = {**_DEFAULTS, **tuned, **structural, **overrides}
+    return cfgs
+
+channel_configs = _build_channel_configs()
+
 ALL_HOLIDAY_NAMES = ["ano_novo", "tiradentes", "dia_trabalho", "independencia", "nossa_senhora", "finados", "proclamacao_republica", "natal", "fim_mes", "dia_pagamento", "carnaval", "sexta_santa", "corpus_christi", "mega_campanha"]
 HOLIDAYS_BY_CHANNEL = {
     "franquias": ["ano_novo", "tiradentes", "dia_trabalho", "independencia", "nossa_senhora", "finados", "proclamacao_republica", "natal", "fim_mes", "carnaval", "sexta_santa", "corpus_christi"],
@@ -272,12 +410,21 @@ def add_calendar_regressors(df):
     return df
 
 def build_prophet(config, holidays_df):
-    m = Prophet(
+    growth = config.get("growth", "linear")
+    kwargs = dict(
+        growth=growth,
         yearly_seasonality=False, daily_seasonality=False, weekly_seasonality=False,
-        holidays=holidays_df, holidays_prior_scale=config["hps"],
-        changepoint_prior_scale=config["cps"], seasonality_mode=config.get("seasonality_mode", "additive"),
-        interval_width=0.90, mcmc_samples=0
+        holidays=holidays_df,
+        holidays_prior_scale=config["hps"],
+        changepoint_prior_scale=config["cps"],
+        seasonality_mode=config.get("seasonality_mode", "additive"),
+        interval_width=0.90,
+        mcmc_samples=0
     )
+    if growth != "flat":
+        kwargs["changepoint_range"] = config.get("changepoint_range", 0.8)
+        
+    m = Prophet(**kwargs)
     m.add_seasonality(name="weekly", period=7, fourier_order=config["weekly_fourier"])
     m.add_regressor("is_saturday", standardize=False, prior_scale=config.get("is_saturday_prior_scale", 100.0))
     m.add_regressor("day_22", standardize=False, prior_scale=10.0)
@@ -326,41 +473,60 @@ def apply_floors(forecast, config, sat_floor, sun_floor):
     forecast.loc[forecast["ds"].dt.dayofweek == 6, "yhat"] = forecast.loc[forecast["ds"].dt.dayofweek == 6, "yhat"].clip(lower=sun_floor)
     return forecast
 
-@st.cache_data(ttl=43200, show_spinner="🤖 Treinando modelos de Inteligência Artificial para gerar previsões de vendas (Prophet)...")
+@st.cache_data(ttl=43200, show_spinner="Gerando previsões de vendas (Prophet)...")
 def generate_prophet_forecast(ref_date_str):
     if not PROPHET_AVAILABLE: return pd.DataFrame()
     
+    # Train only on data up to the reference date so the forecast horizon starts
+    # exactly at ref_date+1 (matching the `ds > ref_datetime` display filter) and
+    # never trains on a partial "today". This also makes ref_date_str a real cache
+    # key rather than incidental.
     try:
-        df_raw = conn.query("SELECT ds, channel_group, y, spend_total FROM vw_prophet_input WHERE y IS NOT NULL ORDER BY ds")
+        df_raw = conn.query(f"SELECT ds, channel_group, y, spend_total, spend_total2 FROM vw_prophet_input WHERE y IS NOT NULL AND ds <= '{ref_date_str}' ORDER BY ds")
     except Exception:
-        return pd.DataFrame()
+        try:
+            df_raw = conn.query(f"SELECT ds, channel_group, y, spend_total FROM vw_prophet_input WHERE y IS NOT NULL AND ds <= '{ref_date_str}' ORDER BY ds")
+        except Exception:
+            return pd.DataFrame()
         
     if df_raw.empty: return pd.DataFrame()
 
     df_raw["ds"] = pd.to_datetime(df_raw["ds"])
     df_raw["y"] = pd.to_numeric(df_raw["y"], errors="coerce").fillna(0)
     df_raw["spend_total"] = pd.to_numeric(df_raw["spend_total"], errors="coerce").fillna(0)
+    if "spend_total2" not in df_raw.columns:
+        df_raw["spend_total2"] = 0.0
+    df_raw["spend_total2"] = pd.to_numeric(df_raw["spend_total2"], errors="coerce").fillna(0)
 
-    df_raw["spend_channel"] = 0.0
-    for ch, weight in SPEND_ALLOCATION.items():
-        mask = df_raw["channel_group"] == ch
-        df_raw.loc[mask, "spend_channel"] = df_raw.loc[mask, "spend_total"] * weight
+    # Double-load band-aid REMOVED: vw_prophet_input is corrected at the source,
+    # so y / spend_total / spend_total2 are read as-is (no halving of 2025-10 or
+    # 2026-05). Left as a breadcrumb in case a double-load ever recurs.
 
     holidays = make_holidays(years=[2025, 2026])
-
     all_production_forecasts = []
     
     for channel, config in channel_configs.items():
         np.random.seed(42)
-        df_channel = df_raw[df_raw["channel_group"] == channel].copy()
-        df_channel = df_channel[df_channel["ds"] >= pd.Timestamp(TRAINING_START[channel])].sort_values("ds").reset_index(drop=True)
+        
+        data_channel = config.get("data_channel", channel)
+        train_start = config.get("training_start", TRAINING_START.get(data_channel))
+        in_total = config.get("include_in_total", True)
+        
+        df_channel = df_raw[df_raw["channel_group"] == data_channel].copy()
+        df_channel = df_channel[df_channel["ds"] >= pd.Timestamp(train_start)].sort_values("ds").reset_index(drop=True)
         if len(df_channel) < 60: continue
+            
+        src = config.get("spend_source")
+        if config["use_spend"] and src and src in df_channel.columns:
+            df_channel["spend_channel"] = pd.to_numeric(df_channel[src], errors="coerce").fillna(0.0)
+        else:
+            df_channel["spend_channel"] = 0.0
 
         df_channel = add_working_day(df_channel, config["working_days"])
         df_channel = add_calendar_regressors(df_channel)
         df_channel["spend_workday_base"] = df_channel["spend_channel"] * df_channel["is_working_day"]
 
-        holidays_ch = get_channel_holidays(channel, holidays)
+        holidays_ch = get_channel_holidays(data_channel, holidays)
         
         if config["use_spend"] and config.get("force_nonnegative_spend", False):
             df_channel["spend_workday"] = df_channel["spend_workday_base"].shift(config.get("spend_lag", 0)).fillna(0)
@@ -371,7 +537,7 @@ def generate_prophet_forecast(ref_date_str):
                 spend_row = coefs[coefs["regressor"] == "spend_workday"]
                 if not spend_row.empty and float(spend_row["coef"].iloc[0]) < 0:
                     config = {**config, "use_spend": False}
-            except:
+            except Exception:
                 pass
 
         lag = config.get("spend_lag", 0)
@@ -397,30 +563,72 @@ def generate_prophet_forecast(ref_date_str):
 
         def _finalize_forecast(forecast, scenario_name, spend_assumed_series):
             f = apply_floors(forecast, config, sat_floor, sun_floor)
-            f["channel_group"] = channel.title()
+            # Re-map the channel label back to its pure historical database name so the dashboard parses it correctly
+            f["channel_group"] = data_channel.title()
             f["scenario"] = scenario_name
             f["spend_assumed"] = spend_assumed_series
             return f
 
         channel_lookback = int(config.get("spend_lookback_weeks", 8))
         
-        if config["use_spend"]:
-            for scenario_name, scen in SPEND_SCENARIOS.items():
-                future = base_future.copy()
-                spend_fut = forecast_future_spend(df_channel, future["ds"], quantile=scen["quantile"], scale=scen["scale"], weeks_back=channel_lookback)
-                future = future.merge(spend_fut, on="ds", how="left")
-                future = attach_lagged_spend_workday(future, df_channel[["ds", "spend_channel"]], lag_days=lag, working_days=config["working_days"])
-                forecast = m_prod.predict(future)
-                all_production_forecasts.append(_finalize_forecast(forecast, scenario_name, future["spend_channel"].values))
-        else:
-            forecast = m_prod.predict(base_future)
-            for scenario_name in SPEND_SCENARIOS:
-                all_production_forecasts.append(_finalize_forecast(forecast.copy(), scenario_name, 0.0))
+        # Only attach to final dashboard output if it's meant to be included in company totals
+        if in_total:
+            if config["use_spend"]:
+                for scenario_name, scen in SPEND_SCENARIOS.items():
+                    future = base_future.copy()
+                    spend_fut = forecast_future_spend(df_channel, future["ds"], quantile=scen["quantile"], scale=scen["scale"], weeks_back=channel_lookback)
+                    future = future.merge(spend_fut, on="ds", how="left")
+                    future = attach_lagged_spend_workday(future, df_channel[["ds", "spend_channel"]], lag_days=lag, working_days=config["working_days"])
+                    forecast = m_prod.predict(future)
+                    all_production_forecasts.append(_finalize_forecast(forecast, scenario_name, future["spend_channel"].values))
+            else:
+                forecast = m_prod.predict(base_future)
+                for scenario_name in SPEND_SCENARIOS:
+                    all_production_forecasts.append(_finalize_forecast(forecast.copy(), scenario_name, 0.0))
 
     if all_production_forecasts:
         final_df = pd.concat(all_production_forecasts, ignore_index=True)
         return final_df
     return pd.DataFrame()
+
+@st.cache_data(ttl=43200, show_spinner="Carregando custos de campanhas...")
+def load_campaign_costs():
+    # Per-campaign daily cost across the three paid platforms. campaign_name here
+    # matches alex_ga_vendas.session_campaign_name (confirmed), so cost and purchase
+    # events join on the campaign name.
+    start_history = datetime.date.today().replace(year=datetime.date.today().year - 3, month=1, day=1)
+    parts = []
+    for tbl, plat in [("alex_google_campaigns", "Google"),
+                      ("alex_meta_campaigns", "Meta"),
+                      ("alex_tiktok_campaigns", "TikTok")]:
+        try:
+            part = conn.query(f"SELECT `date`, `campaign_name`, `cost` FROM {tbl} WHERE `date` >= '{start_history}'")
+            part['plataforma'] = plat
+            parts.append(part)
+        except Exception:
+            pass
+    if not parts:
+        return pd.DataFrame(columns=['date', 'campaign_name', 'cost', 'plataforma'])
+    out = pd.concat(parts, ignore_index=True)
+    out['date'] = pd.to_datetime(out['date'])
+    out['cost'] = pd.to_numeric(out['cost'], errors='coerce').fillna(0.0)
+    out['campaign_name'] = out['campaign_name'].astype(str)
+    return out
+
+@st.cache_data(ttl=43200, show_spinner="Carregando eventos de compra (GA)...")
+def load_ga_vendas():
+    # Canonical purchase-event source, by campaign + source/medium.
+    start_history = datetime.date.today().replace(year=datetime.date.today().year - 3, month=1, day=1)
+    try:
+        out = conn.query("SELECT `date`, `session_campaign_name`, `session_source_medium`, `conversions` "
+                         f"FROM alex_ga_vendas WHERE `date` >= '{start_history}'")
+    except Exception:
+        return pd.DataFrame(columns=['date', 'session_campaign_name', 'session_source_medium', 'conversions'])
+    out['date'] = pd.to_datetime(out['date'])
+    out['conversions'] = pd.to_numeric(out['conversions'], errors='coerce').fillna(0.0)
+    out['session_campaign_name'] = out['session_campaign_name'].astype(str)
+    out['session_source_medium'] = out['session_source_medium'].astype(str)
+    return out
 
 # Call the cached data loaders
 df_cal = load_calendar()
@@ -482,26 +690,56 @@ def get_prorated_goal(df_goals_db, start_d, end_d, column_name):
         current_d += pd.Timedelta(days=1)
     return float(total_goal)
 
+# Maps a chart group / channel label to its target column(s) in alex_metas.
+GOAL_COL_MAP = {
+    'Digital': ['Site', 'App'],
+    'Franquias': ['Franquias'],
+    'Outros': ['Outros', 'B2b2c Digital'],
+    'Nacional': ['Canais Nacionais'],
+    'CDT': ['CDT (Total)'],
+    'Website': ['Site'],
+    'App Do Filiado': ['App'],
+    'Televendas': ['Televendas'],
+    'Porta A Porta': ['PAP'],
+    'Link Do Vendedor': ['Link do Vendedor'],
+    'App Do Vendedor': ['App do Vendedor'],
+    'Digital B2B2C': ['B2b2c Digital']
+}
+
 def get_goal_for_group(start_d, end_d, grupo_nome):
-    col_map = {
-        'Digital': ['Site', 'App'],
-        'Franquias': ['Franquias'],
-        'Outros': ['Outros', 'B2b2c Digital'], 
-        'Nacional': ['Canais Nacionais'],
-        'CDT': ['CDT (Total)'],
-        'Website': ['Site'],
-        'App Do Filiado': ['App'],
-        'Televendas': ['Televendas'],
-        'Porta A Porta': ['PAP'],
-        'Link Do Vendedor': ['Link do Vendedor'],
-        'App Do Vendedor': ['App do Vendedor'],
-        'Digital B2B2C': ['B2b2c Digital']
-    }
-    cols = col_map.get(grupo_nome.strip(), [])
-    total = 0.0
-    for c in cols:
-        total += get_prorated_goal(df_goals, start_d, end_d, c)
-    return total
+    cols = GOAL_COL_MAP.get(grupo_nome.strip(), [])
+    return sum(get_prorated_goal(df_goals, start_d, end_d, c) for c in cols)
+
+def build_goal_trend(grupo, t_start, t_end, cumulative):
+    """Daily (or cumulative) target line for a group over [t_start, t_end], shaped
+    like get_trend_data's output so it can be concatenated straight into the trend
+    chart. In cumulative mode the line ramps to the FULL-period target: its endpoint
+    is the total goal and its value at 'today' is the proportional (parcial) goal.
+    The per-day rate is month-aware, so multi-month periods ramp correctly."""
+    cols = GOAL_COL_MAP.get(grupo.strip(), [])
+    if df_goals.empty or not cols:
+        return pd.DataFrame()
+    days = pd.date_range(t_start, t_end, freq='D')
+    daily_vals = []
+    for d in days:
+        day_total = 0.0
+        mask = (df_goals['mes_ano'] == d.replace(day=1))
+        if mask.any():
+            row = df_goals.loc[mask].iloc[0]
+            dim = pd.Period(d, freq='M').days_in_month
+            for c in cols:
+                v = row.get(c)
+                if pd.notna(v):
+                    day_total += float(v) / dim
+        daily_vals.append(day_total)
+    out = pd.DataFrame({'data_venda': days, 'Vendas': daily_vals})
+    if cumulative:
+        out['Vendas'] = out['Vendas'].cumsum()
+    out['Grupo'] = grupo
+    out['Dia'] = (out['data_venda'] - t_start).dt.days + 1
+    out['Traço'] = grupo + " (Meta)"
+    out['Data_Real'] = out['data_venda']
+    return out
 
 def get_agg_sums(df_slice, is_forecast=False):
     if df_slice.empty:
@@ -541,7 +779,7 @@ def get_fcst_agg_sums(df_fcst_slice):
 # --- 6. GLOBAL SIDEBAR (TIME & CALENDAR LOGIC) ---
 st.sidebar.title("🎛️ Controles Globais")
 
-now_utc = datetime.datetime.utcnow()
+now_utc = datetime.datetime.now(datetime.timezone.utc)
 now_sp = now_utc - datetime.timedelta(hours=3)
 
 if now_sp.time() >= datetime.time(11, 30):
@@ -573,6 +811,20 @@ elif filtro_dias == "Apenas Fins de Semana/Feriados":
 ref_datetime = pd.to_datetime(reference_date)
 
 df_fcst = generate_prophet_forecast(ref_datetime.strftime('%Y-%m-%d'))
+
+# Keep the forecast under the SAME "Dias de Operação" filter as the actuals, so
+# the "Total Projetado" reconciliation and the accumulated chart compare like
+# with like. Previously the forecast always included every day, which overstated
+# projected totals whenever a weekday/weekend filter was active.
+if not df_fcst.empty and filtro_dias != "Todos os dias":
+    _cal_flags = df_cal[['data_ref', 'is_dia_util']].rename(columns={'data_ref': 'ds'})
+    df_fcst = df_fcst.merge(_cal_flags, on='ds', how='left')
+    # Future dates beyond dim_calendario: fall back to weekday (Sat/Sun = non-working).
+    df_fcst['is_dia_util'] = df_fcst['is_dia_util'].fillna(
+        (df_fcst['ds'].dt.dayofweek < 5).astype(int)
+    )
+    keep_flag = 1 if filtro_dias == "Apenas Dias Úteis" else 0
+    df_fcst = df_fcst[df_fcst['is_dia_util'] == keep_flag].drop(columns=['is_dia_util'])
 
 if view_option == "Semana Atual": proj_days = 7
 elif view_option == "Mês Atual": proj_days = 30
@@ -632,7 +884,7 @@ st.title("📊 Vendas Dashboard")
 if not PROPHET_AVAILABLE:
     st.warning("⚠️ O pacote `prophet` não está instalado no ambiente. O modelo de previsão de Vendas baseado em IA não será executado.")
 
-tab1, tab2, tab3 = st.tabs(["📈 Desempenho de Vendas", "🗺️ Mapa Regional (UF)", "💰 Investimento"])
+tab1, tab2, tab3, tab4 = st.tabs(["📈 Desempenho de Vendas", "🗺️ Mapa Regional (UF)", "💰 Investimento", "📣 Campanhas"])
 
 # =====================================================================
 # TAB 1: DESEMPENHO DE VENDAS
@@ -694,14 +946,15 @@ with tab1:
     rows = []
     for grupo in ['Digital', 'Franquias', 'Outros', 'Nacional', 'CDT']:
         nome_exibicao = "CDT (Total)" if grupo == 'CDT' else grupo
-        label_grupo = f"📁 {nome_exibicao.upper()}" if mostrar_detalhes else nome_exibicao
-        
+
         meta_parc = get_goal_for_group(c_s, ref_datetime, grupo)
         meta_tot = get_goal_for_group(c_s, c_e, grupo)
-        
+
         row_dict = {
-            'Grupo': label_grupo,
-            'Atual': agg_c[grupo],
+            'Grupo': nome_exibicao,
+            '_level': 0,
+            '_is_eff': False,
+            'Atual': format_br(agg_c[grupo]),
             'Meta (Parcial)': fmt_goal(agg_c[grupo], meta_parc),
             'Meta (Total)': fmt_goal(agg_c[grupo], meta_tot),
             'vs Anterior (Parcial)': fmt_val_delta(agg_c[grupo], agg_pp[grupo]),
@@ -731,8 +984,10 @@ with tab1:
                 ch_m_tot = get_goal_for_group(c_s, c_e, ch.title())
                 
                 ch_dict = {
-                    'Grupo': f"\xa0\xa0\xa0\xa0\xa0\xa0└─ {ch.title()}",
-                    'Atual': v_c,
+                    'Grupo': ch.title(),
+                    '_level': 1,
+                    '_is_eff': False,
+                    'Atual': format_br(v_c),
                     'Meta (Parcial)': fmt_goal(v_c, ch_m_parc),
                     'Meta (Total)': fmt_goal(v_c, ch_m_tot),
                     'vs Anterior (Parcial)': fmt_val_delta(v_c, v_pp),
@@ -745,20 +1000,13 @@ with tab1:
                     ch_dict['Previsão (Total Projetado)'] = format_br(v_c + v_f_faltante)
                 rows.append(ch_dict)
                 
-    df_triplet = pd.DataFrame(rows)
-    
     display_cols = ['Grupo', 'Atual', 'Meta (Parcial)', 'Meta (Total)', 'vs Anterior (Parcial)', 'vs Anterior (Total)']
     if view_option != "Ano Atual":
         display_cols.extend(['vs Ano Passado (Parcial)', 'vs Ano Passado (Total)'])
     if mostrar_previsao:
         display_cols.extend(['Previsão (Faltante)', 'Previsão (Total Projetado)'])
-        
-    df_table_fmt = df_triplet[display_cols].copy()
-    df_table_fmt['Atual'] = df_table_fmt['Atual'].apply(format_br)
-    
-    color_cols = [c for c in display_cols if 'vs ' in c]
-    styled_df = df_table_fmt.style.map(color_deltas, subset=color_cols)
-    st.table(styled_df)
+
+    st.markdown(render_metric_table(rows, display_cols), unsafe_allow_html=True)
 
     col_pie, col_trend = st.columns([1, 2])
     
@@ -819,6 +1067,16 @@ with tab1:
                 horizonte_grafico = st.radio("Horizonte da Previsão (Gráfico):", ["Fim do Período Atual", f"Próximos {proj_days} Dias"], horizontal=True, key="horiz_grafico")
         else:
             show_forecast_chart = False
+
+        show_metas = False
+        if not df_goals.empty:
+            show_metas = st.checkbox(
+                "🎯 Mostrar Metas (Parcial + Total)", value=False, key='t1_show_metas',
+                help="Linha tracejada da meta por grupo selecionado: o ponto final é a meta TOTAL "
+                     "do período e onde a linha está 'hoje' é a meta PARCIAL (proporcional aos dias "
+                     "decorridos). Use junto com 'Mostrar Previsão' para ver se a projeção termina "
+                     "acima ou abaixo da meta total, e se as vendas atuais já alcançaram a meta parcial."
+            )
 
         def get_trend_data(t_start, t_end, label_suffix, max_actual_date=None, is_forecast_src=False):
             if is_forecast_src:
@@ -933,7 +1191,9 @@ with tab1:
                 if not df_main.empty:
                     for g in df_main['Grupo'].unique():
                         g_m = df_main[df_main['Grupo'] == g]
-                        last_hist_map[g] = g_m.loc[g_m['Dia'].idxmax(), 'Vendas'] if tipo_graf_tend != "Acumulado" else g_m['Vendas'].sum()
+                        # We are already inside the "Acumulado" branch, so this is
+                        # always the period sum (the prior ternary's other arm was dead).
+                        last_hist_map[g] = g_m['Vendas'].sum()
                 
                 df_plot_trend['Vendas'] = df_plot_trend.groupby('Traço')['Vendas'].cumsum()
                 
@@ -952,6 +1212,15 @@ with tab1:
                     
                 df_plot_trend['Vendas'] = df_plot_trend.apply(boost_fcst, axis=1)
 
+            # Target overlays (parcial + total). Added AFTER the cumulative/boost
+            # transform above so the goal line is never double-accumulated.
+            if show_metas:
+                cumulative_mode = (tipo_graf_tend == "Acumulado")
+                meta_dfs = [build_goal_trend(g, c_s, c_e, cumulative_mode) for g in canais_grafico]
+                meta_dfs = [m for m in meta_dfs if not m.empty]
+                if meta_dfs:
+                    df_plot_trend = pd.concat([df_plot_trend] + meta_dfs, ignore_index=True)
+
             df_plot_trend['Formatado'] = df_plot_trend['Vendas'].apply(format_br)
             df_plot_trend['Data_Str'] = df_plot_trend['Data_Real'].dt.strftime('%d/%m/%Y')
             
@@ -963,10 +1232,76 @@ with tab1:
                     trace.opacity = 0.5
                 elif "(Previsão)" in trace.name:
                     trace.line.dash = 'dot'
+                elif "(Meta)" in trace.name:
+                    trace.line.dash = 'longdash'
+                    trace.line.width = 3
+                    trace.mode = 'lines'
                     
             fig_trend.update_traces(hovertemplate="<b>Data Original: %{customdata[1]}</b><br>Vendas: %{customdata[0]}<extra></extra>",
                                     customdata=df_plot_trend[['Formatado', 'Data_Str']])
-            fig_trend.update_layout(margin=dict(t=0, b=0, l=0, r=0), xaxis_title="Dias Decorridos", yaxis_title=f"Vendas ({tipo_graf_tend})")
+            fig_trend.update_layout(margin=dict(t=10, b=0, l=0, r=0), xaxis_title="Dias Decorridos", yaxis_title=f"Vendas ({tipo_graf_tend})")
+
+            # On-chart value annotations for a single selected group: current sales
+            # (actual, at "today"), predicted sales (forecast, at the horizon end) and the
+            # target. Works in BOTH Acumulado and Diário; single-group-only to stay readable.
+            if show_metas and len(canais_grafico) == 1:
+                is_cum = (tipo_graf_tend == "Acumulado")
+                _tr = df_plot_trend['Traço'].astype(str)
+                _act = df_plot_trend[~_tr.str.contains("(", regex=False)]          # actual (no suffix)
+                _fc = df_plot_trend[_tr.str.endswith(" (Previsão)")]               # forecast
+                _mt = df_plot_trend[_tr.str.endswith(" (Meta)")]                   # target line
+                C_ACT, C_FC, C_META = "#1f5fbf", "#5b9bd5", "#d62728"
+
+                if not _act.empty:
+                    r_a = _act.loc[_act['Dia'].idxmax()]
+                    fig_trend.add_annotation(x=r_a['Dia'], y=r_a['Vendas'],
+                                             text=f"Vendas hoje: {format_br(r_a['Vendas'])}",
+                                             showarrow=True, arrowhead=2, ax=0, ay=32,
+                                             font=dict(color=C_ACT, size=11),
+                                             bordercolor=C_ACT, borderwidth=1, bgcolor="rgba(255,255,255,0.9)")
+                if not _fc.empty:
+                    r_f = _fc.loc[_fc['Dia'].idxmax()]
+                    _lbl = "Previsão fim" if is_cum else "Previsão"
+                    fig_trend.add_annotation(x=r_f['Dia'], y=r_f['Vendas'],
+                                             text=f"{_lbl}: {format_br(r_f['Vendas'])}",
+                                             showarrow=True, arrowhead=2, ax=0, ay=32,
+                                             font=dict(color=C_FC, size=11),
+                                             bordercolor=C_FC, borderwidth=1, bgcolor="rgba(255,255,255,0.9)")
+                if is_cum:
+                    g_ann = canais_grafico[0]
+                    mp_ann = get_goal_for_group(c_s, ref_datetime, g_ann)
+                    mt_ann = get_goal_for_group(c_s, c_e, g_ann)
+                    x_now = (ref_datetime - c_s).days + 1
+                    x_end = (c_e - c_s).days + 1
+                    if mp_ann > 0:
+                        fig_trend.add_annotation(x=x_now, y=mp_ann, text=f"Meta hoje: {format_br(mp_ann)}",
+                                                 showarrow=True, arrowhead=2, ax=0, ay=-35,
+                                                 font=dict(color=C_META, size=11),
+                                                 bordercolor=C_META, borderwidth=1, bgcolor="rgba(255,255,255,0.9)")
+                    if mt_ann > 0:
+                        fig_trend.add_annotation(x=x_end, y=mt_ann, text=f"Meta total: {format_br(mt_ann)}",
+                                                 showarrow=True, arrowhead=2, ax=0, ay=-35,
+                                                 font=dict(color=C_META, size=11),
+                                                 bordercolor=C_META, borderwidth=1, bgcolor="rgba(255,255,255,0.9)")
+                elif not _mt.empty:
+                    r_m = _mt.loc[_mt['Dia'].idxmax()]
+                    fig_trend.add_annotation(x=r_m['Dia'], y=r_m['Vendas'],
+                                             text=f"Meta/dia: {format_br(r_m['Vendas'])}",
+                                             showarrow=True, arrowhead=2, ax=0, ay=-32,
+                                             font=dict(color=C_META, size=11),
+                                             bordercolor=C_META, borderwidth=1, bgcolor="rgba(255,255,255,0.9)")
+
+            # Goal summary — moved ABOVE the chart (previously sat below it).
+            if show_metas:
+                meta_txt = []
+                for g in canais_grafico:
+                    mp = get_goal_for_group(c_s, ref_datetime, g)
+                    mt = get_goal_for_group(c_s, c_e, g)
+                    if mt > 0:
+                        meta_txt.append(f"**{g}** — parcial: {format_br(mp)} · total: {format_br(mt)}")
+                if meta_txt:
+                    st.markdown("🎯 **Metas do período** → " + "  |  ".join(meta_txt))
+
             st.plotly_chart(fig_trend, use_container_width=True, key='trend_chart_t1')
         else:
             st.info("Sem dados para o gráfico de tendência.")
@@ -1173,12 +1508,10 @@ with tab3:
     rows_inv = []
 
     for m_idx, m_name, m_goal in metrics:
-        has_children = detalhe_plat or detalhe_tipo
-        label_parent = f"📁 {m_name.upper()}" if has_children else m_name
-        
-        row_parent = compute_row(label_parent, df_c_inv, df_pp_inv, df_pf_inv, df_lp_inv, df_lf_inv, m_idx, df_global=df_c_global, goal_col=m_goal)
+        row_parent = compute_row(m_name, df_c_inv, df_pp_inv, df_pf_inv, df_lp_inv, df_lf_inv, m_idx, df_global=df_c_global, goal_col=m_goal)
+        row_parent['_level'] = 0
         rows_inv.append(row_parent)
-        
+
         if detalhe_plat and not detalhe_tipo:
             for plat in plataformas_invest:
                 p_df_c = df_c_inv[df_c_inv['plataforma'] == plat]
@@ -1186,17 +1519,18 @@ with tab3:
                 p_df_pf = df_pf_inv[df_pf_inv['plataforma'] == plat]
                 p_df_lp = df_lp_inv[df_lp_inv['plataforma'] == plat]
                 p_df_lf = df_lf_inv[df_lf_inv['plataforma'] == plat]
-                
-                row_p = compute_row(f"\xa0\xa0\xa0\xa0\xa0\xa0└─ {plat}", p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, is_sub=True)
+                row_p = compute_row(str(plat), p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, df_c_global, is_sub=True)
                 if row_p['_val_c'] == 0 and row_p['_val_pf'] == 0 and row_p['_val_lf'] == 0: continue
+                row_p['_level'] = 1
                 rows_inv.append(row_p)
-                
+
         elif detalhe_tipo and not detalhe_plat:
             for cat in cat_cols:
-                row_c = compute_row(f"\xa0\xa0\xa0\xa0\xa0\xa0└─ {cat.title()}", df_c_inv, df_pp_inv, df_pf_inv, df_lp_inv, df_lf_inv, m_idx, cat=cat, is_sub=True)
+                row_c = compute_row(cat.title(), df_c_inv, df_pp_inv, df_pf_inv, df_lp_inv, df_lf_inv, m_idx, df_c_global, cat=cat, is_sub=True)
                 if row_c['_val_c'] == 0 and row_c['_val_pf'] == 0 and row_c['_val_lf'] == 0: continue
+                row_c['_level'] = 1
                 rows_inv.append(row_c)
-                
+
         elif detalhe_plat and detalhe_tipo:
             for plat in plataformas_invest:
                 p_df_c = df_c_inv[df_c_inv['plataforma'] == plat]
@@ -1204,56 +1538,21 @@ with tab3:
                 p_df_pf = df_pf_inv[df_pf_inv['plataforma'] == plat]
                 p_df_lp = df_lp_inv[df_lp_inv['plataforma'] == plat]
                 p_df_lf = df_lf_inv[df_lf_inv['plataforma'] == plat]
-                
-                row_p = compute_row(f"\xa0\xa0\xa0\xa0\xa0\xa0└─ 📁 {plat.upper()}", p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, is_sub=True)
+                row_p = compute_row(str(plat), p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, df_c_global, is_sub=True)
                 if row_p['_val_c'] == 0 and row_p['_val_pf'] == 0 and row_p['_val_lf'] == 0: continue
+                row_p['_level'] = 1
                 rows_inv.append(row_p)
-                
                 for cat in cat_cols:
-                    row_c = compute_row(f"\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0└─ {cat.title()}", p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, cat=cat, is_sub=True)
+                    row_c = compute_row(cat.title(), p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, df_c_global, cat=cat, is_sub=True)
                     if row_c['_val_c'] == 0 and row_c['_val_pf'] == 0 and row_c['_val_lf'] == 0: continue
+                    row_c['_level'] = 2
                     rows_inv.append(row_c)
-    
-    df_inv_table = pd.DataFrame(rows_inv)
-    is_eff_map = df_inv_table['_is_eff'].to_dict()
     
     display_cols_inv = ['Métrica', 'Atual', 'Meta (Parcial)', 'Meta (Total)', 'vs Anterior (Parcial)', 'vs Anterior (Total)']
     if view_option != "Ano Atual":
         display_cols_inv.extend(['vs Ano Passado (Parcial)', 'vs Ano Passado (Total)'])
-        
-    df_inv_fmt = df_inv_table[display_cols_inv].copy()
-    
-    def style_inv_table(row):
-        styles = [''] * len(row)
-        is_efficiency = is_eff_map[row.name]
-        
-        for i, col in enumerate(row.index):
-            if 'vs ' in col:
-                val = row[col]
-                if isinstance(val, str) and '(' in val:
-                    try:
-                        pct_str = val.split('(')[1].split('%')[0].replace('+', '')
-                        if pct_str != 'N/A':
-                            pct = float(pct_str)
-                            intensity = min(abs(pct) / 50.0, 1.0)
-                            alpha = 0.1 + (intensity * 0.35) 
-                            
-                            if is_efficiency:
-                                if pct < 0:
-                                    styles[i] = f'background-color: rgba(39, 174, 96, {alpha}); color: #000;'
-                                elif pct > 0:
-                                    styles[i] = f'background-color: rgba(231, 76, 60, {alpha}); color: #000;'
-                            else:
-                                if pct > 0:
-                                    styles[i] = f'background-color: rgba(39, 174, 96, {alpha}); color: #000;'
-                                elif pct < 0:
-                                    styles[i] = f'background-color: rgba(231, 76, 60, {alpha}); color: #000;'
-                    except:
-                        pass
-        return styles
 
-    styled_inv_df = df_inv_fmt.style.map(color_deltas, subset=[c for c in display_cols_inv if 'vs ' in c]).apply(style_inv_table, axis=1)
-    st.table(styled_inv_df)
+    st.markdown(render_metric_table(rows_inv, display_cols_inv), unsafe_allow_html=True)
 
     st.divider()
 
@@ -1334,3 +1633,216 @@ with tab3:
         st.plotly_chart(fig_line, use_container_width=True, key='t3_trend_chart_new')
     else:
         st.info("Sem dados para o gráfico de tendência.")
+
+with tab4:
+    st.markdown("## 📣 Análise de Campanhas")
+    st.caption(f"Custo das plataformas pagas (Google/Meta/TikTok) + eventos de compra do GA, no período "
+               f"da barra lateral ({c_s.strftime('%d/%m/%Y')} → {ref_datetime.strftime('%d/%m/%Y')}). "
+               f"Volumes vêm sempre do GA; as tabelas de anúncio entram apenas com custo.")
+
+    # session_source_medium fragments that identify CRM traffic in alex_ga_vendas.
+    # Confirmed values: 'whatsapp / paidsocial', 'whatsapp / MKT_DIRETO', 'sms / MKT_DIRETO',
+    # 'crmtestehubspot / crmtestehubspot'. ('(not set)' is GA's untagged bucket, excluded on
+    # purpose; 'crmtestehubspot' looks like a test source — drop 'crm' to exclude it.)
+    CRM_SOURCE_PATTERNS = ['whatsapp', 'sms', 'crm']
+    GROUP_NAMES = ["Marketing Direto", "Campanhas de Venda", "Vendas Mídia", "Branding", "Leads"]
+
+    camp_cost = load_campaign_costs()
+    ga_vendas = load_ga_vendas()
+    cmp_start, cmp_end = c_s, ref_datetime
+
+    def _crm_mask_t4(df, col='session_source_medium'):
+        s = df[col].astype(str).str.lower()
+        m = pd.Series(False, index=df.index)
+        for p in CRM_SOURCE_PATTERNS:
+            m = m | s.str.contains(p, na=False, regex=False)
+        return m
+
+    def _name_has_t4(series_names, *subs):
+        ln = series_names.astype(str).str.lower()
+        m = pd.Series(False, index=series_names.index)
+        for sub in subs:
+            m = m | ln.str.contains(sub, na=False, regex=False)
+        return m
+
+    def _src_has_t4(srcs_set, *subs):
+        return any(any(sub in s for s in srcs_set) for sub in subs)
+
+    # ---- controls row 1: Plataforma | Conjunto | Métrica ----
+    col_cf1, col_cf2, col_cf3 = st.columns(3)
+    plataforma_camp = col_cf1.selectbox("Plataforma:", ["Google", "Meta", "TikTok", "CRM"], key='t4_plat')
+    sel_opts = ["Campanhas individuais", "Todas", "Top 5", "Bottom 5"] + GROUP_NAMES
+    sel_tipo = col_cf2.selectbox("Conjunto:", sel_opts, key='t4_seltype')
+
+    crm_is_selected = (plataforma_camp == "CRM")
+    group_mode = sel_tipo in GROUP_NAMES
+
+    if group_mode or not crm_is_selected:
+        metric_opts = ["Custo", "CPA", "Eventos de Compra"]
+    else:
+        metric_opts = ["Eventos de Compra"]
+    metrica_camp = col_cf3.radio("Métrica:", metric_opts, horizontal=True, key='t4_metric')
+    metric_col = {"Custo": "cost", "CPA": "cpa", "Eventos de Compra": "purchases"}[metrica_camp]
+
+    # ---- build the period-bounded campaign universe ----
+    #   group_mode   -> cross-platform (group rules span platforms; e.g. affiliate cpc).
+    #   CRM          -> GA rows matching CRM source patterns; no cost.
+    #   paid (G/M/T) -> that platform's cost-table campaigns, plus their GA purchases.
+    # Restricting to the selected period (and platform) is what hides campaigns with no
+    # data in the window and campaigns from other platforms.
+    ga_p = ga_vendas[(ga_vendas['date'] >= cmp_start) & (ga_vendas['date'] <= cmp_end)].copy()
+    cost_p = camp_cost[(camp_cost['date'] >= cmp_start) & (camp_cost['date'] <= cmp_end)].copy()
+
+    if group_mode:
+        cost_scope, ga_scope = cost_p, ga_p
+    elif crm_is_selected:
+        ga_scope = ga_p[_crm_mask_t4(ga_p)] if not ga_p.empty else ga_p
+        cost_scope = cost_p.iloc[0:0]
+    else:
+        cost_scope = cost_p[cost_p['plataforma'] == plataforma_camp]
+        _plat_names = set(cost_scope['campaign_name'].dropna().unique())
+        ga_scope = ga_p[ga_p['session_campaign_name'].isin(_plat_names)] if not ga_p.empty else ga_p
+
+    _cost_by = cost_scope.groupby('campaign_name')['cost'].sum() if not cost_scope.empty else pd.Series(dtype=float)
+    _purch_by = ga_scope.groupby('session_campaign_name')['conversions'].sum() if not ga_scope.empty else pd.Series(dtype=float)
+    _src_by = (ga_scope.groupby('session_campaign_name')['session_source_medium']
+               .apply(lambda s: set(x.lower() for x in s.dropna()))
+               if not ga_scope.empty else pd.Series(dtype=object))
+
+    _uni_names = sorted(set(_cost_by.index) | set(_purch_by.index))
+    uni = pd.DataFrame({'campaign_name': _uni_names})
+    uni['cost'] = uni['campaign_name'].map(_cost_by).fillna(0.0)
+    uni['purchases'] = uni['campaign_name'].map(_purch_by).fillna(0.0)
+    uni['cpa'] = uni['cost'] / uni['purchases'].replace(0, np.nan)
+    uni['srcs'] = uni['campaign_name'].map(lambda c: _src_by.get(c, set()))
+
+    if group_mode:
+        st.caption("ℹ️ Grupos predefinidos são **cross-plataforma** (a seleção de Plataforma é ignorada). "
+                   "Agregação por nome de campanha; o custo vem só das tabelas pagas — afiliados (adsplay/"
+                   "actionpay) e CRM não têm custo no banco, então entram apenas com eventos de compra.")
+
+    if uni.empty:
+        st.info(f"Nenhuma campanha com dados no período "
+                f"({cmp_start.strftime('%d/%m/%Y')} → {cmp_end.strftime('%d/%m/%Y')}).")
+    else:
+        # ---- resolve the campaign set from the chosen "Conjunto" ----
+        if sel_tipo == "Campanhas individuais":
+            _opts = uni['campaign_name'].tolist()
+            campanhas_sel = st.multiselect("Campanha(s):", options=_opts,
+                                           default=_opts[:1], key='t4_camps')
+        elif sel_tipo == "Todas":
+            campanhas_sel = uni['campaign_name'].tolist()
+        elif sel_tipo in ("Top 5", "Bottom 5"):
+            _asc = (sel_tipo == "Bottom 5")
+            campanhas_sel = (uni.dropna(subset=[metric_col]).sort_values(metric_col, ascending=_asc)
+                             ['campaign_name'].head(5).tolist())
+        elif sel_tipo == "Branding":
+            campanhas_sel = uni.loc[_name_has_t4(uni['campaign_name'], 'branding'), 'campaign_name'].tolist()
+        elif sel_tipo == "Leads":
+            campanhas_sel = uni.loc[_name_has_t4(uni['campaign_name'], 'lead'), 'campaign_name'].tolist()
+        elif sel_tipo == "Marketing Direto":
+            campanhas_sel = uni.loc[uni['srcs'].map(lambda s: _src_has_t4(s, 'whatsapp / mkt_direto')),
+                                    'campaign_name'].tolist()
+        elif sel_tipo == "Vendas Mídia":
+            campanhas_sel = uni.loc[uni['srcs'].map(lambda s: _src_has_t4(s, 'cpc')), 'campaign_name'].tolist()
+        elif sel_tipo == "Campanhas de Venda":
+            _mn = _name_has_t4(uni['campaign_name'], 'venda')
+            _ms = uni['srcs'].map(lambda s: _src_has_t4(s, 'actionpay / cpc', 'adsplay / cpc'))
+            campanhas_sel = uni.loc[_mn | _ms, 'campaign_name'].tolist()
+        else:
+            campanhas_sel = []
+
+        if sel_tipo in ("Top 5", "Bottom 5"):
+            st.caption(f"**{sel_tipo}** por {metrica_camp} → {len(campanhas_sel)} campanha(s).")
+        elif sel_tipo == "Todas" or group_mode:
+            st.caption(f"**{sel_tipo}** → {len(campanhas_sel)} campanha(s) no período.")
+
+        # ---- controls row 2: Escala | Soma | Visualização ----
+        col_cm1, col_cm2, col_cm3 = st.columns(3)
+        escala_camp = col_cm1.radio("Escala:", ["Diário", "Semanal", "Mensal"], horizontal=True, key='t4_scale')
+        acum_camp = col_cm2.radio("Soma:", ["Por Período", "Acumulado"], horizontal=True, key='t4_acum')
+        ver_camp = col_cm3.radio("Visualização:", ["Agregado", "Por Campanha"], horizontal=True, key='t4_view')
+
+        if crm_is_selected and not group_mode:
+            st.caption("ℹ️ CRM ainda não tem custo no banco — apenas eventos de compra (filtrados por "
+                       "session_source_medium).")
+
+        if not campanhas_sel:
+            st.info("Nenhuma campanha corresponde a esta seleção no período.")
+        else:
+            freq = {"Diário": "D", "Semanal": "W-MON", "Mensal": "MS"}[escala_camp]
+            is_acum = (acum_camp == "Acumulado")
+            per_campaign = (ver_camp == "Por Campanha")
+            keys = ['campaign_name'] if per_campaign else []
+
+            # cost from the (paid) scope; CRM-only selections have no cost
+            if crm_is_selected and not group_mode:
+                cost_f = pd.DataFrame(columns=['date', 'campaign_name', 'cost'])
+            else:
+                cost_f = cost_scope[cost_scope['campaign_name'].isin(campanhas_sel)].copy()
+
+            # purchases from the GA scope (already platform/CRM-filtered above)
+            purch_f = ga_scope[ga_scope['session_campaign_name'].isin(campanhas_sel)].copy()
+            purch_f = purch_f.rename(columns={'session_campaign_name': 'campaign_name', 'conversions': 'purchases'})
+
+            def _bucketize(dframe, col):
+                if dframe.empty:
+                    return pd.DataFrame(columns=keys + ['bucket', col])
+                g = dframe.groupby(keys + [pd.Grouper(key='date', freq=freq)])[col].sum().reset_index()
+                return g.rename(columns={'date': 'bucket'})
+
+            cost_b = _bucketize(cost_f, 'cost')
+            purch_b = _bucketize(purch_f, 'purchases')
+            merge_on = keys + ['bucket']
+            data = pd.merge(cost_b, purch_b, on=merge_on, how='outer')
+            for _c in ['cost', 'purchases']:
+                if _c not in data.columns:
+                    data[_c] = 0.0
+            data[['cost', 'purchases']] = data[['cost', 'purchases']].fillna(0.0)
+            data = data.sort_values(merge_on)
+
+            if is_acum and not data.empty:
+                if per_campaign:
+                    data['cost'] = data.groupby('campaign_name')['cost'].cumsum()
+                    data['purchases'] = data.groupby('campaign_name')['purchases'].cumsum()
+                else:
+                    data['cost'] = data['cost'].cumsum()
+                    data['purchases'] = data['purchases'].cumsum()
+
+            data['cpa'] = data['cost'] / data['purchases'].replace(0, np.nan)
+            metric_label = {"Custo": "Custo (R$)", "CPA": "CPA (R$)",
+                            "Eventos de Compra": "Eventos de Compra"}[metrica_camp]
+
+            # ---- summary metrics, ABOVE the chart, separated and colour-coded ----
+            tot_cost = float(cost_f['cost'].sum()) if not cost_f.empty else 0.0
+            tot_purch = float(purch_f['purchases'].sum()) if not purch_f.empty else 0.0
+            cpa_avg = (tot_cost / tot_purch) if tot_purch > 0 else None
+            has_cost = not (crm_is_selected and not group_mode)
+
+            def _metric_card(col, label, value, color):
+                col.markdown(
+                    f"<div style='border-left:5px solid {color};padding:4px 14px;margin-bottom:6px;'>"
+                    f"<div style='font-size:0.78rem;color:#6b7280;text-transform:uppercase;letter-spacing:.03em'>{label}</div>"
+                    f"<div style='font-size:1.5rem;font-weight:700;color:{color};line-height:1.25'>{value}</div></div>",
+                    unsafe_allow_html=True)
+
+            if has_cost:
+                mc1, mc2, mc3 = st.columns(3)
+                _metric_card(mc1, "Custo total", format_money(tot_cost), "#2563eb")
+                _metric_card(mc2, "Eventos de compra", format_br(tot_purch), "#16a34a")
+                _metric_card(mc3, "CPA médio",
+                             (format_money(cpa_avg) if cpa_avg is not None else "N/A (0 compras)"), "#d97706")
+            else:
+                mc1, _mc2 = st.columns([1, 2])
+                _metric_card(mc1, "Eventos de compra", format_br(tot_purch), "#16a34a")
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
+            # ---- chart ----
+            if data.empty or data[metric_col].dropna().empty:
+                st.info("Sem dados para a combinação selecionada.")
+            else:
+                fig_camp = px.line(data, x='bucket', y=metric_col,
+                                   color=('campaign_name' if per_campaign else None), markers=True)
+                fig_camp.update_layout(margin=dict(t=10, b=0, l=0, r=0), xaxis_title=escala_camp,
+                                       yaxis_title=f"{metric_label} ({acum_camp})", legend_title="Campanha")
+                st.plotly_chart(fig_camp, use_container_width=True, key='t4_chart')
