@@ -236,7 +236,14 @@ def load_data():
     # so it needs history reaching ~3 years back, otherwise the "vs Ano Passado"
     # columns silently read 0 because the rows were never loaded.
     start_history = datetime.date.today().replace(year=datetime.date.today().year - 3, month=1, day=1)
-    query = f"SELECT data_venda, uf, tipo_venda, Vendas FROM RESUMO_VENDAS_DIARIAS WHERE data_venda >= '{start_history}'"
+    # RESUMO_VENDAS_DIARIAS now carries NOME_FRANQUIA, so franchise sales have one row
+    # per franquia per (date, uf, tipo). This view only needs uf/tipo totals, so we
+    # SUM + GROUP BY in SQL to collapse the franquia grain back to the original shape
+    # (identical numbers, ~tens of thousands of rows instead of millions). Without this
+    # the 3-year read of the exploded table is large enough to trip a DB read timeout.
+    query = (f"SELECT data_venda, uf, tipo_venda, SUM(Vendas) AS Vendas "
+             f"FROM RESUMO_VENDAS_DIARIAS WHERE data_venda >= '{start_history}' "
+             f"GROUP BY data_venda, uf, tipo_venda")
     df = conn.query(query)
     df['data_venda'] = pd.to_datetime(df['data_venda'])
     df['tipo_venda'] = df['tipo_venda'].fillna("Não Informado").astype(str).str.strip().str.title()
@@ -630,6 +637,61 @@ def load_ga_vendas():
     out['session_source_medium'] = out['session_source_medium'].astype(str)
     return out
 
+@st.cache_data(ttl=43200, show_spinner="Carregando eventos de lead (GA)...")
+def load_ga_leads():
+    # Canonical lead-event source — mirrors load_ga_vendas but from alex_ga_leads.
+    start_history = datetime.date.today().replace(year=datetime.date.today().year - 3, month=1, day=1)
+    try:
+        out = conn.query("SELECT `date`, `session_campaign_name`, `session_source_medium`, `conversions` "
+                         f"FROM alex_ga_leads WHERE `date` >= '{start_history}'")
+    except Exception:
+        return pd.DataFrame(columns=['date', 'session_campaign_name', 'session_source_medium', 'conversions'])
+    out['date'] = pd.to_datetime(out['date'])
+    out['conversions'] = pd.to_numeric(out['conversions'], errors='coerce').fillna(0.0)
+    out['session_campaign_name'] = out['session_campaign_name'].astype(str)
+    out['session_source_medium'] = out['session_source_medium'].astype(str)
+    return out
+
+@st.cache_data(ttl=43200, show_spinner="Carregando leads do Meta...")
+def load_meta_leads():
+    # Meta's own lead metric. alex_meta_campaigns has PRIMARY KEY (date, campaign_name),
+    # so this is exactly one row per campaign per day — no source/medium fan-out. Used as
+    # the Meta leads source instead of GA (GA has one row per campaign PER source/medium,
+    # so joining this single value onto GA would multiply it).
+    start_history = datetime.date.today().replace(year=datetime.date.today().year - 3, month=1, day=1)
+    try:
+        d = conn.query("SELECT `date`, `campaign_name`, COALESCE(`on_facebook_leads`, 0) AS leads "
+                       f"FROM alex_meta_campaigns WHERE `date` >= '{start_history}'")
+    except Exception:
+        return pd.DataFrame(columns=['date', 'campaign_name', 'leads'])
+    d['date'] = pd.to_datetime(d['date'])
+    d['campaign_name'] = d['campaign_name'].astype(str)
+    d['leads'] = pd.to_numeric(d['leads'], errors='coerce').fillna(0.0)
+    return d
+
+@st.cache_data(ttl=43200)
+def load_franquia_sales():
+    # Franchise-level daily sales for the UF franchise map (point D). Reads the new
+    # NOME_FRANQUIA column on RESUMO_VENDAS_DIARIAS; isolated from load_data() so the
+    # core df pipeline is untouched. Returns empty if the column isn't deployed yet.
+    start_history = datetime.date.today().replace(year=datetime.date.today().year - 1, month=1, day=1)
+    try:
+        # The map only needs distinct franquias and summed Vendas per UF over the
+        # period, so collapse tipo_venda in SQL (one row per date/uf/franquia) to keep
+        # the read small despite the franquia-grain row count.
+        q = ("SELECT data_venda, uf, NOME_FRANQUIA, SUM(Vendas) AS Vendas "
+             f"FROM RESUMO_VENDAS_DIARIAS WHERE data_venda >= '{start_history}' "
+             "AND NOME_FRANQUIA IS NOT NULL AND TRIM(NOME_FRANQUIA) <> '' "
+             "GROUP BY data_venda, uf, NOME_FRANQUIA")
+        d = conn.query(q)
+        d['data_venda'] = pd.to_datetime(d['data_venda'])
+        d['uf'] = d['uf'].astype(str).str.upper().str.strip()
+        d['NOME_FRANQUIA'] = d['NOME_FRANQUIA'].astype(str).str.strip()
+        d['Vendas'] = pd.to_numeric(d['Vendas'], errors='coerce').fillna(0)
+        return d
+    except Exception:
+        return pd.DataFrame(columns=['data_venda', 'uf', 'NOME_FRANQUIA', 'Vendas'])
+
 # Call the cached data loaders
 df_cal = load_calendar()
 df_raw = load_data()
@@ -793,8 +855,20 @@ st.sidebar.caption(f"🔄 **Base atualizada:** {hora_atualizacao}\n(Dados até {
 st.sidebar.divider()
 
 view_option = st.sidebar.radio("Período de Análise:", [
-    "Semana Atual", "Mês Atual", "Ano Atual", "Últimos 30 Dias", "Últimos 90 Dias", "Último 1 Ano"
+    "Semana Atual", "Mês Atual", "Ano Atual", "Últimos 30 Dias", "Últimos 90 Dias", "Último 1 Ano",
+    "Personalizado"
 ])
+
+# Custom date range: two pickers that override the preset above.
+custom_start = custom_end = None
+if view_option == "Personalizado":
+    _default_start = reference_date.replace(day=1)
+    cds_col, cde_col = st.sidebar.columns(2)
+    custom_start = cds_col.date_input("Data inicial:", value=_default_start, key='custom_start')
+    custom_end = cde_col.date_input("Data final:", value=reference_date, key='custom_end')
+    if custom_start > custom_end:
+        st.sidebar.error("A data inicial não pode ser maior que a data final — invertendo.")
+        custom_start, custom_end = custom_end, custom_start
 
 filtro_dias = st.sidebar.radio("Dias de Operação:", [
     "Todos os dias", "Apenas Dias Úteis", "Apenas Fins de Semana/Feriados"
@@ -831,6 +905,7 @@ elif view_option == "Mês Atual": proj_days = 30
 elif view_option == "Ano Atual": proj_days = 365
 elif view_option == "Últimos 30 Dias": proj_days = 30
 elif view_option == "Últimos 90 Dias": proj_days = 90
+elif view_option == "Personalizado": proj_days = (custom_end - custom_start).days + 1
 else: proj_days = 365
 
 if view_option == "Semana Atual":
@@ -858,10 +933,20 @@ elif view_option == "Últimos 90 Dias":
     c_s, c_e = ref_datetime - pd.DateOffset(days=89), ref_datetime
     p_s, p_e = c_s - pd.DateOffset(days=90), c_e - pd.DateOffset(days=90)
     l_s, l_e = c_s - pd.DateOffset(years=1), c_e - pd.DateOffset(years=1)
+elif view_option == "Personalizado":
+    c_s, c_e = pd.to_datetime(custom_start), pd.to_datetime(custom_end)
+    _plen = (c_e - c_s).days + 1
+    p_e = c_s - pd.DateOffset(days=1)
+    p_s = p_e - pd.DateOffset(days=_plen - 1)
+    l_s, l_e = c_s - pd.DateOffset(years=1), c_e - pd.DateOffset(years=1)
 else: 
     c_s, c_e = ref_datetime - pd.DateOffset(years=1) + pd.DateOffset(days=1), ref_datetime
     p_s, p_e = c_s - pd.DateOffset(years=1), c_e - pd.DateOffset(years=1)
     l_s, l_e = c_s - pd.DateOffset(years=2), c_e - pd.DateOffset(years=2)
+
+# For a custom range that ends in the past, cap the effective "today" used for the
+# partial/elapsed split at the range end. No-op for the presets (there c_e >= today).
+ref_datetime = min(ref_datetime, c_e)
 
 days_elapsed = (ref_datetime - c_s).days
 p_partial = min(p_s + pd.DateOffset(days=days_elapsed), p_e)
@@ -920,13 +1005,24 @@ with tab1:
 
     st.subheader("Análise Detalhada por Canal")
     
-    col_t1, col_t2 = st.columns(2)
-    mostrar_detalhes = col_t1.checkbox("Mostrar detalhamento por canal (Expandir Grupos)")
-    
+    # Per-group expand toggles — click a group to reveal/hide its channels in the table below.
+    # st.button triggers a soft rerun (session_state survives), so the toggle takes effect on
+    # this same run and the row loop below rebuilds with the updated set — no page reload, so
+    # the sidebar period, filters and every other widget keep their state.
+    sales_expanded = st.session_state.setdefault('sales_expanded', set())
+    _sales_groups = ['Digital', 'Franquias', 'Outros', 'Nacional', 'CDT']
+    st.caption("Clique num grupo para expandir/recolher seus canais:")
+    _exp_cols = st.columns(len(_sales_groups))
+    for _i, _g in enumerate(_sales_groups):
+        _lbl_g = "CDT (Total)" if _g == 'CDT' else _g
+        _icon = "▾" if _g in sales_expanded else "▸"
+        if _exp_cols[_i].button(f"{_icon} {_lbl_g}", key=f"sales_exp_{_g}", use_container_width=True):
+            sales_expanded.symmetric_difference_update({_g})
+
     if not df_fcst.empty:
-        mostrar_previsao = col_t2.checkbox("Incluir Projeção de Vendas (Tabela)")
+        mostrar_previsao = st.checkbox("Incluir Projeção de Vendas (Tabela)")
         if mostrar_previsao:
-            horizonte_previsao_tabela = col_t2.radio("Horizonte da Previsão (Tabela):", ["Fim do Período Atual", f"Próximos {proj_days} Dias"], horizontal=True, key="horiz_tabela")
+            horizonte_previsao_tabela = st.radio("Horizonte da Previsão (Tabela):", ["Fim do Período Atual", f"Próximos {proj_days} Dias"], horizontal=True, key="horiz_tabela")
     else:
         mostrar_previsao = False
 
@@ -968,7 +1064,7 @@ with tab1:
             row_dict['Previsão (Total Projetado)'] = format_br(agg_c[grupo] + falt_val)
         rows.append(row_dict)
         
-        if mostrar_detalhes:
+        if grupo in sales_expanded:
             for ch in group_map[grupo]:
                 v_c, v_pp, v_pf, v_lp, v_lf = ch_c.get(ch, 0), ch_pp.get(ch, 0), ch_pf.get(ch, 0), ch_lp.get(ch, 0), ch_lf.get(ch, 0)
                 
@@ -1368,6 +1464,61 @@ with tab2:
     render_map_column(col_map_left, "1", "Digital")
     render_map_column(col_map_right, "2", "Franquias")
 
+    # =====================================================================
+    # Franchise analysis by UF (point D): distinct franquias + avg sales/franquia
+    # =====================================================================
+    st.divider()
+    st.subheader("🏪 Análise de Franquias por UF")
+    st.caption(f"Franquias com vendas no período ({c_s.strftime('%d/%m/%Y')} → "
+               f"{ref_datetime.strftime('%d/%m/%Y')}). Baseado em NOME_FRANQUIA do RESUMO_VENDAS_DIARIAS.")
+
+    df_fr = load_franquia_sales()
+    if df_fr.empty:
+        st.info("Sem dados de franquia. Confirme que a coluna NOME_FRANQUIA foi adicionada ao "
+                "RESUMO_VENDAS_DIARIAS (veja o SQL entregue) e que há vendas de franquia no período.")
+    else:
+        df_fr_p = df_fr[(df_fr['data_venda'] >= c_s) & (df_fr['data_venda'] <= ref_datetime)].copy()
+        if df_fr_p.empty:
+            st.info("Nenhuma venda de franquia no período selecionado.")
+        else:
+            fr_uf = (df_fr_p.groupby('uf')
+                     .agg(n_franquias=('NOME_FRANQUIA', 'nunique'), vendas=('Vendas', 'sum'))
+                     .reset_index())
+            fr_uf['media_por_franquia'] = fr_uf['vendas'] / fr_uf['n_franquias'].replace(0, np.nan)
+
+            def _franquia_map(col_obj, value_col, titulo, fmt, scale):
+                with col_obj:
+                    st.markdown(f"**{titulo}**")
+                    if brazil_geo:
+                        figm = px.choropleth(fr_uf, geojson=brazil_geo, locations='uf',
+                                             featureidkey='properties.sigla', color=value_col,
+                                             color_continuous_scale=scale)
+                        figm.update_geos(fitbounds="locations", visible=False)
+                        figm.update_traces(customdata=[fmt(v) for v in fr_uf[value_col]],
+                                           hovertemplate="<b>%{location}</b><br>" + titulo + ": %{customdata}<extra></extra>")
+                        figm.update_layout(margin={"r": 0, "t": 10, "l": 0, "b": 0}, coloraxis_colorbar_title="")
+                        st.plotly_chart(figm, use_container_width=True, key=f"fr_map_{value_col}")
+                    else:
+                        st.warning("Mapa do Brasil não carregado; exibindo apenas o ranking.")
+                    _rank = fr_uf.sort_values(value_col, ascending=True).copy()
+                    _rank['txt'] = _rank[value_col].apply(fmt)
+                    figb = px.bar(_rank, x=value_col, y='uf', orientation='h', text='txt')
+                    figb.update_traces(textposition='outside', cliponaxis=False,
+                                       hovertemplate="<b>%{y}</b><br>" + titulo + ": %{text}<extra></extra>")
+                    figb.update_layout(margin={"r": 60, "t": 10, "l": 0, "b": 0}, yaxis_title="", xaxis_title="")
+                    st.plotly_chart(figb, use_container_width=True, key=f"fr_bar_{value_col}")
+
+            fr_col1, fr_col2 = st.columns(2)
+            _franquia_map(fr_col1, 'n_franquias', "Franquias distintas por UF",
+                          lambda v: format_br(v), "Greens")
+            _franquia_map(fr_col2, 'media_por_franquia', "Vendas médias por franquia",
+                          lambda v: f"{v:.1f}".replace(".", ","), "Blues")
+
+            st.caption(f"Total no período: {format_br(int(fr_uf['vendas'].sum()))} vendas de franquia • "
+                       f"{format_br(df_fr_p['NOME_FRANQUIA'].nunique())} franquias distintas (nacional) • "
+                       f"{format_br(int(fr_uf['n_franquias'].sum()))} pares franquia×UF "
+                       "(uma franquia em 2 UFs conta em cada uma).")
+
 
 # =====================================================================
 # TAB 3: ANÁLISE DE INVESTIMENTO
@@ -1649,6 +1800,8 @@ with tab4:
 
     camp_cost = load_campaign_costs()
     ga_vendas = load_ga_vendas()
+    ga_leads = load_ga_leads()
+    meta_leads = load_meta_leads()
     cmp_start, cmp_end = c_s, ref_datetime
 
     def _crm_mask_t4(df, col='session_source_medium'):
@@ -1668,8 +1821,9 @@ with tab4:
     def _src_has_t4(srcs_set, *subs):
         return any(any(sub in s for s in srcs_set) for sub in subs)
 
-    # ---- controls row 1: Plataforma | Conjunto | Métrica ----
-    col_cf1, col_cf2, col_cf3 = st.columns(3)
+    # ---- controls row 1: Canal | Plataforma | Conjunto ----
+    col_cf0, col_cf1, col_cf2 = st.columns(3)
+    canal_camp = col_cf0.selectbox("Canal:", ["Todos", "Website", "App do Filiado"], key='t4_canal')
     plataforma_camp = col_cf1.selectbox("Plataforma:", ["Google", "Meta", "TikTok", "CRM"], key='t4_plat')
     sel_opts = ["Campanhas individuais", "Todas", "Top 5", "Bottom 5"] + GROUP_NAMES
     sel_tipo = col_cf2.selectbox("Conjunto:", sel_opts, key='t4_seltype')
@@ -1677,12 +1831,14 @@ with tab4:
     crm_is_selected = (plataforma_camp == "CRM")
     group_mode = sel_tipo in GROUP_NAMES
 
+    # ---- controls row 2: Métrica (own row so all options fit) ----
     if group_mode or not crm_is_selected:
-        metric_opts = ["Custo", "CPA", "Eventos de Compra"]
+        metric_opts = ["Custo", "CPA", "CPL", "Eventos de Compra", "Eventos de Lead"]
     else:
-        metric_opts = ["Eventos de Compra"]
-    metrica_camp = col_cf3.radio("Métrica:", metric_opts, horizontal=True, key='t4_metric')
-    metric_col = {"Custo": "cost", "CPA": "cpa", "Eventos de Compra": "purchases"}[metrica_camp]
+        metric_opts = ["Eventos de Compra", "Eventos de Lead"]
+    metrica_camp = st.radio("Métrica:", metric_opts, horizontal=True, key='t4_metric')
+    metric_col = {"Custo": "cost", "CPA": "cpa", "CPL": "cpl",
+                  "Eventos de Compra": "purchases", "Eventos de Lead": "leads"}[metrica_camp]
 
     # ---- build the period-bounded campaign universe ----
     #   group_mode   -> cross-platform (group rules span platforms; e.g. affiliate cpc).
@@ -1692,29 +1848,57 @@ with tab4:
     # data in the window and campaigns from other platforms.
     ga_p = ga_vendas[(ga_vendas['date'] >= cmp_start) & (ga_vendas['date'] <= cmp_end)].copy()
     cost_p = camp_cost[(camp_cost['date'] >= cmp_start) & (camp_cost['date'] <= cmp_end)].copy()
+    ga_leads_p = ga_leads[(ga_leads['date'] >= cmp_start) & (ga_leads['date'] <= cmp_end)].copy()
+    meta_leads_p = meta_leads[(meta_leads['date'] >= cmp_start) & (meta_leads['date'] <= cmp_end)].copy()
+    # When the Plataforma is Meta, leads = GA-tracked leads + on_facebook_leads (Facebook
+    # native lead forms, which GA generally can't see, so the two are largely disjoint).
+    # on_facebook_leads is read at its native one-row-per-campaign grain (no GA join, so it
+    # can't fan out) and summed onto the GA leads.
+    meta_leads_mode = (plataforma_camp == "Meta") and not group_mode and not crm_is_selected
 
     if group_mode:
-        cost_scope, ga_scope = cost_p, ga_p
+        cost_scope, ga_scope, ga_leads_scope = cost_p, ga_p, ga_leads_p
     elif crm_is_selected:
         ga_scope = ga_p[_crm_mask_t4(ga_p)] if not ga_p.empty else ga_p
+        ga_leads_scope = ga_leads_p[_crm_mask_t4(ga_leads_p)] if not ga_leads_p.empty else ga_leads_p
         cost_scope = cost_p.iloc[0:0]
     else:
         cost_scope = cost_p[cost_p['plataforma'] == plataforma_camp]
         _plat_names = set(cost_scope['campaign_name'].dropna().unique())
         ga_scope = ga_p[ga_p['session_campaign_name'].isin(_plat_names)] if not ga_p.empty else ga_p
+        ga_leads_scope = ga_leads_p[ga_leads_p['session_campaign_name'].isin(_plat_names)] if not ga_leads_p.empty else ga_leads_p
 
     _cost_by = cost_scope.groupby('campaign_name')['cost'].sum() if not cost_scope.empty else pd.Series(dtype=float)
     _purch_by = ga_scope.groupby('session_campaign_name')['conversions'].sum() if not ga_scope.empty else pd.Series(dtype=float)
+    if meta_leads_mode:
+        _ga_leads_by = (ga_leads_scope.groupby('session_campaign_name')['conversions'].sum()
+                        if not ga_leads_scope.empty else pd.Series(dtype=float))
+        _ml_scope = (meta_leads_p[meta_leads_p['campaign_name'].isin(_plat_names)]
+                     if not meta_leads_p.empty else meta_leads_p)
+        _fb_leads_by = (_ml_scope.groupby('campaign_name')['leads'].sum()
+                        if not _ml_scope.empty else pd.Series(dtype=float))
+        _leads_by = _ga_leads_by.add(_fb_leads_by, fill_value=0)   # GA + on_facebook_leads
+    else:
+        _leads_by = ga_leads_scope.groupby('session_campaign_name')['conversions'].sum() if not ga_leads_scope.empty else pd.Series(dtype=float)
     _src_by = (ga_scope.groupby('session_campaign_name')['session_source_medium']
                .apply(lambda s: set(x.lower() for x in s.dropna()))
                if not ga_scope.empty else pd.Series(dtype=object))
 
-    _uni_names = sorted(set(_cost_by.index) | set(_purch_by.index))
+    _uni_names = sorted(set(_cost_by.index) | set(_purch_by.index) | set(_leads_by.index))
     uni = pd.DataFrame({'campaign_name': _uni_names})
     uni['cost'] = uni['campaign_name'].map(_cost_by).fillna(0.0)
     uni['purchases'] = uni['campaign_name'].map(_purch_by).fillna(0.0)
+    uni['leads'] = uni['campaign_name'].map(_leads_by).fillna(0.0)
     uni['cpa'] = uni['cost'] / uni['purchases'].replace(0, np.nan)
+    uni['cpl'] = uni['cost'] / uni['leads'].replace(0, np.nan)
     uni['srcs'] = uni['campaign_name'].map(lambda c: _src_by.get(c, set()))
+
+    # Canal filter (App/Website) on the campaign universe — App = %download% campaigns,
+    # Website = everything else. Applied before resolving the selected set, so the
+    # Conjunto/Top-Bottom lists, the chart and the per-campaign table all respect it.
+    if canal_camp != "Todos" and not uni.empty:
+        _is_dl = uni['campaign_name'].str.lower().str.contains('download', na=False)
+        uni = uni[_is_dl if canal_camp == "App do Filiado" else ~_is_dl].reset_index(drop=True)
 
     if group_mode:
         st.caption("ℹ️ Grupos predefinidos são **cross-plataforma** (a seleção de Plataforma é ignorada). "
@@ -1781,9 +1965,18 @@ with tab4:
             else:
                 cost_f = cost_scope[cost_scope['campaign_name'].isin(campanhas_sel)].copy()
 
-            # purchases from the GA scope (already platform/CRM-filtered above)
+            # purchases + leads from the GA scopes (already platform/CRM-filtered above)
             purch_f = ga_scope[ga_scope['session_campaign_name'].isin(campanhas_sel)].copy()
             purch_f = purch_f.rename(columns={'session_campaign_name': 'campaign_name', 'conversions': 'purchases'})
+            if meta_leads_mode:
+                _ga_lf = ga_leads_scope[ga_leads_scope['session_campaign_name'].isin(campanhas_sel)].copy()
+                _ga_lf = _ga_lf.rename(columns={'session_campaign_name': 'campaign_name', 'conversions': 'leads'})
+                _fb_lf = meta_leads_p[meta_leads_p['campaign_name'].isin(campanhas_sel)].copy()
+                leads_f = pd.concat([_ga_lf[['date', 'campaign_name', 'leads']],
+                                     _fb_lf[['date', 'campaign_name', 'leads']]], ignore_index=True)
+            else:
+                leads_f = ga_leads_scope[ga_leads_scope['session_campaign_name'].isin(campanhas_sel)].copy()
+                leads_f = leads_f.rename(columns={'session_campaign_name': 'campaign_name', 'conversions': 'leads'})
 
             def _bucketize(dframe, col):
                 if dframe.empty:
@@ -1793,48 +1986,58 @@ with tab4:
 
             cost_b = _bucketize(cost_f, 'cost')
             purch_b = _bucketize(purch_f, 'purchases')
+            leads_b = _bucketize(leads_f, 'leads')
             merge_on = keys + ['bucket']
             data = pd.merge(cost_b, purch_b, on=merge_on, how='outer')
-            for _c in ['cost', 'purchases']:
+            data = pd.merge(data, leads_b, on=merge_on, how='outer')
+            for _c in ['cost', 'purchases', 'leads']:
                 if _c not in data.columns:
                     data[_c] = 0.0
-            data[['cost', 'purchases']] = data[['cost', 'purchases']].fillna(0.0)
+            data[['cost', 'purchases', 'leads']] = data[['cost', 'purchases', 'leads']].fillna(0.0)
             data = data.sort_values(merge_on)
 
             if is_acum and not data.empty:
+                _cum_cols = ['cost', 'purchases', 'leads']
                 if per_campaign:
-                    data['cost'] = data.groupby('campaign_name')['cost'].cumsum()
-                    data['purchases'] = data.groupby('campaign_name')['purchases'].cumsum()
+                    for _cc in _cum_cols:
+                        data[_cc] = data.groupby('campaign_name')[_cc].cumsum()
                 else:
-                    data['cost'] = data['cost'].cumsum()
-                    data['purchases'] = data['purchases'].cumsum()
+                    for _cc in _cum_cols:
+                        data[_cc] = data[_cc].cumsum()
 
             data['cpa'] = data['cost'] / data['purchases'].replace(0, np.nan)
-            metric_label = {"Custo": "Custo (R$)", "CPA": "CPA (R$)",
-                            "Eventos de Compra": "Eventos de Compra"}[metrica_camp]
+            data['cpl'] = data['cost'] / data['leads'].replace(0, np.nan)
+            metric_label = {"Custo": "Custo (R$)", "CPA": "CPA (R$)", "CPL": "CPL (R$)",
+                            "Eventos de Compra": "Eventos de Compra", "Eventos de Lead": "Eventos de Lead"}[metrica_camp]
 
             # ---- summary metrics, ABOVE the chart, separated and colour-coded ----
             tot_cost = float(cost_f['cost'].sum()) if not cost_f.empty else 0.0
             tot_purch = float(purch_f['purchases'].sum()) if not purch_f.empty else 0.0
+            tot_leads = float(leads_f['leads'].sum()) if not leads_f.empty else 0.0
             cpa_avg = (tot_cost / tot_purch) if tot_purch > 0 else None
+            cpl_avg = (tot_cost / tot_leads) if tot_leads > 0 else None
             has_cost = not (crm_is_selected and not group_mode)
 
             def _metric_card(col, label, value, color):
                 col.markdown(
                     f"<div style='border-left:5px solid {color};padding:4px 14px;margin-bottom:6px;'>"
                     f"<div style='font-size:0.78rem;color:#6b7280;text-transform:uppercase;letter-spacing:.03em'>{label}</div>"
-                    f"<div style='font-size:1.5rem;font-weight:700;color:{color};line-height:1.25'>{value}</div></div>",
+                    f"<div style='font-size:1.4rem;font-weight:700;color:{color};line-height:1.25'>{value}</div></div>",
                     unsafe_allow_html=True)
 
             if has_cost:
-                mc1, mc2, mc3 = st.columns(3)
+                mc1, mc2, mc3, mc4, mc5 = st.columns(5)
                 _metric_card(mc1, "Custo total", format_money(tot_cost), "#2563eb")
-                _metric_card(mc2, "Eventos de compra", format_br(tot_purch), "#16a34a")
+                _metric_card(mc2, "Ev. de compra", format_br(tot_purch), "#16a34a")
                 _metric_card(mc3, "CPA médio",
-                             (format_money(cpa_avg) if cpa_avg is not None else "N/A (0 compras)"), "#d97706")
+                             (format_money(cpa_avg) if cpa_avg is not None else "—"), "#d97706")
+                _metric_card(mc4, "Ev. de lead", format_br(tot_leads), "#0891b2")
+                _metric_card(mc5, "CPL médio",
+                             (format_money(cpl_avg) if cpl_avg is not None else "—"), "#7c3aed")
             else:
-                mc1, _mc2 = st.columns([1, 2])
-                _metric_card(mc1, "Eventos de compra", format_br(tot_purch), "#16a34a")
+                mc1, mc2 = st.columns(2)
+                _metric_card(mc1, "Ev. de compra", format_br(tot_purch), "#16a34a")
+                _metric_card(mc2, "Ev. de lead", format_br(tot_leads), "#0891b2")
             st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
             # ---- chart ----
@@ -1846,3 +2049,18 @@ with tab4:
                 fig_camp.update_layout(margin=dict(t=10, b=0, l=0, r=0), xaxis_title=escala_camp,
                                        yaxis_title=f"{metric_label} ({acum_camp})", legend_title="Campanha")
                 st.plotly_chart(fig_camp, use_container_width=True, key='t4_chart')
+
+            # ---- per-campaign table: one row per campaign active in the period ----
+            st.markdown("##### 📋 Detalhamento por campanha (período)")
+            _tbl = uni[uni['campaign_name'].isin(campanhas_sel)].copy()
+            _tbl = _tbl[['campaign_name', 'cost', 'purchases', 'cpa', 'leads', 'cpl']].rename(columns={
+                'campaign_name': 'Campanha', 'cost': 'Custo', 'purchases': 'Ev. Compra',
+                'cpa': 'CPA', 'leads': 'Ev. Lead', 'cpl': 'CPL'})
+            _tbl = _tbl.sort_values('Custo', ascending=False)
+            _money_t = lambda v: format_money(v) if pd.notna(v) else "—"
+            _int_t = lambda v: format_br(v) if pd.notna(v) else "—"
+            _styled = _tbl.style.format({'Custo': _money_t, 'CPA': _money_t, 'CPL': _money_t,
+                                         'Ev. Compra': _int_t, 'Ev. Lead': _int_t})
+            st.dataframe(_styled, use_container_width=True, hide_index=True)
+            st.caption("Uma linha por campanha ativa no período (conjunto selecionado). Custo vem das "
+                       "tabelas pagas; Compra/Lead e CPA/CPL do GA. Clique num cabeçalho para ordenar.")
