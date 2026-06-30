@@ -598,6 +598,39 @@ def generate_prophet_forecast(ref_date_str):
         return final_df
     return pd.DataFrame()
 
+
+@st.cache_data(ttl=3600, show_spinner="Carregando previsões pré-calculadas...")
+def load_stored_forecast():
+    # Use the most recent stored Prophet snapshot (written by propheta.py to
+    # FORECAST_VENDAS_CANAL) instead of training Prophet live on every load — this is
+    # what makes initialization fast. Snapshots are keyed by (run_date, model_version);
+    # we take the latest run (newest run_date, then newest generated_at to handle a
+    # same-day re-run) and keep only channels flagged included=1, which matches the old
+    # live output (it only emitted the channels that count toward company totals).
+    # Returns the same columns the live forecast did, so it's a drop-in for df_fcst.
+    try:
+        d = conn.query("""
+            SELECT ds, channel_group, scenario, yhat, yhat_lower, yhat_upper,
+                   spend_assumed, run_date, generated_at
+            FROM FORECAST_VENDAS_CANAL
+            WHERE included = 1
+              AND (run_date, model_version, generated_at) = (
+                  SELECT run_date, model_version, generated_at
+                  FROM FORECAST_VENDAS_CANAL
+                  ORDER BY run_date DESC, generated_at DESC
+                  LIMIT 1)
+        """)
+    except Exception:
+        return pd.DataFrame()
+    if d.empty:
+        return pd.DataFrame()
+    d['ds'] = pd.to_datetime(d['ds'])
+    d['channel_group'] = d['channel_group'].astype(str)
+    d['scenario'] = d['scenario'].astype(str)
+    for c in ['yhat', 'yhat_lower', 'yhat_upper', 'spend_assumed']:
+        d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0)
+    return d
+
 @st.cache_data(ttl=43200, show_spinner="Carregando custos de campanhas...")
 def load_campaign_costs():
     # Per-campaign daily cost across the three paid platforms. campaign_name here
@@ -884,7 +917,7 @@ elif filtro_dias == "Apenas Fins de Semana/Feriados":
 # --- UNIFIED DATE LOGIC ---
 ref_datetime = pd.to_datetime(reference_date)
 
-df_fcst = generate_prophet_forecast(ref_datetime.strftime('%Y-%m-%d'))
+df_fcst = load_stored_forecast()
 
 # Keep the forecast under the SAME "Dias de Operação" filter as the actuals, so
 # the "Total Projetado" reconciliation and the accumulated chart compare like
@@ -1021,6 +1054,9 @@ with tab1:
 
     if not df_fcst.empty:
         mostrar_previsao = st.checkbox("Incluir Projeção de Vendas (Tabela)")
+        if 'generated_at' in df_fcst.columns and df_fcst['generated_at'].notna().any():
+            _fc_when = pd.to_datetime(df_fcst['generated_at']).max()
+            st.caption(f"📦 Previsão pré-calculada (cenário *balanced*), gerada em {_fc_when:%d/%m/%Y %H:%M}.")
         if mostrar_previsao:
             horizonte_previsao_tabela = st.radio("Horizonte da Previsão (Tabela):", ["Fim do Período Atual", f"Próximos {proj_days} Dias"], horizontal=True, key="horiz_tabela")
     else:
@@ -1416,50 +1452,143 @@ with tab2:
     def render_map_column(col_obj, map_id, default_group):
         with col_obj:
             st.subheader(f"Mapa {map_id}")
-            
-            tipo_filtro_mapa = st.radio(f"Nível de Filtro:", ["Grupos de Canais", "Canais Específicos"], horizontal=True, key=f"t2_rad_{map_id}")
-            
-            if tipo_filtro_mapa == "Grupos de Canais":
-                grupos_sel_mapa = st.multiselect(f"Selecione os Grupos:", ['Digital', 'Franquias', 'Outros', 'Nacional', 'CDT'], default=[default_group], key=f"t2_grp_sel_{map_id}")
-                canais_mapa_alvo = []
-                for g in grupos_sel_mapa:
-                    canais_mapa_alvo.extend(group_map[g])
-                canais_mapa_alvo = list(set(canais_mapa_alvo))
-            else:
-                opcoes_canais_brutos = sorted([str(c) for c in df_raw['tipo_venda'].dropna().unique()])
-                canais_mapa_raw = st.multiselect(f"Selecione os Canais:", options=opcoes_canais_brutos, default=opcoes_canais_brutos[:2] if opcoes_canais_brutos else [], key=f"t2_can_sel_{map_id}")
-                canais_mapa_alvo = [c.lower() for c in canais_mapa_raw]
-            
-            mask_map = (df['data_venda'] >= c_s) & (df['data_venda'] <= ref_datetime) & (df['tipo_venda'].str.lower().isin(canais_mapa_alvo))
-            df_map = df.loc[mask_map].copy()
-            
-            if not df_map.empty:
-                df_map['uf'] = df_map['uf'].str.upper()
-                uf_sales = df_map.groupby('uf')['Vendas'].sum().reset_index()
-                total_map_sales = uf_sales['Vendas'].sum()
-                
-                if brazil_geo:
-                    fig_map = px.choropleth(
-                        uf_sales, geojson=brazil_geo, locations='uf', featureidkey='properties.sigla',
-                        color='Vendas', color_continuous_scale="Blues"
-                    )
-                    fig_map.update_geos(fitbounds="locations", visible=False)
-                    fig_map.update_traces(customdata=[format_br(v) for v in uf_sales['Vendas']], hovertemplate="<b>%{location}</b><br>Vendas: %{customdata}<extra></extra>")
-                    fig_map.update_layout(margin={"r":0,"t":20,"l":0,"b":0})
-                    st.plotly_chart(fig_map, use_container_width=True, key=f"plotly_map_{map_id}")
+
+            metrica_mapa = st.radio(
+                "Métrica:", ["Vendas", "Crescimento %", "Nacional / Franquias"],
+                horizontal=True, key=f"t2_met_{map_id}",
+                help="Vendas: total no período. Crescimento %: variação vs período anterior "
+                     "ou ano passado (verde = cresce, vermelho = cai, branco ~ estável). "
+                     "Nacional / Franquias: quociente vendas nacionais / vendas de franquias por "
+                     "UF — a cor usa a participação nacional (azul = mais nacional, vermelho = "
+                     "mais franquia, branco ~ equilíbrio).")
+            ratio_mode = (metrica_mapa == "Nacional / Franquias")
+            growth_mode = (metrica_mapa == "Crescimento %")
+
+            growth_base, b_s, b_e = None, None, None
+            if growth_mode:
+                growth_base = st.radio("Comparar com:", ["Período Anterior", "Ano Passado"],
+                                       horizontal=True, key=f"t2_gbase_{map_id}")
+                b_s, b_e = (l_s, l_e) if growth_base == "Ano Passado" else (p_s, p_e)
+                st.caption(
+                    f"**Atual** = vendas de {c_s:%d/%m/%Y} a {ref_datetime:%d/%m/%Y} (período selecionado). "
+                    f"**Base** = {growth_base.lower()}, de {b_s:%d/%m/%Y} a {b_e:%d/%m/%Y}. "
+                    f"Crescimento % = (Atual − Base) ÷ Base. Verde = cresceu, vermelho = caiu.")
+
+            # Channel selector applies to Vendas & Crescimento %. The ratio uses fixed
+            # buckets (franquias vs. todo o resto), so it ignores the channel selector.
+            canais_mapa_alvo = []
+            if not ratio_mode:
+                tipo_filtro_mapa = st.radio("Nível de Filtro:", ["Grupos de Canais", "Canais Específicos"],
+                                            horizontal=True, key=f"t2_rad_{map_id}")
+                if tipo_filtro_mapa == "Grupos de Canais":
+                    grupos_sel_mapa = st.multiselect("Selecione os Grupos:",
+                        ['Digital', 'Franquias', 'Outros', 'Nacional', 'CDT'],
+                        default=[default_group], key=f"t2_grp_sel_{map_id}")
+                    for g in grupos_sel_mapa:
+                        canais_mapa_alvo.extend(group_map[g])
+                    canais_mapa_alvo = list(set(canais_mapa_alvo))
                 else:
-                    st.warning("Mapa do Brasil não carregado. Exibindo apenas barras.")
-                
-                df_sorted = uf_sales.sort_values(by='Vendas', ascending=True).copy()
-                df_sorted["Perc"] = (df_sorted["Vendas"] / total_map_sales * 100).round(1).astype(str) + "%"
-                df_sorted["Vendas_Formatadas"] = df_sorted["Vendas"].apply(format_br) + " (" + df_sorted["Perc"] + ")"
-                
-                fig_bar_uf = px.bar(df_sorted, x='Vendas', y='uf', orientation='h', title="Ranking por UF", text="Vendas_Formatadas")
-                fig_bar_uf.update_traces(textposition='outside', cliponaxis=False, hovertemplate="<b>%{y}</b><br>Vendas: %{text}<extra></extra>")
-                fig_bar_uf.update_layout(margin={"r":80,"t":40,"l":0,"b":0}, yaxis_title="")
-                st.plotly_chart(fig_bar_uf, use_container_width=True, key=f"plotly_bar_{map_id}")
-            else:
+                    opcoes_canais_brutos = sorted([str(c) for c in df_raw['tipo_venda'].dropna().unique()])
+                    canais_mapa_raw = st.multiselect("Selecione os Canais:", options=opcoes_canais_brutos,
+                        default=opcoes_canais_brutos[:2] if opcoes_canais_brutos else [], key=f"t2_can_sel_{map_id}")
+                    canais_mapa_alvo = [c.lower() for c in canais_mapa_raw]
+
+            FRANQ_TIPOS = {'porta a porta', 'link do vendedor', 'app do vendedor'}
+
+            def _uf_sum(d_start, d_end, tipos=None, franq=None):
+                m = (df['data_venda'] >= d_start) & (df['data_venda'] <= d_end)
+                d = df.loc[m, ['uf', 'tipo_venda', 'Vendas']].copy()
+                tl = d['tipo_venda'].str.lower()
+                if tipos is not None:
+                    d = d[tl.isin(tipos)]
+                elif franq is True:
+                    d = d[tl.isin(FRANQ_TIPOS)]
+                elif franq is False:
+                    d = d[~tl.isin(FRANQ_TIPOS)]
+                if d.empty:
+                    return pd.Series(dtype=float)
+                d['uf'] = d['uf'].str.upper()
+                return d.groupby('uf')['Vendas'].sum()
+
+            def _cap(series, lo, hi, default):
+                s = series.replace([np.inf, -np.inf], np.nan).dropna().abs()
+                if s.empty:
+                    return default
+                return min(hi, max(lo, float(s.quantile(0.9))))
+
+            hover_extra, range_color = None, None
+            if ratio_mode:
+                nac = _uf_sum(c_s, ref_datetime, franq=False)
+                fra = _uf_sum(c_s, ref_datetime, franq=True)
+                mdf = pd.DataFrame({'nac': nac, 'fra': fra}).fillna(0.0)
+                mdf.index.name = 'uf'; mdf = mdf.reset_index()
+                _tot = mdf['nac'] + mdf['fra']
+                mdf['share'] = np.where(_tot > 0, mdf['nac'] / _tot.replace(0, np.nan), np.nan)
+                color_col, cscale, range_color = 'share', 'RdBu', [0.0, 1.0]
+                def _ratio_txt(r):
+                    if r['nac'] == 0 and r['fra'] == 0: return "—"
+                    if r['fra'] == 0: return "∞ (só nac.)"
+                    return f"{r['nac'] / r['fra']:.2f}".replace(".", ",")
+                txt = mdf.apply(_ratio_txt, axis=1)
+                hover_extra = mdf.apply(lambda r: f"Nac: {format_br(r['nac'])} · Franq: {format_br(r['fra'])}", axis=1)
+                title_metric = "Nacional / Franquias"
+                empty = _tot.sum() == 0
+            elif growth_mode:
+                curr = _uf_sum(c_s, ref_datetime, tipos=set(canais_mapa_alvo))
+                base = _uf_sum(b_s, b_e, tipos=set(canais_mapa_alvo))
+                mdf = pd.DataFrame({'curr': curr, 'base': base}).fillna(0.0)
+                mdf.index.name = 'uf'; mdf = mdf.reset_index()
+                mdf['val'] = (mdf['curr'] - mdf['base']) / mdf['base'].replace(0, np.nan) * 100.0
+                color_col, cscale = 'val', 'RdYlGn'
+                _r = _cap(mdf['val'], 30.0, 300.0, 100.0)
+                range_color = [-_r, _r]
+                txt = mdf['val'].apply(lambda v: "—" if pd.isna(v) else f"{v:+.1f}%".replace(".", ","))
+                hover_extra = mdf.apply(lambda r: f"Atual: {format_br(r['curr'])} · Base ({growth_base.lower()}): {format_br(r['base'])}", axis=1)
+                title_metric = f"Crescimento % ({growth_base})"
+                empty = (mdf['curr'].sum() + mdf['base'].sum()) == 0
+            else:  # Vendas
+                cur = _uf_sum(c_s, ref_datetime, tipos=set(canais_mapa_alvo))
+                mdf = cur.reset_index()
+                mdf.columns = ['uf', 'val']
+                color_col, cscale = 'val', 'Blues'
+                _totv = mdf['val'].sum()
+                txt = mdf['val'].apply(lambda v: (f"{format_br(v)} ({v / _totv * 100:.1f}%)" if _totv else format_br(v)))
+                title_metric = "Vendas"
+                empty = mdf.empty or mdf['val'].sum() == 0
+
+            if empty:
                 st.info("Nenhuma venda encontrada para os filtros selecionados.")
+                return
+
+            mdf = mdf.reset_index(drop=True)
+            mdf['_txt'] = txt.values
+
+            if brazil_geo:
+                ck = dict(geojson=brazil_geo, locations='uf', featureidkey='properties.sigla',
+                          color=color_col, color_continuous_scale=cscale)
+                if range_color is not None:
+                    ck['range_color'] = range_color
+                fig_map = px.choropleth(mdf, **ck)
+                fig_map.update_geos(fitbounds="locations", visible=False)
+                if hover_extra is not None:
+                    cd = np.stack([mdf['_txt'].to_numpy(), pd.Series(hover_extra).values], axis=-1)
+                    fig_map.update_traces(customdata=cd,
+                        hovertemplate="<b>%{location}</b><br>" + title_metric + ": %{customdata[0]}<br>%{customdata[1]}<extra></extra>")
+                else:
+                    fig_map.update_traces(customdata=mdf['_txt'].to_numpy(),
+                        hovertemplate="<b>%{location}</b><br>" + title_metric + ": %{customdata}<extra></extra>")
+                fig_map.update_layout(margin={"r": 0, "t": 20, "l": 0, "b": 0}, coloraxis_colorbar_title="")
+                st.plotly_chart(fig_map, use_container_width=True, key=f"plotly_map_{map_id}")
+            else:
+                st.warning("Mapa do Brasil não carregado. Exibindo apenas barras.")
+
+            bar = mdf.dropna(subset=[color_col]).sort_values(by=color_col, ascending=True)
+            fig_bar_uf = px.bar(bar, x=color_col, y='uf', orientation='h',
+                                title=f"Ranking por UF — {title_metric}", text='_txt')
+            fig_bar_uf.update_traces(textposition='outside', cliponaxis=False,
+                hovertemplate="<b>%{y}</b><br>" + title_metric + ": %{text}<extra></extra>")
+            fig_bar_uf.update_layout(margin={"r": 80, "t": 40, "l": 0, "b": 0}, yaxis_title="", xaxis_title="")
+            st.plotly_chart(fig_bar_uf, use_container_width=True, key=f"plotly_bar_{map_id}")
 
     render_map_column(col_map_left, "1", "Digital")
     render_map_column(col_map_right, "2", "Franquias")
@@ -1589,18 +1718,19 @@ with tab3:
         pct_p = "N/A"
         pct_t = "N/A"
         
-        # Display the true Global Pacing percentage for the top-level parent rows
-        if not is_sub and goal_col and df_global is not None:
-            m_c_global = get_inv_metrics(df_global, None)[metric_idx]
+        # % shown = THIS row's Atual vs its prorated goal, so it matches the Atual column
+        # (Atual / Meta). True global pacing across ALL channels — independent of the filters
+        # above — is shown separately in the 🎯 progress bars at the top of the tab.
+        if not is_sub and goal_col:
             meta_p = get_prorated_goal(df_goals, c_s, ref_datetime, goal_col)
             meta_t = get_prorated_goal(df_goals, c_s, c_e, goal_col)
-            
+
             if meta_p > 0:
                 val_str_p = format_money(meta_p) if is_money else format_br(meta_p)
-                pct_p = f"{val_str_p} ({(m_c_global / meta_p * 100):.1f}% Global)"
+                pct_p = f"{val_str_p} ({(m_c / meta_p * 100):.1f}%)"
             if meta_t > 0:
                 val_str_t = format_money(meta_t) if is_money else format_br(meta_t)
-                pct_t = f"{val_str_t} ({(m_c_global / meta_t * 100):.1f}% Global)"
+                pct_t = f"{val_str_t} ({(m_c / meta_t * 100):.1f}%)"
         
         return {
             'Métrica': label,
@@ -1703,6 +1833,13 @@ with tab3:
     if view_option != "Ano Atual":
         display_cols_inv.extend(['vs Ano Passado (Parcial)', 'vs Ano Passado (Total)'])
 
+    st.caption(
+        "**Atual** = gasto realizado no período selecionado, respeitando os filtros acima. "
+        "**Meta (Parcial)** = meta proporcional aos dias já decorridos; **Meta (Total)** = meta do período "
+        "inteiro. O **% entre parênteses** é Atual ÷ Meta (o quanto da meta já foi gasto). Em períodos já "
+        "encerrados, Parcial e Total coincidem. O ritmo **global** (todos os canais, sem filtro) está nas "
+        "barras 🎯 no topo da aba."
+    )
     st.markdown(render_metric_table(rows_inv, display_cols_inv), unsafe_allow_html=True)
 
     st.divider()
