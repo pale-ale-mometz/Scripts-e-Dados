@@ -244,7 +244,10 @@ def load_data():
     query = (f"SELECT data_venda, uf, tipo_venda, SUM(Vendas) AS Vendas "
              f"FROM RESUMO_VENDAS_DIARIAS WHERE data_venda >= '{start_history}' "
              f"GROUP BY data_venda, uf, tipo_venda")
-    df = conn.query(query)
+    try:
+        df = conn.query(query)
+    except Exception:
+        return pd.DataFrame(columns=['data_venda', 'uf', 'tipo_venda', 'Vendas'])
     df['data_venda'] = pd.to_datetime(df['data_venda'])
     df['tipo_venda'] = df['tipo_venda'].fillna("Não Informado").astype(str).str.strip().str.title()
     return df
@@ -702,6 +705,38 @@ def load_meta_leads():
     d['leads'] = pd.to_numeric(d['leads'], errors='coerce').fillna(0.0)
     return d
 
+# App-sale columns: the ad platforms track in-app filiações in their OWN conversion
+# columns; GA (web) never sees them, so %download% campaigns read 0 if sourced from GA.
+# These two constants are the single place to change the column if a diagnostic shows the
+# data lives elsewhere (e.g. Meta 'messaging_conversations_started', TikTok 'purchase_events').
+APP_SALES_COL_META   = "mobile_app_purchases"
+APP_SALES_COL_TIKTOK = "unique_purchases"
+
+@st.cache_data(ttl=43200, show_spinner="Carregando vendas do App...")
+def load_app_sales():
+    # App (filiação) sales for %download% campaigns, summed from the ad platforms' own app
+    # conversion columns (Meta + TikTok). One row per (date, campaign_name) per source.
+    # Mirrors RESUMO_INVESTIMENTO_DIARIO blocks 6 & 7 so Campanhas and Investimento agree.
+    start_history = datetime.date.today().replace(year=datetime.date.today().year - 3, month=1, day=1)
+    frames = []
+    for table, col in [("alex_meta_campaigns", APP_SALES_COL_META),
+                       ("alex_tiktok_campaigns", APP_SALES_COL_TIKTOK)]:
+        try:
+            f = conn.query(
+                f"SELECT `date`, `campaign_name`, COALESCE(`{col}`, 0) AS purchases "
+                f"FROM {table} WHERE LOWER(`campaign_name`) LIKE '%download%' "
+                f"AND `date` >= '{start_history}'")
+            frames.append(f)
+        except Exception:
+            pass
+    if not frames:
+        return pd.DataFrame(columns=['date', 'campaign_name', 'purchases'])
+    d = pd.concat(frames, ignore_index=True)
+    d['date'] = pd.to_datetime(d['date'])
+    d['campaign_name'] = d['campaign_name'].astype(str)
+    d['purchases'] = pd.to_numeric(d['purchases'], errors='coerce').fillna(0.0)
+    return d
+
 @st.cache_data(ttl=43200)
 def load_franquia_sales():
     # Franchise-level daily sales for the UF franchise map (point D). Reads the new
@@ -730,6 +765,15 @@ df_cal = load_calendar()
 df_raw = load_data()
 df_invest_raw = load_invest_data()
 df_goals = load_goals_data()
+
+if df_raw.empty:
+    st.error(
+        "⚠️ **RESUMO_VENDAS_DIARIAS não retornou nenhuma venda** (tabela vazia ou sem dados "
+        "nos últimos 3 anos). Por isso todas as vendas aparecem como 0 — não é um erro do "
+        "dashboard. Repopule a tabela: rode `CALL SP_Atualizar_Resumo_Vendas();` (recupera a "
+        "janela recente) ou o backfill completo a partir de NOMINAL_VENDAS se a tabela estiver "
+        "totalmente vazia."
+    )
 
 df = pd.merge(df_raw, df_cal, left_on='data_venda', right_on='data_ref', how='left')
 df_invest = pd.merge(df_invest_raw, df_cal, left_on='data_investimento', right_on='data_ref', how='left')
@@ -877,14 +921,21 @@ st.sidebar.title("🎛️ Controles Globais")
 now_utc = datetime.datetime.now(datetime.timezone.utc)
 now_sp = now_utc - datetime.timedelta(hours=3)
 
-if now_sp.time() >= datetime.time(11, 30):
-    reference_date = now_sp.date() - datetime.timedelta(days=1)
-    hora_atualizacao = "Hoje às 11:30"
+# Anchor "today" to the latest day actually present in the data, capped at yesterday so a
+# partial same-day load never counts as a complete day. The old clock-based rule showed
+# "today-2" before 11:30, which silently EXCLUDED the most recent day (e.g. 30/06) even
+# when it was already loaded — making the whole dashboard read a day behind the table.
+_yesterday = now_sp.date() - datetime.timedelta(days=1)
+if not df.empty:
+    reference_date = min(df['data_venda'].max().date(), _yesterday)
 else:
-    reference_date = now_sp.date() - datetime.timedelta(days=2)
-    hora_atualizacao = "Ontem às 11:30"
+    reference_date = _yesterday
 
-st.sidebar.caption(f"🔄 **Base atualizada:** {hora_atualizacao}\n(Dados até {reference_date.strftime('%d/%m/%Y')})")
+st.sidebar.caption(f"🔄 **Dados até:** {reference_date.strftime('%d/%m/%Y')} "
+                   f"(último dia completo na base)")
+if st.sidebar.button("♻️ Recarregar dados (limpar cache)"):
+    st.cache_data.clear()
+    st.rerun()
 st.sidebar.divider()
 
 view_option = st.sidebar.radio("Período de Análise:", [
@@ -1063,9 +1114,10 @@ with tab1:
         mostrar_previsao = False
 
     if mostrar_previsao and not df_fcst.empty:
-        if horizonte_previsao_tabela == "Fim do Período Atual":
+        if horizonte_previsao_tabela == "Fim do Período Atual" and c_e > ref_datetime:
             fcst_end_date = c_e
         else:
+            # Period already finished -> project proj_days forward instead of an empty window.
             fcst_end_date = ref_datetime + pd.DateOffset(days=proj_days)
             
         df_f_slice = df_fcst[(df_fcst['scenario'] == 'balanced') & 
@@ -1214,9 +1266,13 @@ with tab1:
             if is_forecast_src:
                 if df_fcst.empty or not max_actual_date: return pd.DataFrame()
                 
-                if horizonte_grafico == "Fim do Período Atual":
+                if horizonte_grafico == "Fim do Período Atual" and c_e > max_actual_date:
                     fcst_end_d = c_e
                 else:
+                    # "Fim do Período Atual" on an already-finished period has no future days
+                    # (the window would be empty and the line would silently vanish), so
+                    # project proj_days forward instead. Keeps the chart forecast independent
+                    # of the table forecast and always visible when toggled.
                     fcst_end_d = max_actual_date + pd.DateOffset(days=proj_days)
                 
                 df_t = df_fcst[(df_fcst['scenario'] == 'balanced') & 
@@ -1937,6 +1993,7 @@ with tab4:
 
     camp_cost = load_campaign_costs()
     ga_vendas = load_ga_vendas()
+    app_sales = load_app_sales()
     ga_leads = load_ga_leads()
     meta_leads = load_meta_leads()
     cmp_start, cmp_end = c_s, ref_datetime
@@ -1987,6 +2044,7 @@ with tab4:
     cost_p = camp_cost[(camp_cost['date'] >= cmp_start) & (camp_cost['date'] <= cmp_end)].copy()
     ga_leads_p = ga_leads[(ga_leads['date'] >= cmp_start) & (ga_leads['date'] <= cmp_end)].copy()
     meta_leads_p = meta_leads[(meta_leads['date'] >= cmp_start) & (meta_leads['date'] <= cmp_end)].copy()
+    app_sales_p = app_sales[(app_sales['date'] >= cmp_start) & (app_sales['date'] <= cmp_end)].copy()
     # When the Plataforma is Meta, leads = GA-tracked leads + on_facebook_leads (Facebook
     # native lead forms, which GA generally can't see, so the two are largely disjoint).
     # on_facebook_leads is read at its native one-row-per-campaign grain (no GA join, so it
@@ -1995,18 +2053,25 @@ with tab4:
 
     if group_mode:
         cost_scope, ga_scope, ga_leads_scope = cost_p, ga_p, ga_leads_p
+        app_scope = app_sales_p
     elif crm_is_selected:
         ga_scope = ga_p[_crm_mask_t4(ga_p)] if not ga_p.empty else ga_p
         ga_leads_scope = ga_leads_p[_crm_mask_t4(ga_leads_p)] if not ga_leads_p.empty else ga_leads_p
         cost_scope = cost_p.iloc[0:0]
+        app_scope = app_sales_p.iloc[0:0]
     else:
         cost_scope = cost_p[cost_p['plataforma'] == plataforma_camp]
         _plat_names = set(cost_scope['campaign_name'].dropna().unique())
         ga_scope = ga_p[ga_p['session_campaign_name'].isin(_plat_names)] if not ga_p.empty else ga_p
         ga_leads_scope = ga_leads_p[ga_leads_p['session_campaign_name'].isin(_plat_names)] if not ga_leads_p.empty else ga_leads_p
+        app_scope = app_sales_p[app_sales_p['campaign_name'].isin(_plat_names)] if not app_sales_p.empty else app_sales_p
 
     _cost_by = cost_scope.groupby('campaign_name')['cost'].sum() if not cost_scope.empty else pd.Series(dtype=float)
     _purch_by = ga_scope.groupby('session_campaign_name')['conversions'].sum() if not ga_scope.empty else pd.Series(dtype=float)
+    # %download% campaigns: add the ad platforms' in-app conversions (GA can't see them).
+    # Disjoint from GA web conversions, so summed — same pattern as the Meta-leads fix.
+    _app_by = app_scope.groupby('campaign_name')['purchases'].sum() if not app_scope.empty else pd.Series(dtype=float)
+    _purch_by = _purch_by.add(_app_by, fill_value=0)
     if meta_leads_mode:
         _ga_leads_by = (ga_leads_scope.groupby('session_campaign_name')['conversions'].sum()
                         if not ga_leads_scope.empty else pd.Series(dtype=float))
@@ -2021,7 +2086,7 @@ with tab4:
                .apply(lambda s: set(x.lower() for x in s.dropna()))
                if not ga_scope.empty else pd.Series(dtype=object))
 
-    _uni_names = sorted(set(_cost_by.index) | set(_purch_by.index) | set(_leads_by.index))
+    _uni_names = sorted(set(_cost_by.index) | set(_purch_by.index) | set(_leads_by.index) | set(_app_by.index))
     uni = pd.DataFrame({'campaign_name': _uni_names})
     uni['cost'] = uni['campaign_name'].map(_cost_by).fillna(0.0)
     uni['purchases'] = uni['campaign_name'].map(_purch_by).fillna(0.0)
@@ -2104,7 +2169,10 @@ with tab4:
 
             # purchases + leads from the GA scopes (already platform/CRM-filtered above)
             purch_f = ga_scope[ga_scope['session_campaign_name'].isin(campanhas_sel)].copy()
-            purch_f = purch_f.rename(columns={'session_campaign_name': 'campaign_name', 'conversions': 'purchases'})
+            purch_f = purch_f.rename(columns={'session_campaign_name': 'campaign_name', 'conversions': 'purchases'})[['date', 'campaign_name', 'purchases']]
+            _app_pf = app_scope[app_scope['campaign_name'].isin(campanhas_sel)].copy()
+            if not _app_pf.empty:
+                purch_f = pd.concat([purch_f, _app_pf[['date', 'campaign_name', 'purchases']]], ignore_index=True)
             if meta_leads_mode:
                 _ga_lf = ga_leads_scope[ga_leads_scope['session_campaign_name'].isin(campanhas_sel)].copy()
                 _ga_lf = _ga_lf.rename(columns={'session_campaign_name': 'campaign_name', 'conversions': 'leads'})
