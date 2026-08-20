@@ -1,0 +1,11 @@
+.venv/
+.streamlit/
+__pycache__/
+CSVs/
+*.csv
+*.png
+*.txt
+*.exe
+*.log
+Scripts/
+prophet_outputs/
