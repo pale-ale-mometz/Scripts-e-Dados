@@ -829,6 +829,28 @@ def load_platform_daily():
     d['campaign_name'] = d['campaign_name'].astype(str)
     return d
 
+@st.cache_data(ttl=43200, show_spinner="Carregando funil do checkout (site)...")
+def load_checkout_funnel():
+    # Funil do Website Checkout — tabela alex_ga_checkout_funnel (uma linha por dia),
+    # importada da planilha "Ad Sources & Events" por Scripts/ga_checkout_funnel_to_mysql.py.
+    # Desde 25/08 cada etapa tem eventCount (colunas sem sufixo) E activeUsers
+    # (colunas *_users). Colunas podem ser NULL — preserve NaN para a aba
+    # distinguir "sem dados" de zero. SELECT * mantém compatibilidade caso a
+    # tabela ainda não tenha as colunas novas.
+    cols = ['active_users',
+            'generate_lead', 'add_shipping_info', 'add_payment_info', 'purchase',
+            'generate_lead_users', 'add_shipping_info_users', 'add_payment_info_users',
+            'purchase_users']
+    try:
+        d = conn.query("SELECT * FROM alex_ga_checkout_funnel")
+        d['date'] = pd.to_datetime(d['date'])
+        for c in cols:
+            if c in d.columns:
+                d[c] = pd.to_numeric(d[c], errors='coerce')
+        return d
+    except Exception:
+        return pd.DataFrame(columns=['date'] + cols)
+
 # Fragmentos de session_source_medium que identificam tráfego CRM no GA.
 # Compartilhado entre a aba Campanhas e a aba Funil (Piloto).
 CRM_SOURCE_PATTERNS_GLOBAL = ['whatsapp', 'sms', 'crm']
@@ -2517,34 +2539,35 @@ with tab4:
                        "tabelas pagas; Compra/Lead e CPA/CPL do GA. Clique num cabeçalho para ordenar.")
 
 # =====================================================================
-# TAB 5: FUNIL (PILOTO) — teste de uso diário pelo especialista de mídia
+# TAB 5: FUNIL (PILOTO) — Website Checkout
 # ---------------------------------------------------------------------
-# Objetivo: validar se as tabelas/gráficos já modelados bastam para o
-# acompanhamento diário de UM especialista de mídia, no formato do mockup
-# "Performance do Funil de Vendas". Tudo aqui é ADITIVO: nenhuma lógica
-# das abas 1-4 é alterada.
+# Aba piloto para o uso diário do especialista de mídia. Funil do checkout
+# do site (hosts adesao/solicite), com dados da tabela alex_ga_checkout_funnel
+# (planilha "Ad Sources & Events" → Scripts/ga_checkout_funnel_to_mysql.py).
 #
-# Mapeamento de dados (estado atual do banco):
-#   Etapa 1 Impressões  -> alex_google/meta/tiktok_campaigns.impressions
-#   Etapa 2 Cliques     -> idem (.clicks / clicks_all)
-#   Etapa 3 Sessões     -> AINDA SEM TABELA (GA_Traffic/GA_UTM só na planilha
-#                          Ad Sources & Events; etapa exibida como placeholder)
-#   Etapa 4 Leads       -> alex_ga_leads (+ on_facebook_leads no Meta,
-#                          + alex_crm_wpp_sms_leads no blended)
-#   Vendas Mídia        -> alex_ga_vendas (+ compras in-app Meta/TikTok,
-#                          + alex_crm_wpp_sms_vendas no blended, sem dupla contagem)
-#   Vendas CTN          -> RESUMO_VENDAS_DIARIAS (nominal) tipo_venda Website /
-#                          App do Filiado — não é filtrável por Origem.
-#   Origem = CRM        -> funil próprio: Disparos (Zenvia) → Leads CRM → Vendas CRM
+# Desde 25/08 cada etapa tem DUAS métricas, alternáveis na aba:
+#   👤 Usuários ativos (GA4 activeUsers) — pessoas únicas por dia; visão padrão.
+#   ⚡ Eventos (GA4 eventCount) — disparos; visão de CONTROLE para detectar
+#      re-disparo em excesso numa etapa (ex.: retentativas de pagamento).
+# A razão disparos/usuário aparece sob o nome de cada etapa (âmbar quando >1,3).
+#
+#   Etapa 0  Usuários ativos       <- active_users (totalUsers; só usuários)
+#   Etapa 1  Início de checkout    <- generate_lead / generate_lead_users
+#   Etapa 2  Dados de envio        <- add_shipping_info / add_shipping_info_users
+#   Etapa 3  Dados de pagamento    <- add_payment_info / add_payment_info_users
+#   Etapa 4  Compra (purchase)     <- purchase / purchase_users (site todo)
+#
+# Vendas CTN = RESUMO_VENDAS_DIARIAS (nominal) tipo_venda = Website, para
+# reconciliação com o número oficial. Tudo aqui é ADITIVO às abas 1-4.
 # =====================================================================
 with tab5:
-    st.markdown("## Performance do Funil de Vendas")
+    st.markdown("## Performance do Funil de Vendas — Website Checkout")
     st.caption("🧪 **Aba piloto** — em teste para o uso diário do especialista de mídia. "
-               "O período atual e o de comparação seguem os **Controles Globais** da barra "
-               "lateral; Canal e Origem são locais desta aba.")
+               "O período atual e o de comparação seguem os **Controles Globais** da barra lateral. "
+               "Funil restrito ao checkout do site (hosts adesao/solicite).")
 
-    # ---- linha de filtros (período | comparação | canal | origem | exportar) ----
-    f5c1, f5c2, f5c3, f5c4, f5c5 = st.columns([1.35, 1.35, 1, 1, 0.8])
+    # ---- linha de filtros (período | comparação | canal fixo | exportar) ----
+    f5c1, f5c2, f5c3, f5c4 = st.columns([1.35, 1.35, 1, 0.8])
 
     def _period_box5(col, label, s, e):
         col.markdown(
@@ -2555,120 +2578,75 @@ with tab5:
 
     _period_box5(f5c1, "Período atual", c_s, ref_datetime)
     _period_box5(f5c2, "Comparar com (anterior, parcial)", p_s, p_partial)
-    canal_f5 = f5c3.selectbox("Canal", ["Todos", "Website", "App do Filiado"], key='t5_canal')
-    origem_f5 = f5c4.selectbox("Origem", ["Todas", "Google", "Meta", "TikTok", "CRM"], key='t5_origem')
-    # f5c5 recebe o botão Exportar DEPOIS do cálculo (containers preservam a posição).
+    f5c3.markdown(
+        "<div style='border:1px solid #bbf7d0;border-radius:10px;padding:7px 12px;background:#f0fdf4;'>"
+        "<div style='font-size:10.5px;color:#166534;font-weight:600;'>Canal</div>"
+        "<div style='font-size:13px;color:#14532d;font-weight:700;'>🌐 Website (checkout)</div>"
+        "</div>", unsafe_allow_html=True)
+    # f5c4 recebe o botão Exportar DEPOIS do cálculo (containers preservam a posição).
+
+    metrica_f5 = st.radio("Métrica do funil:",
+                          ["👤 Usuários ativos", "⚡ Eventos (controle)"],
+                          horizontal=True, key='t5_metrica')
+    modo_usuarios5 = metrica_f5.startswith("👤")
 
     # ---- dados ----
-    plat_d5 = load_platform_daily()
-    ga_v5 = load_ga_vendas()
-    ga_l5 = load_ga_leads()
-    meta_l5 = load_meta_leads()
-    app_s5 = load_app_sales()
-    crm_l5, crm_v5 = load_crm_wpp_sms()
-    zen5 = load_zenvia()
+    ckt5 = load_checkout_funnel()
 
-    _ORIGEM_GA_PAT5 = {"Google": ['google'], "Meta": ['facebook'], "TikTok": ['tiktok']}
+    # (ícone, rótulo, coluna de eventos ou None, coluna de usuários)
+    CHECKOUT_STAGES5 = [
+        ('👥', 'Etapa 0 · Usuários ativos', None, 'active_users'),
+        ('📝', 'Etapa 1 · Início de checkout', 'generate_lead', 'generate_lead_users'),
+        ('🚚', 'Etapa 2 · Dados de envio', 'add_shipping_info', 'add_shipping_info_users'),
+        ('💳', 'Etapa 3 · Dados de pagamento', 'add_payment_info', 'add_payment_info_users'),
+        ('🛒', 'Etapa 4 · Compra (purchase)', 'purchase', 'purchase_users'),
+    ]
 
-    def _sl5(dfx, col, s, e):
-        if dfx.empty:
-            return dfx
-        return dfx[(dfx[col] >= s) & (dfx[col] <= e)]
+    def checkout_stage_values5(s, e):
+        """Lista de (icone, rotulo, valor_ou_None, is_placeholder, disparos_por_usuario).
+        O valor segue a métrica selecionada (usuários ou eventos); a Etapa 0 é
+        sempre usuários (não é um evento). Coluna 100% NULA no período vira
+        placeholder — nunca zero falso. A razão eventos/usuários é calculada
+        quando ambas as métricas existem (controle de re-disparo)."""
+        d = ckt5[(ckt5['date'] >= s) & (ckt5['date'] <= e)] if not ckt5.empty else ckt5
+        out = []
+        for ic, lbl, ev_col, us_col in CHECKOUT_STAGES5:
+            col = us_col if (modo_usuarios5 or ev_col is None) else ev_col
+            if d.empty or col not in d.columns or d[col].notna().sum() == 0:
+                out.append((ic, lbl, None, True, None))
+                continue
+            val = float(d[col].sum(skipna=True))
+            ratio = None
+            if ev_col and ev_col in d.columns and us_col in d.columns:
+                ev_sum = float(d[ev_col].sum(skipna=True))
+                us_sum = float(d[us_col].sum(skipna=True))
+                if us_sum > 0 and d[ev_col].notna().sum() > 0:
+                    ratio = ev_sum / us_sum
+            out.append((ic, lbl, val, False, ratio))
+        return out
 
-    def _canal5(dfx, col):
-        # Mesma regra da aba Campanhas: campanhas %download% = App do Filiado; resto = Website.
-        if canal_f5 == "Todos" or dfx.empty:
-            return dfx
-        m = dfx[col].astype(str).str.lower().str.contains('download', na=False)
-        return dfx[m] if canal_f5 == "App do Filiado" else dfx[~m]
+    stages_c5 = checkout_stage_values5(c_s, ref_datetime)
+    stages_p5 = checkout_stage_values5(p_s, p_partial)
+    prev_by_lbl5 = {lbl: v for _ic, lbl, v, ph, _rt in stages_p5 if not ph}
 
-    def _origem_ga5(dfx):
-        if dfx.empty or origem_f5 not in _ORIGEM_GA_PAT5:
-            return dfx
-        sm = dfx['session_source_medium'].astype(str).str.lower()
-        m = pd.Series(False, index=dfx.index)
-        for pat in _ORIGEM_GA_PAT5[origem_f5]:
-            m = m | sm.str.contains(pat, na=False, regex=False)
-        return dfx[m]
-
-    def funnel_stage_values5(s, e):
-        """(stages, vendas, custo) do período [s, e], respeitando Canal/Origem.
-        stages = lista de (icone, rotulo, valor, is_placeholder)."""
-        p = _canal5(_sl5(plat_d5, 'date', s, e), 'campaign_name')
-        gaL = _canal5(_sl5(ga_l5, 'date', s, e), 'session_campaign_name')
-        gaV = _canal5(_sl5(ga_v5, 'date', s, e), 'session_campaign_name')
-        mN = _canal5(_sl5(meta_l5, 'date', s, e), 'campaign_name')
-        aS = _sl5(app_s5, 'date', s, e)            # só campanhas %download% (= App)
-        cL = _canal5(_sl5(crm_l5, 'date', s, e), 'session_campaign_name')
-        cV = _canal5(_sl5(crm_v5, 'date', s, e), 'session_campaign_name')
-        zn = _sl5(zen5, 'report_date', s, e)
-        if canal_f5 == "Website":
-            aS = aS.iloc[0:0]
-
-        if origem_f5 == "CRM":
-            # Funil próprio do CRM, com as tabelas novas da planilha Ad Sources.
-            disparos = float(zn['total_messages'].sum()) if not zn.empty else 0.0
-            leads = float(cL['event_count'].sum()) if not cL.empty else 0.0
-            vendas = float(cV['event_count'].sum()) if not cV.empty else 0.0
-            custo = float(zn['total_price'].sum()) if not zn.empty else 0.0
-            stages = [('💬', 'Disparos (Zenvia)', disparos, False),
-                      ('📢', 'Leads (CRM)', leads, False),
-                      ('🛒', 'Vendas Mídia (CRM)', vendas, False)]
-            return stages, vendas, custo
-
-        if origem_f5 in _ORIGEM_GA_PAT5:
-            p = p[p['plataforma'] == origem_f5]
-            _names = set(p['campaign_name'].unique())
-            gaL = _origem_ga5(gaL)
-            gaV = _origem_ga5(gaV)
-            mN = mN[mN['campaign_name'].isin(_names)] if origem_f5 == "Meta" else mN.iloc[0:0]
-            aS = aS[aS['campaign_name'].isin(_names)] if not aS.empty else aS
-            vendas = ((float(gaV['conversions'].sum()) if not gaV.empty else 0.0)
-                      + (float(aS['purchases'].sum()) if not aS.empty else 0.0))
-            leads = ((float(gaL['conversions'].sum()) if not gaL.empty else 0.0)
-                     + (float(mN['leads'].sum()) if not mN.empty else 0.0))
-        else:
-            # Todas as origens (blended). alex_ga_vendas INCLUI 'whatsapp / MKT_DIRETO':
-            # removemos as linhas CRM do GA e somamos as tabelas CRM novas por inteiro,
-            # evitando dupla contagem. alex_ga_leads é só fontes pagas (cpc) — leads CRM
-            # e leads nativos do Meta são disjuntos e podem ser somados.
-            gaV_paid = gaV[~crm_source_mask(gaV)] if not gaV.empty else gaV
-            vendas = ((float(gaV_paid['conversions'].sum()) if not gaV_paid.empty else 0.0)
-                      + (float(aS['purchases'].sum()) if not aS.empty else 0.0)
-                      + (float(cV['event_count'].sum()) if not cV.empty else 0.0))
-            leads = ((float(gaL['conversions'].sum()) if not gaL.empty else 0.0)
-                     + (float(mN['leads'].sum()) if not mN.empty else 0.0)
-                     + (float(cL['event_count'].sum()) if not cL.empty else 0.0))
-
-        impress = float(p['impressions'].sum()) if not p.empty else 0.0
-        cliques = float(p['clicks'].sum()) if not p.empty else 0.0
-        custo = float(p['cost'].sum()) if not p.empty else 0.0
-        stages = [('👥', 'Impressões', impress, False),
-                  ('🖱️', 'Cliques', cliques, False),
-                  ('🌐', 'Sessões', None, True),
-                  ('📢', 'Leads', leads, False),
-                  ('🛒', 'Vendas Mídia', vendas, False)]
-        return stages, vendas, custo
-
-    stages_c5, vendas_c5, custo_c5 = funnel_stage_values5(c_s, ref_datetime)
-    stages_p5, vendas_p5, custo_p5 = funnel_stage_values5(p_s, p_partial)
-    prev_by_lbl5 = {lbl: v for _ic, lbl, v, ph in stages_p5 if not ph}
+    _purchases_c5 = next((v for _i, l, v, ph, _rt in stages_c5
+                          if l.endswith('Compra (purchase)') and not ph), 0.0) or 0.0
+    _purchases_p5 = prev_by_lbl5.get('Etapa 4 · Compra (purchase)', 0.0)
+    _metric_word5 = "usuários" if modo_usuarios5 else "eventos"
 
     def ctn_vendas5(s, e):
         d5 = df[(df['data_venda'] >= s) & (df['data_venda'] <= e)]
         if d5.empty:
             return 0.0
-        tv = d5['tipo_venda'].str.lower()
-        if canal_f5 == "Website":
-            m = tv.eq('website')
-        elif canal_f5 == "App do Filiado":
-            m = tv.eq('app do filiado')
-        else:
-            m = tv.isin(['website', 'app do filiado'])
-        return float(d5.loc[m, 'Vendas'].sum())
+        return float(d5.loc[d5['tipo_venda'].str.lower().eq('website'), 'Vendas'].sum())
 
     ctn_c5 = ctn_vendas5(c_s, ref_datetime)
     ctn_p5 = ctn_vendas5(p_s, p_partial)
+
+    if ckt5.empty:
+        st.warning("⚠️ A tabela `alex_ga_checkout_funnel` ainda não está disponível no banco. "
+                   "Rode `Scripts/ga_checkout_funnel_to_mysql.py` para importá-la da planilha "
+                   "Ad Sources & Events.")
 
     # ---- helpers de formatação ----
     def _pct_br5(x, nd=1):
@@ -2677,7 +2655,7 @@ with tab5:
         return f"{x * 100:.{nd}f}%".replace('.', ',')
 
     def _delta_pct5(curr, prev):
-        if prev is None or prev <= 0:
+        if curr is None or prev is None or prev <= 0:
             return None
         return (curr - prev) / prev * 100
 
@@ -2695,14 +2673,23 @@ with tab5:
         return (f"<span style='background:{bg};color:{fg};font-weight:700;font-size:11.5px;"
                 f"padding:2px 8px;border-radius:10px;white-space:nowrap;'>{sign}{d:.0f}%</span>")
 
-    real_c5 = [(lbl, v) for _ic, lbl, v, ph in stages_c5 if not ph]
+    def _ratio_html5(ratio):
+        # Razão disparos/usuário: controle de re-disparo. Âmbar acima de 1,3.
+        if ratio is None:
+            return ""
+        color = "#b45309" if ratio > 1.3 else "#94a3b8"
+        weight = "700" if ratio > 1.3 else "600"
+        r_txt = f"{ratio:.2f}".replace('.', ',')
+        return (f"<div style='font-size:10.5px;color:{color};font-weight:{weight};'>"
+                f"⚡ {r_txt} disp./usuário</div>")
+
+    real_c5 = [(lbl, v) for _ic, lbl, v, ph, _rt in stages_c5 if not ph]
     top_lbl5, top_val_c5 = (real_c5[0] if real_c5 else ("", 0.0))
     top_val_p5 = prev_by_lbl5.get(top_lbl5, 0.0)
-    conv_total_c5 = (vendas_c5 / top_val_c5) if top_val_c5 > 0 else None
-    _top_p_tmp = prev_by_lbl5.get(top_lbl5, 0.0)
-    conv_total_p5 = (vendas_p5 / _top_p_tmp) if _top_p_tmp > 0 else None
+    conv_total_c5 = (_purchases_c5 / top_val_c5) if top_val_c5 > 0 else None
+    conv_total_p5 = (_purchases_p5 / top_val_p5) if (top_val_p5 or 0) > 0 else None
 
-    # Gargalo = menor taxa de conversão sequencial entre etapas reais (período atual).
+    # Gargalo = menor taxa de conversão sequencial entre etapas com dados.
     gargalo_lbl5, gargalo_rate5 = "—", None
     for _i in range(1, len(real_c5)):
         _prev_lbl, _prev_v = real_c5[_i - 1]
@@ -2711,7 +2698,9 @@ with tab5:
             _r = _v / _prev_v
             if gargalo_rate5 is None or _r < gargalo_rate5:
                 gargalo_rate5 = _r
-                gargalo_lbl5 = f"{_prev_lbl} → {_lbl}"
+                _n_prev = _prev_lbl.split('·')[0].strip()
+                _n_cur = _lbl.split('·')[0].strip()
+                gargalo_lbl5 = f"{_n_prev} → {_n_cur}"
 
     # ---- cards de KPI ----
     def _kpi_card5(col, icon, label, value_html, sub):
@@ -2727,32 +2716,36 @@ with tab5:
             f"</div></div></div>", unsafe_allow_html=True)
 
     k1, k2, k3, k4 = st.columns(4)
-    _kpi_card5(k1, "🛒", "Vendas CTN (nominal)",
+    _kpi_card5(k1, "🛒", "Vendas CTN (Website, nominal)",
                f"{format_br(ctn_c5)} {_delta_chip5(ctn_c5, ctn_p5)}",
                f"Período anterior: {format_br(ctn_p5)}")
-    _kpi_card5(k2, "📈", "Vendas Mídia (GA)",
-               f"{format_br(vendas_c5)} {_delta_chip5(vendas_c5, vendas_p5)}",
-               f"Período anterior: {format_br(vendas_p5)}")
-    _kpi_card5(k3, "📊", "Conversão total (topo → vendas)",
+    _kpi_card5(k2, "📈", f"Compras GA ({_metric_word5})",
+               f"{format_br(_purchases_c5)} {_delta_chip5(_purchases_c5, _purchases_p5)}",
+               f"Período anterior: {format_br(_purchases_p5)}")
+    _kpi_card5(k3, "📊", f"Conversão total (Etapa 0 → 4, {_metric_word5})",
                _pct_br5(conv_total_c5, 2),
                f"Período anterior: {_pct_br5(conv_total_p5, 2)}")
     _kpi_card5(k4, "❗", "Maior gargalo", gargalo_lbl5,
                "Menor taxa de conversão sequencial")
-    if canal_f5 != "Todos":
-        st.caption("ℹ️ **Vendas CTN** vem do nominal (RESUMO_VENDAS_DIARIAS) por canal e **não** "
-                   "é filtrável por Origem; os demais números respeitam Canal e Origem.")
+    st.caption("ℹ️ **Vendas CTN** = nominal oficial (RESUMO_VENDAS_DIARIAS, tipo Website). "
+               "**Compras GA** = evento purchase do GA4 (site todo, sem filtro de host). "
+               "Usuários no período = soma dos usuários únicos DIÁRIOS (quem visita em vários "
+               "dias conta em cada dia); a régua de reconciliação GA × nominal continua sendo "
+               "a diferença entre os dois cards.")
 
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
-    # ---- funil + conversão até vendas ----
+    # ---- funil + conversão até a compra ----
     col_fun5, col_conv5 = st.columns([1.9, 1])
 
     GREEN_RAMP5 = ['#1e6b3c', '#2e8a4f', '#57a86f', '#8cc79e', '#c8e3cf']
 
     with col_fun5:
         _max_v5 = max((v for _lbl, v in real_c5), default=0.0)
+        _tit_metr5 = "usuários ativos" if modo_usuarios5 else "eventos (controle)"
         _leg = (f"<div style='display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:8px;'>"
-                f"<div style='font-size:15px;font-weight:800;color:#0f172a;margin-right:6px;'>Funil de vendas</div>"
+                f"<div style='font-size:15px;font-weight:800;color:#0f172a;margin-right:6px;'>Funil do checkout "
+                f"<span style='font-size:11.5px;color:#166534;font-weight:700;'>· {_tit_metr5}</span></div>"
                 f"<div style='font-size:11px;color:#475569;'><span style='display:inline-block;width:10px;height:10px;"
                 f"background:#2e8a4f;border-radius:2px;margin-right:4px;'></span>Período atual "
                 f"({c_s.strftime('%d/%m')}–{ref_datetime.strftime('%d/%m')})</div>"
@@ -2766,65 +2759,64 @@ with tab5:
         _idx_real5 = 0
         _prev_c5 = None
         _prev_p5 = None
-        for _ic, _lbl, _v, _ph in stages_c5:
-            _label_cell = (f"<div style='flex:0 0 148px;display:flex;align-items:center;gap:8px;'>"
+        for _ic, _lbl, _v, _ph, _rt in stages_c5:
+            _label_cell = (f"<div style='flex:0 0 190px;display:flex;align-items:center;gap:8px;'>"
                            f"<div style='width:32px;height:32px;border-radius:8px;background:#14532d;display:flex;"
-                           f"align-items:center;justify-content:center;font-size:15px;'>{_ic}</div>"
-                           f"<div style='font-size:13px;font-weight:700;color:#0f172a;'>{_lbl}</div></div>")
+                           f"align-items:center;justify-content:center;font-size:15px;flex:0 0 32px;'>{_ic}</div>"
+                           f"<div><div style='font-size:12.5px;font-weight:700;color:#0f172a;'>{_lbl}</div>"
+                           f"{_ratio_html5(_rt)}</div></div>")
             if _ph:
                 _bar = (f"<div style='flex:1;display:flex;justify-content:center;'>"
                         f"<div style='width:70%;border:2px dashed #cbd5e1;border-radius:8px;padding:7px 10px;"
-                        f"text-align:center;color:#94a3b8;font-size:11.5px;'>aguardando dados "
-                        f"(GA_Traffic / GA_UTM ainda não importados no banco)</div></div>")
+                        f"text-align:center;color:#94a3b8;font-size:11.5px;'>sem dados desta métrica no "
+                        f"período — verifique o refresh do Supermetrics e a rodada do script de importação</div></div>")
                 _conv_cells = ("<div style='flex:0 0 60px;text-align:right;font-size:12px;color:#94a3b8;'>—</div>"
                                "<div style='flex:0 0 60px;text-align:right;font-size:12px;color:#94a3b8;'>—</div>")
             else:
-                _vp = prev_by_lbl5.get(_lbl, 0.0)
+                _vp = prev_by_lbl5.get(_lbl)
                 _wid = (30 + 70 * (_v / _max_v5)) if _max_v5 > 0 else 30
                 _bg = GREEN_RAMP5[min(_idx_real5, len(GREEN_RAMP5) - 1)]
                 _fg = '#ffffff' if _idx_real5 < 2 else '#14532d'
                 _sub_fg = 'rgba(255,255,255,.85)' if _idx_real5 < 2 else '#3f6212'
                 _conv_at = (_v / _prev_c5) if (_prev_c5 and _prev_c5 > 0) else None
-                _conv_an = (_vp / _prev_p5) if (_prev_p5 and _prev_p5 > 0) else None
+                _conv_an = ((_vp / _prev_p5) if (_vp is not None and _prev_p5 and _prev_p5 > 0) else None)
+                _vp_txt = format_br(_vp) if _vp is not None else "—"
                 _bar = (f"<div style='flex:1;display:flex;justify-content:center;'>"
                         f"<div style='width:{_wid:.1f}%;background:{_bg};border-radius:8px;padding:6px 12px;"
                         f"display:flex;align-items:center;justify-content:center;gap:10px;min-width:170px;'>"
                         f"<div style='text-align:center;'>"
                         f"<div style='font-size:16px;font-weight:800;color:{_fg};line-height:1.15;'>{format_br(_v)}</div>"
-                        f"<div style='font-size:11px;color:{_sub_fg};'>{format_br(_vp)}</div></div>"
+                        f"<div style='font-size:11px;color:{_sub_fg};'>{_vp_txt}</div></div>"
                         f"{_delta_chip5(_v, _vp)}</div></div>")
                 _conv_cells = (f"<div style='flex:0 0 60px;text-align:right;font-size:12.5px;font-weight:700;"
                                f"color:#0f172a;'>{_pct_br5(_conv_at)}</div>"
                                f"<div style='flex:0 0 60px;text-align:right;font-size:12.5px;color:#64748b;'>"
                                f"{_pct_br5(_conv_an)}</div>")
-                _prev_c5, _prev_p5 = _v, _vp
+                _prev_c5 = _v
+                _prev_p5 = _vp if _vp is not None else None
                 _idx_real5 += 1
             _rows_html5.append(f"<div style='display:flex;align-items:center;gap:10px;padding:5px 0;"
                                f"border-top:1px solid #f1f5f9;'>{_label_cell}{_bar}{_conv_cells}</div>")
 
         st.markdown("<div style='border:1px solid #e2e8f0;border-radius:12px;padding:14px 16px;background:#fff;'>"
                     + "".join(_rows_html5) + "</div>", unsafe_allow_html=True)
-
-        if origem_f5 == "CRM":
-            st.caption(f"💸 Custo de mensageria (Zenvia) no período: **{format_money(custo_c5)}**"
-                       + (f" — custo por venda CRM: **{format_money(custo_c5 / vendas_c5)}**" if vendas_c5 > 0 else "")
-                       + ". Custo total de disparos, não atribuído por campanha.")
-        elif custo_c5 > 0:
-            st.caption(f"💸 Investimento de mídia no período: **{format_money(custo_c5)}** "
-                       f"{'(CPA mídia: **' + format_money(custo_c5 / vendas_c5) + '**)' if vendas_c5 > 0 else ''} "
-                       f"| Período anterior: {format_money(custo_p5)}")
+        st.caption("Fonte: GA4 (hosts adesao/solicite; Etapa 4 = site todo) via planilha Ad Sources & Events → "
+                   "tabela `alex_ga_checkout_funnel`. **👤 Usuários** = pessoas únicas por dia (activeUsers); "
+                   "**⚡ Eventos** = disparos (eventCount). A razão ⚡ disp./usuário sob cada etapa denuncia "
+                   "re-disparo em excesso (âmbar acima de 1,3). Conversão sequencial calculada sobre a etapa "
+                   "anterior com dados.")
 
     with col_conv5:
         _conv_rows5 = ["<div style='font-size:15px;font-weight:800;color:#0f172a;margin-bottom:10px;'>"
-                       "Conversão até vendas</div>"]
-        _last_lbl5 = real_c5[-1][0] if real_c5 else ""
+                       "Conversão até a compra</div>"]
         for _lbl, _v in real_c5[:-1]:
-            _pct = (vendas_c5 / _v) if _v > 0 else None
+            _pct = (_purchases_c5 / _v) if _v > 0 else None
             _w = min((_pct or 0) * 100, 100)
+            _short = _lbl.split('·')[0].strip()
             _conv_rows5.append(
                 f"<div style='padding:7px 0;border-top:1px solid #f1f5f9;'>"
                 f"<div style='display:flex;justify-content:space-between;align-items:baseline;'>"
-                f"<div style='font-size:12.5px;color:#334155;font-weight:600;'>{_lbl} → {_last_lbl5}</div>"
+                f"<div style='font-size:12.5px;color:#334155;font-weight:600;'>{_short} → Compra</div>"
                 f"<div style='font-size:14px;font-weight:800;color:#0f172a;'>{_pct_br5(_pct, 2)}</div></div>"
                 f"<div style='height:7px;background:#e5e7eb;border-radius:4px;margin-top:5px;'>"
                 f"<div style='height:7px;width:{_w:.2f}%;background:#15803d;border-radius:4px;'></div></div></div>")
@@ -2833,22 +2825,29 @@ with tab5:
 
         # ---- card de insight automático ----
         _d_top5 = _delta_pct5(top_val_c5, top_val_p5)
-        _d_ven5 = _delta_pct5(vendas_c5, vendas_p5)
+        _d_ven5 = _delta_pct5(_purchases_c5, _purchases_p5)
         if _d_top5 is not None and _d_ven5 is not None:
             _ven_txt = f"{'+' if _d_ven5 > 0 else ''}{_d_ven5:.0f}%"
             if _d_top5 < 0 and _d_ven5 > 0:
-                _insight5 = (f"O volume caiu no topo, mas as vendas cresceram <b style='color:#15803d;'>{_ven_txt}</b> "
-                             f"com melhora nas etapas finais.")
+                _insight5 = (f"O volume caiu no topo, mas as compras ({_metric_word5}) cresceram "
+                             f"<b style='color:#15803d;'>{_ven_txt}</b> com melhora nas etapas finais do checkout.")
             elif _d_top5 >= 0 and _d_ven5 > 0:
-                _insight5 = (f"Volume e vendas cresceram — vendas <b style='color:#15803d;'>{_ven_txt}</b> "
-                             f"vs. período anterior.")
+                _insight5 = (f"Volume e compras cresceram — compras ({_metric_word5}) "
+                             f"<b style='color:#15803d;'>{_ven_txt}</b> vs. período anterior.")
             elif _d_top5 >= 0 and _d_ven5 <= 0:
-                _insight5 = (f"O topo do funil cresceu, mas as vendas variaram "
+                _insight5 = (f"O topo do funil cresceu, mas as compras ({_metric_word5}) variaram "
                              f"<b style='color:#b91c1c;'>{_ven_txt}</b> — atenção às etapas finais "
                              f"(gargalo: {gargalo_lbl5}).")
             else:
-                _insight5 = (f"Volume e vendas em queda ({_ven_txt} em vendas) — verifique investimento "
+                _insight5 = (f"Volume e compras em queda ({_ven_txt} em compras) — verifique aquisição "
                              f"e o gargalo {gargalo_lbl5}.")
+            # Alerta de re-disparo: maior razão disparos/usuário do período atual.
+            _worst_rt5 = max(((_rt, _lbl) for _ic, _lbl, _v, _ph, _rt in stages_c5 if _rt is not None),
+                             default=(None, None))
+            if _worst_rt5[0] is not None and _worst_rt5[0] > 1.3:
+                _r_txt5 = f"{_worst_rt5[0]:.2f}".replace('.', ',')
+                _insight5 += (f" ⚠️ <b>{_worst_rt5[1].split('·')[1].strip()}</b> está com "
+                              f"{_r_txt5} disparos por usuário — possível re-disparo em excesso.")
             st.markdown(
                 f"<div style='border-radius:12px;padding:16px;background:#ecfdf5;margin-top:12px;"
                 f"display:flex;gap:12px;align-items:flex-start;'>"
@@ -2866,35 +2865,56 @@ with tab5:
                 "</div>", unsafe_allow_html=True)
     _behav_rows5 = [{'Etapa': _lbl, 'Tempo médio': '—', 'Principais cliques': '—', 'Taxa de saída': '—',
                      '_level': 0, '_is_eff': False}
-                    for _ic, _lbl, _v, _ph in stages_c5 if _lbl not in ('Vendas Mídia', 'Vendas Mídia (CRM)')]
+                    for _ic, _lbl, _v, _ph, _rt in stages_c5[:-1]]
     st.markdown(render_metric_table(_behav_rows5, ['Etapa', 'Tempo médio', 'Principais cliques', 'Taxa de saída']),
                 unsafe_allow_html=True)
     st.caption("Estrutura pronta para tempo médio por etapa, principais cliques e taxa de saída — "
-               "requer o export de eventos GA4 por etapa (próximo incremento da planilha Ad Sources & Events).")
+               "requer novas queries de eventos GA4 na planilha Ad Sources & Events (próximo incremento).")
 
     # ---- exportação CSV (botão na linha de filtros, canto direito) ----
+    # Sempre exporta AS DUAS métricas, independente da visão selecionada.
+    def _stage_sums5(s, e):
+        d = ckt5[(ckt5['date'] >= s) & (ckt5['date'] <= e)] if not ckt5.empty else ckt5
+        out = {}
+        for _ic, lbl, ev_col, us_col in CHECKOUT_STAGES5:
+            for col in (ev_col, us_col):
+                if col and (not d.empty) and col in d.columns and d[col].notna().sum() > 0:
+                    out[col] = int(d[col].sum(skipna=True))
+                elif col:
+                    out[col] = None
+        return out
+
+    _sums_c5 = _stage_sums5(c_s, ref_datetime)
+    _sums_p5 = _stage_sums5(p_s, p_partial)
     _exp_rows5 = []
-    _pc, _pp = None, None
-    for _ic, _lbl, _v, _ph in stages_c5:
-        if _ph:
-            _exp_rows5.append({'Etapa': _lbl, 'Atual': None, 'Anterior': None,
-                               'Conv. sequencial (atual)': None, 'Conv. sequencial (anterior)': None,
-                               'Conv. até vendas (atual)': None})
-            continue
-        _vp = prev_by_lbl5.get(_lbl, 0.0)
+    _prev_us5 = None
+    for _ic, _lbl, _ev_col, _us_col in CHECKOUT_STAGES5:
+        _us_c = _sums_c5.get(_us_col)
+        _us_p = _sums_p5.get(_us_col)
+        _ev_c = _sums_c5.get(_ev_col) if _ev_col else None
+        _ev_p = _sums_p5.get(_ev_col) if _ev_col else None
+        _pu_c = _sums_c5.get('purchase_users')
         _exp_rows5.append({
-            'Etapa': _lbl, 'Atual': int(_v), 'Anterior': int(_vp),
-            'Conv. sequencial (atual)': round(_v / _pc, 4) if (_pc and _pc > 0) else None,
-            'Conv. sequencial (anterior)': round(_vp / _pp, 4) if (_pp and _pp > 0) else None,
-            'Conv. até vendas (atual)': round(vendas_c5 / _v, 4) if _v > 0 else None,
+            'Etapa': _lbl,
+            'Usuários (atual)': _us_c, 'Usuários (anterior)': _us_p,
+            'Eventos (atual)': _ev_c, 'Eventos (anterior)': _ev_p,
+            'Disparos/usuário (atual)': (round(_ev_c / _us_c, 3) if (_ev_c and _us_c) else None),
+            'Conv. sequencial usuários (atual)': (round(_us_c / _prev_us5, 4)
+                                                  if (_us_c is not None and _prev_us5) else None),
+            'Conv. até compra usuários (atual)': (round(_pu_c / _us_c, 4)
+                                                  if (_pu_c is not None and _us_c) else None),
         })
-        _pc, _pp = _v, _vp
-    _exp_rows5.append({'Etapa': 'Vendas CTN (nominal)', 'Atual': int(ctn_c5), 'Anterior': int(ctn_p5),
-                       'Conv. sequencial (atual)': None, 'Conv. sequencial (anterior)': None,
-                       'Conv. até vendas (atual)': None})
+        if _us_c is not None:
+            _prev_us5 = _us_c
+    _exp_rows5.append({'Etapa': 'Vendas CTN (Website, nominal)',
+                       'Usuários (atual)': int(ctn_c5), 'Usuários (anterior)': int(ctn_p5),
+                       'Eventos (atual)': None, 'Eventos (anterior)': None,
+                       'Disparos/usuário (atual)': None,
+                       'Conv. sequencial usuários (atual)': None,
+                       'Conv. até compra usuários (atual)': None})
     _exp_df5 = pd.DataFrame(_exp_rows5)
-    f5c5.download_button(
+    f5c4.download_button(
         "⬆️ Exportar",
         _exp_df5.to_csv(index=False, sep=';', decimal=','),
-        file_name=f"funil_piloto_{c_s.strftime('%Y%m%d')}_{ref_datetime.strftime('%Y%m%d')}.csv",
+        file_name=f"funil_checkout_{c_s.strftime('%Y%m%d')}_{ref_datetime.strftime('%Y%m%d')}.csv",
         mime="text/csv", use_container_width=True, key='t5_export')
