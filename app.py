@@ -205,6 +205,18 @@ except Exception as e:
     st.error(f"Failed to connect to the database: {e}")
     st.stop()
 
+def cquery(sql, *args, **kwargs):
+    """Substituto do conn.query (R8, 26/08). O conn.query do Streamlit chama engine.connect() sem fechar: a conexão
+    só volta ao QueuePool quando o garbage collector roda, e com ~30 queries no start (Python 3.14) o pool
+    (5 + 10 overflow) esgota → TimeoutError após 30 s → loaders vazios → "tabela não disponível". Aqui a conexão
+    é devolvida na saída do with. O cache continua sendo o st.cache_data dos loaders (ttl/show_spinner são ignorados).
+    Diagnóstico: diagnostics/pool_check.py."""
+    from sqlalchemy import text as _sa_text
+    kwargs.pop('ttl', None)
+    kwargs.pop('show_spinner', None)
+    with conn._instance.connect() as _c:
+        return pd.read_sql(_sa_text(sql), _c, *args, **kwargs)
+
 @st.cache_data(ttl=86400) 
 def get_brazil_geojson():
     try:
@@ -223,7 +235,7 @@ brazil_geo = get_brazil_geojson()
 def load_calendar():
     try:
         query = "SELECT data AS data_ref, eh_dia_util AS is_dia_util FROM dim_calendario"
-        cal = conn.query(query)
+        cal = cquery(query)
         cal['data_ref'] = pd.to_datetime(cal['data_ref'])
         return cal
     except Exception:
@@ -245,7 +257,7 @@ def load_data():
              f"FROM RESUMO_VENDAS_DIARIAS WHERE data_venda >= '{start_history}' "
              f"GROUP BY data_venda, uf, tipo_venda")
     try:
-        df = conn.query(query)
+        df = cquery(query)
     except Exception:
         return pd.DataFrame(columns=['data_venda', 'uf', 'tipo_venda', 'Vendas'])
     df['data_venda'] = pd.to_datetime(df['data_venda'])
@@ -258,7 +270,7 @@ def load_invest_data():
     start_history = datetime.date.today().replace(year=datetime.date.today().year - 3, month=1, day=1)
     query = f"SELECT data_investimento, canal, plataforma, branding, leads, venda, vol_leads, vol_vendas FROM RESUMO_INVESTIMENTO_DIARIO WHERE data_investimento >= '{start_history}'"
     try:
-        df_inv = conn.query(query)
+        df_inv = cquery(query)
         df_inv['data_investimento'] = pd.to_datetime(df_inv['data_investimento'])
         df_inv['canal'] = df_inv['canal'].fillna("Não Informado").astype(str).str.strip().str.title()
         return df_inv
@@ -269,7 +281,7 @@ def load_invest_data():
 def load_goals_data():
     try:
         query = "SELECT * FROM alex_metas"
-        df_goals = conn.query(query)
+        df_goals = cquery(query)
         if df_goals.empty: return pd.DataFrame()
         
         df_goals.columns = df_goals.columns.str.strip()
@@ -501,10 +513,10 @@ def generate_prophet_forecast(ref_date_str):
     # never trains on a partial "today". This also makes ref_date_str a real cache
     # key rather than incidental.
     try:
-        df_raw = conn.query(f"SELECT ds, channel_group, y, spend_total, spend_total2 FROM vw_prophet_input WHERE y IS NOT NULL AND ds <= '{ref_date_str}' ORDER BY ds")
+        df_raw = cquery(f"SELECT ds, channel_group, y, spend_total, spend_total2 FROM vw_prophet_input WHERE y IS NOT NULL AND ds <= '{ref_date_str}' ORDER BY ds")
     except Exception:
         try:
-            df_raw = conn.query(f"SELECT ds, channel_group, y, spend_total FROM vw_prophet_input WHERE y IS NOT NULL AND ds <= '{ref_date_str}' ORDER BY ds")
+            df_raw = cquery(f"SELECT ds, channel_group, y, spend_total FROM vw_prophet_input WHERE y IS NOT NULL AND ds <= '{ref_date_str}' ORDER BY ds")
         except Exception:
             return pd.DataFrame()
         
@@ -621,7 +633,7 @@ def load_stored_forecast():
     # live output (it only emitted the channels that count toward company totals).
     # Returns the same columns the live forecast did, so it's a drop-in for df_fcst.
     try:
-        d = conn.query("""
+        d = cquery("""
             SELECT ds, channel_group, scenario, yhat, yhat_lower, yhat_upper,
                    spend_assumed, run_date, generated_at
             FROM FORECAST_VENDAS_CANAL
@@ -654,7 +666,7 @@ def load_campaign_costs():
                       ("alex_meta_campaigns", "Meta"),
                       ("alex_tiktok_campaigns", "TikTok")]:
         try:
-            part = conn.query(f"SELECT `date`, `campaign_name`, `cost` FROM {tbl} WHERE `date` >= '{start_history}'")
+            part = cquery(f"SELECT `date`, `campaign_name`, `cost` FROM {tbl} WHERE `date` >= '{start_history}'")
             part['plataforma'] = plat
             parts.append(part)
         except Exception:
@@ -672,7 +684,7 @@ def load_ga_vendas():
     # Canonical purchase-event source, by campaign + source/medium.
     start_history = datetime.date.today().replace(year=datetime.date.today().year - 3, month=1, day=1)
     try:
-        out = conn.query("SELECT `date`, `session_campaign_name`, `session_source_medium`, `conversions` "
+        out = cquery("SELECT `date`, `session_campaign_name`, `session_source_medium`, `conversions` "
                          f"FROM alex_ga_vendas WHERE `date` >= '{start_history}'")
     except Exception:
         return pd.DataFrame(columns=['date', 'session_campaign_name', 'session_source_medium', 'conversions'])
@@ -687,7 +699,7 @@ def load_ga_leads():
     # Canonical lead-event source — mirrors load_ga_vendas but from alex_ga_leads.
     start_history = datetime.date.today().replace(year=datetime.date.today().year - 3, month=1, day=1)
     try:
-        out = conn.query("SELECT `date`, `session_campaign_name`, `session_source_medium`, `conversions` "
+        out = cquery("SELECT `date`, `session_campaign_name`, `session_source_medium`, `conversions` "
                          f"FROM alex_ga_leads WHERE `date` >= '{start_history}'")
     except Exception:
         return pd.DataFrame(columns=['date', 'session_campaign_name', 'session_source_medium', 'conversions'])
@@ -705,7 +717,7 @@ def load_meta_leads():
     # so joining this single value onto GA would multiply it).
     start_history = datetime.date.today().replace(year=datetime.date.today().year - 3, month=1, day=1)
     try:
-        d = conn.query("SELECT `date`, `campaign_name`, COALESCE(`on_facebook_leads`, 0) AS leads "
+        d = cquery("SELECT `date`, `campaign_name`, COALESCE(`on_facebook_leads`, 0) AS leads "
                        f"FROM alex_meta_campaigns WHERE `date` >= '{start_history}'")
     except Exception:
         return pd.DataFrame(columns=['date', 'campaign_name', 'leads'])
@@ -731,7 +743,7 @@ def load_app_sales():
     for table, col in [("alex_meta_campaigns", APP_SALES_COL_META),
                        ("alex_tiktok_campaigns", APP_SALES_COL_TIKTOK)]:
         try:
-            f = conn.query(
+            f = cquery(
                 f"SELECT `date`, `campaign_name`, COALESCE(`{col}`, 0) AS purchases "
                 f"FROM {table} WHERE LOWER(`campaign_name`) LIKE '%download%' "
                 f"AND `date` >= '{start_history}'")
@@ -760,7 +772,7 @@ def load_franquia_sales():
              f"FROM RESUMO_VENDAS_DIARIAS WHERE data_venda >= '{start_history}' "
              "AND NOME_FRANQUIA IS NOT NULL AND TRIM(NOME_FRANQUIA) <> '' "
              "GROUP BY data_venda, uf, NOME_FRANQUIA")
-        d = conn.query(q)
+        d = cquery(q)
         d['data_venda'] = pd.to_datetime(d['data_venda'])
         d['uf'] = d['uf'].astype(str).str.upper().str.strip()
         d['NOME_FRANQUIA'] = d['NOME_FRANQUIA'].astype(str).str.strip()
@@ -786,7 +798,7 @@ def load_crm_wpp_sms():
     out = {}
     for key, tbl in [('leads', 'alex_crm_wpp_sms_leads'), ('vendas', 'alex_crm_wpp_sms_vendas')]:
         try:
-            d = conn.query(f"SELECT `date`, `session_campaign_name`, `session_source_medium`, "
+            d = cquery(f"SELECT `date`, `session_campaign_name`, `session_source_medium`, "
                            f"`event_count` FROM {tbl} WHERE `date` >= '{start_history}'")
             d['date'] = pd.to_datetime(d['date'])
             d['event_count'] = pd.to_numeric(d['event_count'], errors='coerce').fillna(0)
@@ -804,7 +816,7 @@ def load_zenvia():
     # no bloco CRM & Mensageria da aba Investimento.
     start_history = datetime.date.today().replace(year=datetime.date.today().year - 3, month=1, day=1)
     try:
-        d = conn.query("SELECT report_date, sender_name, total_messages, total_price "
+        d = cquery("SELECT report_date, sender_name, total_messages, total_price "
                        f"FROM alex_zenvia_sender WHERE report_date >= '{start_history}'")
         d['report_date'] = pd.to_datetime(d['report_date'])
         d['total_messages'] = pd.to_numeric(d['total_messages'], errors='coerce').fillna(0)
@@ -857,7 +869,7 @@ def load_platform_daily():
                                   ("alex_meta_campaigns", "Meta", "clicks_all"),
                                   ("alex_tiktok_campaigns", "TikTok", "clicks")]:
         try:
-            p = conn.query(f"SELECT `date`, `campaign_name`, `cost`, `impressions`, "
+            p = cquery(f"SELECT `date`, `campaign_name`, `cost`, `impressions`, "
                            f"`{clicks_col}` AS clicks FROM {tbl} WHERE `date` >= '{start_history}'")
             p['plataforma'] = plat
             parts.append(p)
@@ -886,7 +898,7 @@ def _load_checkout_funnel_raw():
     # distinguir "sem dados" de zero. SELECT * mantém compatibilidade caso a
     # tabela ainda não tenha as colunas novas.
     # Só o SELECT é cacheado: uma falha levanta exceção e NÃO fica presa no cache por 12 h.
-    d = conn.query("SELECT * FROM alex_ga_checkout_funnel", ttl=0)
+    d = cquery("SELECT * FROM alex_ga_checkout_funnel", ttl=0)
     d['date'] = pd.to_datetime(d['date'])
     for c in CHECKOUT_FUNNEL_COLS:
         if c in d.columns:
@@ -1215,7 +1227,7 @@ st.title("📊 Vendas Dashboard")
 if not PROPHET_AVAILABLE:
     st.warning("⚠️ O pacote `prophet` não está instalado no ambiente. O modelo de previsão de Vendas baseado em IA não será executado.")
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📈 Desempenho de Vendas", "🗺️ Mapa Regional (UF)", "💰 Investimento", "📣 Campanhas", "🧪 Funil (Piloto)", "📞 Televendas"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📈 Desempenho de Vendas", "🗺️ Mapa Regional (UF)", "💰 Investimento", "📣 Campanhas", "🧪 Funil (Piloto)", "📞 Televendas", "📱 App"])
 
 # =====================================================================
 # TAB 1: DESEMPENHO DE VENDAS
@@ -3294,7 +3306,7 @@ _TV_COLS = ['mes', 'secao', 'dim', 'metrica', 'valor', 'atualizado_em']
 @st.cache_data(ttl=43200)
 def _load_tv_dash_raw():
     # Só o SELECT é cacheado; uma falha levanta exceção (e portanto NÃO fica presa no cache por 12 h).
-    d = conn.query("SELECT mes, secao, dim, metrica, valor, atualizado_em FROM alex_tv_dash_mes", ttl=0)
+    d = cquery("SELECT mes, secao, dim, metrica, valor, atualizado_em FROM alex_tv_dash_mes", ttl=0)
     d['mes'] = pd.to_datetime(d['mes'])
     d['valor'] = pd.to_numeric(d['valor'], errors='coerce')
     return d
@@ -3303,7 +3315,7 @@ def _load_tv_dash_raw():
 @st.cache_data(ttl=43200)
 def _load_tv_dash_sem_raw():
     # Grão semanal (alex_tv_dash_sem, semana = segunda-feira); coluna renomeada para `mes` para reaproveitar os helpers.
-    d = conn.query("SELECT semana AS mes, secao, dim, metrica, valor, atualizado_em FROM alex_tv_dash_sem", ttl=0)
+    d = cquery("SELECT semana AS mes, secao, dim, metrica, valor, atualizado_em FROM alex_tv_dash_sem", ttl=0)
     d['mes'] = pd.to_datetime(d['mes'])
     d['valor'] = pd.to_numeric(d['valor'], errors='coerce')
     return d
@@ -3955,14 +3967,37 @@ with tab6:
             _tv_chart_mensal(pd.concat([_tv_serie(S, 'entradas', dim=s_, meses=_mg5).assign(serie=s_) for s_ in _stages]),
                              "Entradas por estágio, por mês", stacked=False, rotulos=True,
                              subtitle="hs_v2_date_entered_* do pipeline CDT - Lead Televendas", fonte="hubspot_deals_raw")
-            _est = _tvd_m[(_tvd_m['secao'] == 's5_estoque') & (_tvd_m['metrica'] == 'estoque')]
+            # estoque por estágio no FIM do período selecionado (último mês ou última semana do grão); o período
+            # corrente equivale ao estoque de agora. Compara com o fim do período anterior.
+            _est_all = _tvd[(_tvd['secao'] == 's5_estoque') & (_tvd['metrica'] == 'estoque')]
+            _p_fim = _tv_per[-1]
+            _p_fim_ant = _tv_per_p[-1] if _tv_per_p else None
+            _est = _est_all[_est_all['mes'] == _p_fim].groupby('dim', as_index=False)['valor'].sum()
+            if _est.empty and not _est_all.empty:
+                _p_fim = _est_all['mes'].max()   # agregado antigo (só carimbo do último mês)
+                _est = _est_all[_est_all['mes'] == _p_fim].groupby('dim', as_index=False)['valor'].sum()
             if not _est.empty:
-                _est = _est[_est['mes'] == _est['mes'].max()].groupby('dim', as_index=False)['valor'].sum()
                 _est = _est[_est['dim'].isin(_stages)].set_index('dim').reindex(_stages).fillna(0).reset_index()
-                _rows5 = [{'Estágio (estoque atual)': r['dim'], 'Negócios': format_br(r['valor']), '_level': 0, '_is_eff': False}
-                          for _, r in _est.iterrows()]
-                st.markdown(render_metric_table(_rows5, ['Estágio (estoque atual)', 'Negócios']), unsafe_allow_html=True)
-                st.caption("Estoque = Negócios cujo estágio ATUAL é o indicado (pipeline CDT - Lead Televendas), na data do último pipeline.")
+                _est_ant = (_est_all[_est_all['mes'] == _p_fim_ant].groupby('dim')['valor'].sum() if _p_fim_ant is not None else pd.Series(dtype=float))
+                _hoje = pd.Timestamp(reference_date)
+                _fim_data = (_p_fim + pd.offsets.MonthEnd(0)) if _tv_grain == 'M' else (_p_fim + pd.Timedelta(days=6))
+                _fim_lbl = "hoje (última carga)" if _fim_data >= _hoje else _fim_data.strftime('%d/%m/%Y')
+                _col_est = f"Estágio · estoque em {_fim_lbl}"
+                _rows5 = []
+                for _, r in _est.iterrows():
+                    _va = float(_est_ant.get(r['dim'], 0)) if not _est_ant.empty else None
+                    _rows5.append({_col_est: r['dim'], 'Negócios': format_br(r['valor']),
+                                   'vs fim do período anterior': (f"{format_br(_va)} {_tv_delta(r['valor'], _va)}" if _va else '—'),
+                                   '_level': 0, '_is_eff': False})
+                st.markdown(render_metric_table(_rows5, [_col_est, 'Negócios', 'vs fim do período anterior']), unsafe_allow_html=True)
+                st.caption("Estoque = em que estágio cada Negócio do pipeline CDT - Lead Televendas estava no fim do período: o estágio "
+                           "atual, se já estava nele naquela data; senão o último estágio em que tinha entrado até lá (empate → o mais "
+                           "avançado); Negócio já criado mas sem data de estágio conta como LEAD. É uma foto, não um fluxo: todo período "
+                           "que inclui hoje mostra a mesma foto (última carga) — o que muda com o período é a data da foto (períodos "
+                           "passados) e a coluna de comparação (fim da semana anterior no grão semanal; fim do mês anterior no mensal). "
+                           "GANHO e PERDIDO são finais e só acumulam; LEAD, EM NEGOCIAÇÃO e CONTATO SEM SUCESSO são o estoque vivo. Se a "
+                           "base de Negócios não recebeu movimentação entre duas datas, os estoques saem iguais. Cobertura: Negócios "
+                           "modificados desde 13/05/2026.")
         with c2:
             # auditoria funil_de_contatos × data_de_entrada
             _aud = _tvd_m[(_tvd_m['secao'] == 's5_audit')]
@@ -4065,8 +4100,30 @@ with tab6:
                 "é o roteamento (workflow DEAL CREATE, id 1637561194) que precisa ser conferido, não o dado.",
                 bg="#f8fafc", icon="🧭")
             with st.expander("Canais de origem no período (detalhe)"):
-                _d6 = _w6.sort_values('contatos', ascending=False)[['grupo', 'canal_regra', 'dim'] + _cols6]
+                st.markdown(
+                    "**Como ler esta tabela.** Cada linha é um valor de `primeiro_canal_de_origem` do HubSpot (o 1º canal gravado no "
+                    "Contato), com os Contatos **criados no período** e por onde eles passaram — sempre como *contagem acumulada até "
+                    "hoje*, não só dentro do período:<br>"
+                    "• **grupo / canal_regra** — a que grupo de roteamento da Jornada (A–D) o canal foi mapeado pelo de-para "
+                    "`GRUPOS_CANAL` do app.py, e o rótulo da regra que casou (\"Fora da regra\" = nenhuma regra documentada).<br>"
+                    "• **contatos** — Contatos criados no período com esse 1º canal (`createdate`).<br>"
+                    "• **no_fluxo** — desses, quantos têm `data_de_entrada_no_fluxo_do_televendas` (entraram nas 2 h exclusivas do "
+                    "televendas). Esperado alto no Grupo A e ~0 no B.<br>"
+                    "• **enviados_engaj** — quantos têm `data_do_primeiro_envio_para_instancia_de_engajamento` (Negócio criado no "
+                    "pipeline de Distribuição e entregue à instância de Engajamento).<br>"
+                    "• **distribuidos_franquia** — quantos têm `data_de_distribuicao` ou `id_franquia_distribuida` (chegaram a uma "
+                    "franquia; é o marcador do RMA 'encaminhados para franquias').<br>"
+                    "• **filiados** — quantos têm `data_de_filiacao` (viraram cliente, por qualquer canal de venda).<br>"
+                    "• **com_cpf** — quantos têm `cpf_norm` (só esses cruzam com o NOMINAL).<br>"
+                    "As colunas **%** dividem cada marcador por *contatos*. Leitura típica: um canal do Grupo A com `% no fluxo` baixo, "
+                    "ou um canal do Grupo B com `% no fluxo` alto (ex.: Facebook - Regional), é o roteamento (workflow DEAL CREATE) "
+                    "que está fora da regra — não o dado. `% filiados` compara a qualidade dos canais dentro do mesmo período "
+                    "(meses recentes têm menos tempo para filiar).", unsafe_allow_html=True)
+                _d6 = _w6.sort_values('contatos', ascending=False)[['grupo', 'canal_regra', 'dim'] + _cols6].copy()
                 _d6 = _d6.rename(columns={'dim': 'primeiro_canal_de_origem'})
+                for _c, _lbl in [('no_fluxo', '% no fluxo'), ('enviados_engaj', '% engaj.'), ('distribuidos_franquia', '% franquia'),
+                                 ('filiados', '% filiados'), ('com_cpf', '% com CPF')]:
+                    _d6[_lbl] = (_d6[_c] / _d6['contatos'].replace(0, pd.NA) * 100).astype(float).round(1)
                 st.dataframe(_d6, use_container_width=True, hide_index=True)
 
     # =================================================================
@@ -4118,3 +4175,843 @@ with tab6:
                 "Fonte: export do Talkerchat (alex_talkerchat via v_alex_talkerchat); compras confirmadas por CPF ±3 dias no NOMINAL. "
                 "Cobertura do export: reimportar o CSV no fechamento do mês (última data carregada aparece no último mês com dados).",
                 bg="#f8fafc", icon="ℹ️")
+
+
+# =====================================================================
+# TAB 7: APP — funil (download → cadastro → compra), uso de produtos, freemium
+# ---------------------------------------------------------------------
+# Lê SOMENTE a tabela agregada mensal `alex_app_dash_mes` (mes, secao, dim,
+# metrica, valor), reconstruída pelo pipeline `gt7 run app_dash`
+# (claude-toolkit/pipelines/app_dash.py), que lê o Athena (fl_data_login,
+# fl_plano_usuario, fl_filiado, fl_utilizacao_filiado, fl_cashback).
+# Reaproveita os helpers visuais da aba 📞 Televendas (_tv_kpi, _tv_note,
+# _tv_funil, _tv_chart_mensal, _tv_titulo…) — por isso vem depois dela.
+#
+# Definições (glossário 30/07 · estudo de subprodutos 20/08):
+#   download  = 1º login no app (fl_data_login.data_app)
+#   cadastro  = fl_plano_usuario.dt_criacao
+#   compra    = filiação de titular no mês (fl_filiado) — "com o app" = cadastro até o dia da venda
+#   1ª filiação por CPF (histórico) separa "já era cliente" de "entrou como freemium"
+#   freemium atual = plano Freemium e sem filiação; freemium → cliente = 1ª filiação ≥ 1 dia após o
+#   cadastro e cliente ativo hoje (flag_qca=1, vam ≤ 34 — definição C)
+# =====================================================================
+_AP_COLS = ['mes', 'secao', 'dim', 'metrica', 'valor', 'atualizado_em']
+
+
+@st.cache_data(ttl=43200)
+def _load_app_dash_raw():
+    d = cquery("SELECT mes, secao, dim, metrica, valor, atualizado_em FROM alex_app_dash_mes", ttl=0)
+    d['mes'] = pd.to_datetime(d['mes'])
+    d['valor'] = pd.to_numeric(d['valor'], errors='coerce')
+    return d
+
+
+def load_app_dash():
+    try:
+        return _load_app_dash_raw(), None
+    except Exception as e:
+        return pd.DataFrame(columns=_AP_COLS), f"{type(e).__name__}: {str(e)[:400]}"
+
+
+_AP_POP_LBL = {'clientes_ativos': 'Clientes ativos (hoje)', 'clientes_nao_freemium': 'Clientes ativos que não vieram do freemium',
+               'freemium_atual': 'Freemiums atuais', 'freemium_conv': 'Freemium → cliente ativo'}
+
+
+def _ap_derivar_pop(d):
+    """População derivada 'clientes_nao_freemium' = clientes_ativos − freemium_conv (o convertido é subconjunto do ativo e
+    o uso dos dois vem da mesma fonte, fl_utilizacao_filiado): s2_pop.populacao, s2_uso (por produto|sub) e s2_uso_tot."""
+    if d.empty:
+        return d
+    extra = []
+    a = d[(d['secao'] == 's2_pop') & (d['dim'] == 'clientes_ativos')]
+    c = d[(d['secao'] == 's2_pop') & (d['dim'] == 'freemium_conv')]
+    if not a.empty:
+        m = a.merge(c[['mes', 'metrica', 'valor']], on=['mes', 'metrica'], how='left', suffixes=('', '_c'))
+        m['valor'] = (m['valor'] - m['valor_c'].fillna(0)).clip(lower=0)
+        m['dim'] = 'clientes_nao_freemium'
+        extra.append(m[_AP_COLS])
+    a = d[(d['secao'] == 's2_uso_tot') & (d['dim'] == 'clientes_ativos')]
+    c = d[(d['secao'] == 's2_uso_tot') & (d['dim'] == 'freemium_conv')]
+    if not a.empty:
+        m = a.merge(c[['mes', 'metrica', 'valor']], on=['mes', 'metrica'], how='left', suffixes=('', '_c'))
+        m['valor'] = (m['valor'] - m['valor_c'].fillna(0)).clip(lower=0)
+        m['dim'] = 'clientes_nao_freemium'
+        extra.append(m[_AP_COLS])
+    a = d[(d['secao'] == 's2_uso') & (d['dim'].str.startswith('clientes_ativos|'))].copy()
+    c = d[(d['secao'] == 's2_uso') & (d['dim'].str.startswith('freemium_conv|'))].copy()
+    if not a.empty:
+        a['chave'] = a['dim'].str.split('|', n=1).str[1]
+        c['chave'] = c['dim'].str.split('|', n=1).str[1]
+        m = a.merge(c[['mes', 'metrica', 'chave', 'valor']], on=['mes', 'metrica', 'chave'], how='left', suffixes=('', '_c'))
+        m['valor'] = (m['valor'] - m['valor_c'].fillna(0)).clip(lower=0)
+        m['dim'] = 'clientes_nao_freemium|' + m['chave']
+        extra.append(m[_AP_COLS])
+    return pd.concat([d] + extra, ignore_index=True) if extra else d
+_AP_BUCKET_LBL = {'a_0_30d': '0–30 dias', 'b_31_90d': '31–90 dias', 'c_91_180d': '91–180 dias',
+                  'd_181_365d': '181–365 dias', 'e_mais_365d': 'mais de 1 ano'}
+_AP_MESES_PT = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
+
+with tab7:
+    st.markdown("## App — funil, uso de produtos e freemium")
+    _apd, _ap_err = load_app_dash()
+    _apd = _ap_derivar_pop(_apd)
+    _ap_meses = list(_tv_meses)          # meses tocados pelo período dos Controles Globais (mesma régua da aba 📞)
+    _ap_meses_p = list(_tv_meses_p)
+    _ap_m_fim = _tv_m_fim
+    _ap_atual = _apd['atualizado_em'].max() if not _apd.empty else None
+    _ap_hdr1, _ap_hdr2 = st.columns([3, 1.2])
+    _ap_hdr1.caption(
+        f"Período: **{_ap_meses[0]:%m/%Y}**" + (f" a **{_ap_meses[-1]:%m/%Y}**" if len(_ap_meses) > 1 else "")
+        + " (meses tocados pelo período dos Controles Globais; grão mensal). "
+        + (f"Comparação: {_ap_meses_p[0]:%m/%Y}–{_ap_meses_p[-1]:%m/%Y}. " if len(_ap_meses_p) > 1
+           else (f"Comparação: {_ap_meses_p[0]:%m/%Y}. " if _ap_meses_p else ""))
+        + "Fontes (Athena): fl_data_login · fl_plano_usuario · fl_filiado · fl_utilizacao_filiado · fl_cashback, "
+          "agregadas em `alex_app_dash_mes` pelo pipeline `gt7 run app_dash`.")
+    _ap_hdr2.markdown(
+        "<div style='border:1px solid #e2e8f0;border-radius:10px;padding:7px 12px;background:#fff;'>"
+        "<div style='font-size:10.5px;color:#64748b;font-weight:600;'>Agregado atualizado em</div>"
+        f"<div style='font-size:13px;color:#0f172a;font-weight:700;'>🗓️ {pd.Timestamp(_ap_atual).strftime('%d/%m/%Y %H:%M') if _ap_atual is not None else '—'}</div>"
+        "</div>", unsafe_allow_html=True)
+    if _ap_err:
+        st.error(f"⚠️ Falha ao ler `alex_app_dash_mes` — a query levantou: `{_ap_err}`.")
+    elif _apd.empty:
+        st.warning("⚠️ A tabela `alex_app_dash_mes` ainda não existe ou está vazia. Rode `gt7 run app_dash` (claude-toolkit) "
+                   "e recarregue os dados.")
+
+    def _ap_val(secao, metrica, dim='app', meses=None):
+        meses = _ap_meses if meses is None else meses
+        d = _apd[(_apd['secao'] == secao) & (_apd['metrica'] == metrica) & (_apd['dim'] == dim) & (_apd['mes'].isin(list(meses)))]
+        return None if d.empty else float(d['valor'].sum(skipna=True))
+
+    def _ap_serie(secao, metrica, dim='app', meses=None):
+        meses = _ap_meses if meses is None else meses
+        d = _apd[(_apd['secao'] == secao) & (_apd['metrica'] == metrica) & (_apd['dim'] == dim) & (_apd['mes'].isin(list(meses)))]
+        return d.groupby('mes', as_index=False)['valor'].sum().sort_values('mes')
+
+    def _ap_long(secao, metricas, labels=None, dim='app', meses=None):
+        parts = []
+        for m in metricas:
+            s = _ap_serie(secao, m, dim=dim, meses=meses)
+            s['serie'] = (labels or {}).get(m, m)
+            parts.append(s)
+        return pd.concat(parts) if parts else pd.DataFrame(columns=['mes', 'serie', 'valor'])
+
+    def _ap_janela(key, opcoes=("3 meses", "12 meses"), padrao=0):
+        """Janela das séries: últimos N meses até o fim do período (mês atual = só o último mês)."""
+        esc = st.radio("Janela:", list(opcoes), index=padrao, horizontal=True, key=key)
+        n = {"Mês atual": 1, "3 meses": 3, "12 meses": 12}[esc]
+        return list(pd.period_range(_ap_m_fim - pd.DateOffset(months=n - 1), _ap_m_fim, freq='M').to_timestamp()), esc
+
+    def _ap_mes_lbl(ts):
+        ts = pd.Timestamp(ts)
+        return f"{_AP_MESES_PT[ts.month - 1]}/{ts.strftime('%y')}"
+
+    _ap_tabs = st.tabs(["📲 1 · Funil do app", "🧩 2 · Uso de produtos", "🌱 3 · Freemium", "💰 4 · LTV e entrada no app"])
+
+    # =================================================================
+    # 1 · FUNIL DO APP
+    # =================================================================
+    with _ap_tabs[0]:
+        S = 's1_funil'
+        dl = _ap_val(S, 'downloads'); dl_scpf = _ap_val(S, 'downloads_sem_cpf')
+        cad = _ap_val(S, 'cadastros'); cad_fil = _ap_val(S, 'cadastros_ja_filiado'); cad_dia = _ap_val(S, 'cadastros_venda_no_dia')
+        cad_free = _ap_val(S, 'cadastros_freemium'); cv30 = _ap_val(S, 'freemium_conv_30d'); cv90 = _ap_val(S, 'freemium_conv_90d')
+        cvt = _ap_val(S, 'freemium_conv_total'); cad_cartao = _ap_val(S, 'cadastros_ativou_cartao')
+        comp = _ap_val(S, 'compras'); comp_app = _ap_val(S, 'compras_com_app_ate_venda'); comp_idpv = _ap_val(S, 'compras_app_do_filiado')
+        comp_antes = _ap_val(S, 'compras_app_antes'); comp_junto = _ap_val(S, 'compras_app_junto'); comp_dep = _ap_val(S, 'compras_app_depois')
+        comp_cad = _ap_val(S, 'compras_com_cadastro_app')
+        dl_p = _ap_val(S, 'downloads', meses=_ap_meses_p); cad_p = _ap_val(S, 'cadastros', meses=_ap_meses_p)
+        comp_app_p = _ap_val(S, 'compras_com_app_ate_venda', meses=_ap_meses_p)
+        comp_sem_app = (comp - comp_app) if (comp is not None and comp_app is not None) else None
+
+        k1, k2, k3, k4 = st.columns(4)
+        _tv_kpi(k1, "⬇️", "Downloads (1º login no app)", f"{_tv_n(dl)} {_tv_delta(dl, dl_p)}",
+                f"{_tv_pct(dl_scpf, dl)} sem CPF (ficam fora dos cruzamentos)")
+        _tv_kpi(k2, "📝", "Cadastros no app", f"{_tv_n(cad)} {_tv_delta(cad, cad_p)}",
+                f"já cliente {_tv_pct(cad_fil, cad)} · venda no dia {_tv_pct(cad_dia, cad)} · entraram como freemium {_tv_pct(cad_free, cad)}",
+                color="#2e8a4f")
+        _tv_kpi(k3, "🛒", "Compras com o app = filiações de quem já tinha cadastro no app", f"{_tv_n(comp_app)} {_tv_delta(comp_app, comp_app_p)}",
+                f"{_tv_pct(comp_app, comp)} das {_tv_n(comp)} filiações de titulares do período; cadastro no app até 1 dia após a venda", color="#0f172a")
+        _tv_kpi(k4, "🌱", "Freemium que converteu (coorte do período)", f"{_tv_pct(cvt, cad_free)}",
+                f"{_tv_n(cvt)} de {_tv_n(cad_free)} · em 30 d {_tv_pct(cv30, cad_free)} · em 90 d {_tv_pct(cv90, cad_free)}", color="#b45309")
+
+        c1, c2 = st.columns([1.9, 1])
+        with c1:
+            _tv_funil("Funil do app · download → cadastro → compra", [
+                ("⬇️", "Downloads (1º login)", dl, "fl_data_login.data_app no mês — 1 linha por usuário"),
+                ("📝", "Cadastros", cad, "fl_plano_usuario.dt_criacao no mês"),
+                ("🛒", "Compras com o app", comp_app, "filiações de titulares no mês de CPFs com cadastro no app até 1 dia após a venda"),
+                ("📱", "…das quais IDPV do app (APP DO FILIADO)", comp_idpv, "tipo_prospeccao = APP DO FILIADO"),
+            ], subtitle=(f"{_ap_meses[0]:%m/%Y}–{_ap_meses[-1]:%m/%Y}" if len(_ap_meses) > 1 else f"{_ap_meses[0]:%m/%Y}"))
+            st.caption("As três etapas são contagens do mesmo mês, não uma coorte: quem baixou num mês pode cadastrar e comprar em outro "
+                       "(por isso 'compras' pode passar de 100% de 'cadastros' em meses de venda forte). A leitura por coorte — dos "
+                       "cadastros freemium do mês, quantos converteram — está no 4º card, nas linhas '……' da tabela e no gráfico de conversão.")
+            _rows_f = [
+                {'Etapa': 'Downloads (1º login)', 'Valor': _tv_n(dl), '% da etapa anterior': '—', '_level': 0, '_is_eff': False},
+                {'Etapa': '… sem CPF no login', 'Valor': _tv_n(dl_scpf), '% da etapa anterior': _tv_pct(dl_scpf, dl), '_level': 1, '_is_eff': False},
+                {'Etapa': 'Cadastros', 'Valor': _tv_n(cad), '% da etapa anterior': _tv_pct(cad, dl), '_level': 0, '_is_eff': False},
+                {'Etapa': '… já era cliente ao cadastrar', 'Valor': _tv_n(cad_fil), '% da etapa anterior': _tv_pct(cad_fil, cad), '_level': 1, '_is_eff': False},
+                {'Etapa': '… comprou no dia do cadastro (venda no ato)', 'Valor': _tv_n(cad_dia), '% da etapa anterior': _tv_pct(cad_dia, cad), '_level': 1, '_is_eff': False},
+                {'Etapa': '… entrou como freemium', 'Valor': _tv_n(cad_free), '% da etapa anterior': _tv_pct(cad_free, cad), '_level': 1, '_is_eff': False},
+                {'Etapa': '…… converteu em até 30 dias', 'Valor': _tv_n(cv30), '% da etapa anterior': _tv_pct(cv30, cad_free), '_level': 2, '_is_eff': False},
+                {'Etapa': '…… converteu em até 90 dias', 'Valor': _tv_n(cv90), '% da etapa anterior': _tv_pct(cv90, cad_free), '_level': 2, '_is_eff': False},
+                {'Etapa': '…… converteu até hoje', 'Valor': _tv_n(cvt), '% da etapa anterior': _tv_pct(cvt, cad_free), '_level': 2, '_is_eff': False},
+                {'Etapa': '… ativou o cartão virtual', 'Valor': _tv_n(cad_cartao), '% da etapa anterior': _tv_pct(cad_cartao, cad), '_level': 1, '_is_eff': False},
+                {'Etapa': 'Compras (filiações de titulares no mês, todos os canais)', 'Valor': _tv_n(comp), '% da etapa anterior': '—', '_level': 0, '_is_eff': False},
+                {'Etapa': '… com o app: cadastro no app até 1 dia após a venda', 'Valor': _tv_n(comp_app), '% da etapa anterior': _tv_pct(comp_app, comp), '_level': 1, '_is_eff': False},
+                {'Etapa': '…… cadastro antes da venda (freemium / ex-cliente com app)', 'Valor': _tv_n(comp_antes), '% da etapa anterior': _tv_pct(comp_antes, comp_app), '_level': 2, '_is_eff': False},
+                {'Etapa': '…… cadastro junto com a venda (±1 dia)', 'Valor': _tv_n(comp_junto), '% da etapa anterior': _tv_pct(comp_junto, comp_app), '_level': 2, '_is_eff': False},
+                {'Etapa': '… IDPV do app (APP DO FILIADO)', 'Valor': _tv_n(comp_idpv), '% da etapa anterior': _tv_pct(comp_idpv, comp), '_level': 1, '_is_eff': False},
+                {'Etapa': '… cadastrou depois da venda', 'Valor': _tv_n(comp_dep), '% da etapa anterior': _tv_pct(comp_dep, comp), '_level': 1, '_is_eff': False},
+                {'Etapa': '… sem app até a venda', 'Valor': _tv_n(comp_sem_app), '% da etapa anterior': _tv_pct(comp_sem_app, comp), '_level': 1, '_is_eff': False},
+            ]
+            st.markdown(render_metric_table(_rows_f, ['Etapa', 'Valor', '% da etapa anterior']), unsafe_allow_html=True)
+            with st.expander("📖 Definição exata de cada etapa da tabela"):
+                st.markdown(
+                    "Tudo é contado por **CPF** e por **mês** (meses tocados pelo período dos Controles Globais). "
+                    "A **1ª filiação** de um CPF é o `MIN(dt_filiacao)` no histórico completo de contratos do `fl_filiado` "
+                    "(titular ou dependente) — é ela que decide se a pessoa já era cliente quando cadastrou o app.\n\n"
+                    "| Etapa | Definição (tabela · regra) | Como ler o % |\n|---|---|---|\n"
+                    "| **Downloads (1º login)** | `fl_data_login.data_app` no mês. É o *primeiro login* de cada usuário (1 linha por usuário), a régua que a área usa como download. | — |\n"
+                    "| … sem CPF no login | linhas de `fl_data_login` com `document` vazio. Ficam fora de todos os cruzamentos por CPF (pico de 25% em jun/26). | ÷ downloads |\n"
+                    "| **Cadastros** | `fl_plano_usuario.dt_criacao` no mês — a pessoa criou a conta no app (o campo `tem_registro` deixou de ser preenchido em out/2025 e não é usado). | ÷ downloads (não é conversão: login e cadastro podem cair em meses diferentes) |\n"
+                    "| … já era cliente ao cadastrar | cadastros cuja 1ª filiação é **anterior** ao dia do cadastro — cliente (ou ex-cliente) instalando o app. | ÷ cadastros |\n"
+                    "| … comprou no dia do cadastro (venda no ato) | 1ª filiação **no mesmo dia** do cadastro — venda pelo app ou cadastro feito junto com a venda (balcão/vendedor). | ÷ cadastros |\n"
+                    "| … entrou como freemium | 1ª filiação **nula** ou **posterior** ao dia do cadastro — a pessoa usou o app sem ser cliente. É a única fatia em que faz sentido medir conversão. | ÷ cadastros |\n"
+                    "| …… converteu em até 30 / 90 dias | dos que entraram como freemium naquele mês, quantos tiveram a 1ª filiação entre 1 e 30 (ou 90) dias depois do cadastro. | ÷ entraram como freemium |\n"
+                    "| …… converteu até hoje | idem, com a 1ª filiação em qualquer data até a última carga (≥ 1 dia após o cadastro). | ÷ entraram como freemium |\n"
+                    "| … ativou o cartão virtual | cadastros do mês com `dt_ativacao_pl` preenchido (em qualquer data). Sinal fraco: não prediz conversão (estudo 20/08). | ÷ cadastros |\n"
+                    "| **Compras** | filiações de **titulares** no mês: `fl_filiado` com `registro_atual = 1`, `flag_titular = 1` e `dt_filiacao` no mês — todos os canais de venda. | — |\n"
+                    "| … com o app: cadastro até 1 dia após a venda | dessas filiações, as de CPFs que têm cadastro em `fl_plano_usuario` com `dt_criacao` ≤ `dt_filiacao` + 1 dia. **Não** é 'todo mundo que tem o app': é quem já tinha a conta no app *até o dia seguinte à venda* (a folga de 1 dia captura o cadastro feito junto com a venda). Quem instalou o app depois disso está em 'cadastrou depois da venda'; quem só baixou e nunca cadastrou não conta (download sem cadastro não tem CPF confiável). | ÷ compras |\n"
+                    "| …… cadastro antes da venda | `dt_criacao` < `dt_filiacao` − 1 dia: freemium que converteu ou ex-cliente que mantinha o app. | ÷ compras com o app |\n"
+                    "| …… cadastro junto com a venda (±1 dia) | `dt_criacao` entre `dt_filiacao` − 1 e + 1 dia: conta criada no ato da venda. | ÷ compras com o app |\n"
+                    "| … IDPV do app (APP DO FILIADO) | filiações do mês com `tipo_prospeccao = 'APP DO FILIADO'` — o canal de venda oficial do app (venda concluída dentro do app). Subconjunto de 'compras', não de 'compras com o app' (algumas vendas do app têm cadastro só depois). | ÷ compras |\n"
+                    "| … cadastrou depois da venda | `dt_criacao` > `dt_filiacao` + 1 dia: cliente que instalou o app depois de comprar. | ÷ compras |\n"
+                    "| … sem app até a venda | compras − compras com o app: filiações sem cadastro no app até o dia seguinte à venda (inclui quem cadastrou depois e quem nunca cadastrou). | ÷ compras |")
+        with c2:
+            _tv_note(
+                "<b>Como ler.</b> <b>Download</b> é o 1º login (fl_data_login), não o evento de loja; "
+                f"{_tv_pct(dl_scpf, dl)} vêm sem CPF e não cruzam com nada. <b>Cadastro</b> é o dt_criacao no fl_plano_usuario "
+                "(o campo tem_registro parou de ser preenchido em out/2025). Dos cadastros, uma parte <b>já era cliente</b> "
+                "(instalou o app depois de filiar), outra <b>comprou no ato</b> (venda pelo app / no balcão) e o resto "
+                "<b>entrou como freemium</b> — é sobre esse grupo que a conversão faz sentido.<br><br>"
+                "<b>Compra</b> = filiação de titular no mês; conta 'com o app' quando o cadastro existia até o dia da venda. "
+                f"No período, {_tv_pct(comp_app, comp)} das filiações passaram pelo app, mas só {_tv_pct(comp_idpv, comp)} têm IDPV "
+                "do app (APP DO FILIADO): o app é presença no caminho, não o canal de fechamento — metade da conversão do "
+                "freemium fecha no porta a porta (estudo de 20/08).<br><br>"
+                "<b>Sinal de qualidade:</b> cashback de farmácia no 1º mês prediz 3,5× a conversão do freemium; "
+                "ativar o cartão virtual sozinho não prediz nada (ver sub-aba 2).")
+        _mg1, _ = _ap_janela('t7_s1_jan')
+        _tv_chart_mensal(_ap_long(S, ['downloads', 'cadastros', 'cadastros_freemium', 'compras_com_app_ate_venda'], meses=_mg1,
+                                  labels={'downloads': 'Downloads', 'cadastros': 'Cadastros', 'cadastros_freemium': 'Entraram como freemium',
+                                          'compras_com_app_ate_venda': 'Compras com o app'}),
+                         "Série mensal — funil do app", stacked=False, rotulos=True,
+                         fonte="Athena: fl_data_login · fl_plano_usuario · fl_filiado")
+        _s1 = _ap_serie(S, 'cadastros_freemium', meses=_mg1).rename(columns={'valor': 'free'})
+        for m_ in ['freemium_conv_30d', 'freemium_conv_90d', 'freemium_conv_total']:
+            _s1 = _s1.merge(_ap_serie(S, m_, meses=_mg1).rename(columns={'valor': m_}), on='mes', how='left')
+        _pl = []
+        for m_, lbl_ in [('freemium_conv_30d', '% conv. em 30 d'), ('freemium_conv_90d', '% conv. em 90 d'), ('freemium_conv_total', '% conv. até hoje')]:
+            _t = _s1[['mes']].copy(); _t['serie'] = lbl_; _t['valor'] = (_s1[m_] / _s1['free'] * 100).round(2)
+            _pl.append(_t)
+        _tv_linhas_mensal(pd.concat(_pl) if _pl else pd.DataFrame(columns=['mes', 'serie', 'valor']),
+                          "Conversão da coorte de freemiums por mês de cadastro (%)", pct=True, rotulos=True,
+                          subtitle="coorte = quem cadastrou o app naquele mês SEM ser cliente; % = quantos filiaram em até 30 d, 90 d ou até hoje")
+        st.caption("**Como ler:** cada ponto é uma coorte de cadastro (o mês no eixo X), não o mês da venda. Denominador = cadastros do mês "
+                   "que entraram como freemium; numerador = os que tiveram a 1ª filiação de 1 a 30 dias depois do cadastro (30 d), de 1 a 90 "
+                   "dias (90 d) ou em qualquer data até a última carga (até hoje). Por construção até hoje ≥ 90 d ≥ 30 d. Meses recentes "
+                   "ainda não tiveram tempo: uma coorte com menos de 30 dias mostra as três curvas iguais, e só a partir de 90 dias de idade "
+                   "a curva '90 d' está fechada. Compare coortes com a mesma idade (ex.: '30 d' de meses já maduros) para ver se a "
+                   "conversão está melhorando ou piorando.")
+
+    # =================================================================
+    # 2 · USO DE PRODUTOS
+    # =================================================================
+    with _ap_tabs[1]:
+        cc1, cc2 = st.columns([1.6, 1])
+        _pop = cc1.radio("População:", list(_AP_POP_LBL.keys()), format_func=lambda k: _AP_POP_LBL[k], horizontal=True, key='t7_s2_pop')
+        with cc2:
+            _mg2, _ = _ap_janela('t7_s2_jan')
+        _pop_n = _ap_val('s2_pop', 'populacao', dim=_pop, meses=[_apd['mes'].max()] if not _apd.empty else [])
+        _ex_free = _ap_val('s2_pop', 'populacao', dim='exfiliados_plano_freemium', meses=[_apd['mes'].max()] if not _apd.empty else [])
+        _uso = _apd[(_apd['secao'] == 's2_uso') & (_apd['mes'].isin(_mg2)) & (_apd['dim'].str.startswith(_pop + '|'))].copy()
+        _tot = _apd[(_apd['secao'] == 's2_uso_tot') & (_apd['mes'].isin(_mg2)) & (_apd['dim'] == _pop)]
+        _ult = _mg2[-1]
+        _u_ult = float(_tot[_tot['mes'] == _ult]['valor'].sum()) if not _tot.empty else None
+        _u_med = float(_tot['valor'].mean()) if not _tot.empty else None
+
+        k1, k2, k3, k4 = st.columns(4)
+        _tv_kpi(k1, "👥", f"{_AP_POP_LBL[_pop]} — população (hoje)", _tv_n(_pop_n),
+                {"clientes_ativos": "flag_qca = 1 e vam ≤ 34 (def. C), titulares e dependentes",
+                 "clientes_nao_freemium": "clientes ativos (def. C) menos os que entraram como freemium e converteram",
+                 "freemium_atual": f"plano Freemium sem filiação (freemium puro) · + {_tv_n(_ex_free)} ex-filiados no plano Freemium",
+                 "freemium_conv": "entraram como freemium, filiaram ≥ 1 dia depois e são clientes ativos hoje"}[_pop])
+        _tv_kpi(k2, "📈", f"Usaram algum produto em {_ap_mes_lbl(_ult)}", f"{_tv_n(_u_ult)}",
+                f"{_tv_pct(_u_ult, _pop_n)} da população · média da janela {_tv_n(_u_med)}/mês", color="#2e8a4f")
+        if not _uso.empty:
+            _uso[['pop', 'produto', 'sub']] = _uso['dim'].str.split('|', n=2, expand=True)
+            _top = _uso[(_uso['mes'] == _ult) & (_uso['metrica'] == 'usuarios')].groupby('produto')['valor'].sum().sort_values(ascending=False)
+            _top1 = _top.index[0] if len(_top) else '—'
+            _tv_kpi(k3, "🏆", f"Produto mais usado em {_ap_mes_lbl(_ult)}", _top1,
+                    f"{_tv_n(_top.iloc[0]) if len(_top) else '—'} usuários · {_tv_pct(_top.iloc[0] if len(_top) else None, _pop_n)} da população", color="#0f172a")
+            _usos_ult = float(_uso[(_uso['mes'] == _ult) & (_uso['metrica'] == 'usos')]['valor'].sum())
+            _tv_kpi(k4, "🔁", f"Usos por usuário em {_ap_mes_lbl(_ult)}",
+                    (f"{_usos_ult / _u_ult:.2f}".replace('.', ',') if _u_ult else "—"),
+                    f"{_tv_n(_usos_ult)} usos registrados no mês", color="#b45309")
+        else:
+            _tv_kpi(k3, "🏆", "Produto mais usado", "—", "sem linhas de uso na janela", color="#0f172a")
+            _tv_kpi(k4, "🔁", "Usos por usuário", "—", "", color="#b45309")
+
+        if _uso.empty:
+            st.info("Sem dados de uso para esta população na janela. Rode `gt7 run app_dash --arg only=s2`.")
+        else:
+            c1, c2 = st.columns([1.9, 1])
+            with c1:
+                _lp = _uso[_uso['metrica'] == 'usuarios'].groupby(['mes', 'produto'], as_index=False)['valor'].sum().rename(columns={'produto': 'serie'})
+                _tv_chart_mensal(_lp, f"Usuários por produto e mês — {_AP_POP_LBL[_pop]}", stacked=False, rotulos=True,
+                                 subtitle="usuários únicos (CPF) com pelo menos um uso do produto no mês",
+                                 fonte="Athena: fl_utilizacao_filiado (filiados) · fl_cashback + fl_plano_usuario (freemium)")
+                _pv = _uso[_uso['metrica'] == 'usuarios'].pivot_table(index=['produto', 'sub'], columns='mes', values='valor', aggfunc='sum').fillna(0)
+                _pv = _pv.reindex(columns=sorted(_pv.columns))
+                _pv_show = _pv.copy()
+                _pv_show.columns = [_ap_mes_lbl(c) for c in _pv_show.columns]
+                _pv_show = _pv_show.sort_values(_pv_show.columns[-1], ascending=False)
+                _rows2 = []
+                for (prod, sub), r in _pv_show.iterrows():
+                    row = {'Produto · subproduto': f"{prod} · {sub}", '_level': 0, '_is_eff': False}
+                    for c in _pv_show.columns:
+                        row[c] = format_br(r[c])
+                    row['% pop. (último mês)'] = _tv_pct(r[_pv_show.columns[-1]], _pop_n)
+                    _rows2.append(row)
+                st.markdown(render_metric_table(_rows2, ['Produto · subproduto'] + list(_pv_show.columns) + ['% pop. (último mês)']),
+                            unsafe_allow_html=True)
+            with c2:
+                _tv_note({
+                    "clientes_ativos": "<b>Clientes ativos.</b> Uso vem do fl_utilizacao_filiado: Cashback (Nacionais = Raia/Drogasil, "
+                                       "Locais, Grupo, Campanhas, Online), Amor Saúde (consulta, exames, sessão, procedimento), Web Dental, "
+                                       "Refuturiza e Visão de Todos. <code>valor</code> é o que o filiado consumiu, não receita. A população "
+                                       "é a de <i>hoje</i> (def. C) — meses antigos medem o uso passado de quem está ativo agora.",
+                    "clientes_nao_freemium": "<b>Clientes ativos que não vieram do freemium.</b> É a população de clientes ativos "
+                                             "(def. C) <i>menos</i> os freemiums convertidos — ou seja, quem virou cliente sem passar pelo "
+                                             "app como não-cliente (porta a porta, link do vendedor, PJ…). Uso do fl_utilizacao_filiado, "
+                                             "calculado por diferença (o convertido é subconjunto do ativo). Compare com "
+                                             "'Freemium → cliente ativo' no gráfico de penetração abaixo: o que o cliente de sempre usa "
+                                             "× o que o freemium convertido usa.",
+                    "freemium_atual": "<b>Freemiums atuais.</b> Não existe fl_utilizacao para não filiado: o sinal de uso é o "
+                                      "<b>cashback</b> (fl_cashback, cashin; excluído o cashback de adesão), separado em farmácia "
+                                      "(Raia/Drogasil) e outros parceiros, mais a <b>ativação do cartão virtual</b> e os <b>cadastros do mês</b>. "
+                                      "A população é a de hoje (freemium puro) — quem converteu depois não está aqui, está em "
+                                      "'Freemium → cliente ativo'.",
+                    "freemium_conv": "<b>Freemium → cliente ativo.</b> Entraram como freemium (nenhuma filiação anterior), filiaram ≥ 1 dia "
+                                     "depois do cadastro e hoje são clientes ativos. O uso aqui é o de <i>cliente</i> (fl_utilizacao). "
+                                     "Abaixo, o mesmo grupo aberto por <b>tempo que ficou como freemium</b>: o que usava antes de "
+                                     "converter e o que usa hoje.",
+                }[_pop], bg="#f8fafc", icon="ℹ️")
+                _tv_note("<b>Régua do estudo de 20/08.</b> Cashback de farmácia no 1º mês → conversão 13,3% vs 3,8% sem uso (3,5×); "
+                         "quem usou farmácia antes de converter paga +7,5% de meses em 12 m e deve menos (21,6% vs 26,9% no mês 6). "
+                         "Cashback de 'outros parceiros' sinaliza o contrário (3,1% de conversão; 37,3% de inadimplência). "
+                         "Cartão ativado: 3,8%, igual a nada.", bg="#ecfdf5", icon="💡")
+
+            if _pop in ('clientes_nao_freemium', 'freemium_conv'):
+                st.markdown("---")
+                _tv_titulo("Penetração por produto — clientes de sempre × freemium convertido",
+                           f"% da população que usou o produto em {_ap_mes_lbl(_ult)} (usuários únicos ÷ população de hoje); "
+                           "populações de tamanhos muito diferentes, por isso a comparação é em %", "A")
+                _cmp_rows = []
+                for _pp, _lbl in [('clientes_nao_freemium', 'Clientes que não vieram do freemium'), ('freemium_conv', 'Freemium → cliente ativo')]:
+                    _pn_ = _ap_val('s2_pop', 'populacao', dim=_pp, meses=[_apd['mes'].max()])
+                    _u_ = _apd[(_apd['secao'] == 's2_uso') & (_apd['mes'] == _ult) & (_apd['metrica'] == 'usuarios')
+                               & (_apd['dim'].str.startswith(_pp + '|'))].copy()
+                    if _u_.empty or not _pn_:
+                        continue
+                    _u_['produto'] = _u_['dim'].str.split('|', n=2).str[1]
+                    for _prod, _v in _u_.groupby('produto')['valor'].sum().items():
+                        _cmp_rows.append({'serie': _lbl, 'produto': _prod, 'pct': _v / _pn_ * 100, 'usuarios': _v})
+                _dcmp = pd.DataFrame(_cmp_rows)
+                if _dcmp.empty:
+                    st.caption("sem uso no último mês para uma das populações.")
+                else:
+                    _ordp = _dcmp.groupby('produto')['pct'].max().sort_values(ascending=False).index.tolist()
+                    _dcmp['rotulo'] = _dcmp['pct'].map(lambda v: f"{v:.1f}%".replace('.', ','))
+                    fig = px.bar(_dcmp, x='produto', y='pct', color='serie', barmode='group', text='rotulo',
+                                 category_orders={'produto': _ordp, 'serie': ['Clientes que não vieram do freemium', 'Freemium → cliente ativo']},
+                                 color_discrete_sequence=['#166534', '#b45309'], template='cdt_a' if _CDT_THEME else 'plotly_white',
+                                 custom_data=['usuarios'])
+                    fig.update_traces(textposition='outside', textfont_size=10.5, cliponaxis=False,
+                                      hovertemplate='%{x} · %{fullData.name}<br>%{y:.2f}% da população · %{customdata:,.0f} usuários<extra></extra>')
+                    fig.update_layout(height=340, xaxis_title='', yaxis_title='', legend_title_text='', bargap=0.3)
+                    fig.update_yaxes(ticksuffix='%')
+                    st.plotly_chart(fig, use_container_width=True)
+                    _tv_fonte("Athena: fl_utilizacao_filiado × populações de hoje (def. C) · 'não vieram do freemium' = ativos − convertidos")
+                    st.caption("Leitura: a barra laranja acima da verde num produto diz que esse produto pesa mais para quem chegou pelo "
+                               "app como freemium do que para o cliente de sempre — é o produto que 'puxa' a conversão; o inverso mostra o "
+                               "que segura o cliente existente.")
+
+            if _pop == 'freemium_conv':
+                st.markdown("---")
+                _tv_titulo("Freemium → cliente: uso por tempo que ficou como freemium",
+                           "distribuição % do uso entre os produtos, dentro de cada faixa de tempo entre o cadastro e a 1ª filiação", "A")
+                _pre = _apd[(_apd['secao'] == 's2_conv_pre')]
+                _popb = _apd[(_apd['secao'] == 's2_pop') & (_apd['dim'].str.startswith('freemium_conv|'))]
+                _cv = _apd[(_apd['secao'] == 's2_conv') & (_apd['mes'].isin(_mg2)) & (_apd['metrica'] == 'usuarios')].copy()
+                cb1, cb2 = st.columns([1.2, 1])
+                with cb1:
+                    if not _cv.empty:
+                        _cv[['bucket', 'produto', 'sub']] = _cv['dim'].str.split('|', n=2, expand=True)
+                        _g = _cv.groupby(['bucket', 'produto'], as_index=False)['valor'].sum()
+                        _g['pct'] = _g['valor'] / _g.groupby('bucket')['valor'].transform('sum') * 100
+                        _g['bucket_lbl'] = _g['bucket'].map(_AP_BUCKET_LBL)
+                        _g = _g.sort_values('bucket')
+                        fig = px.bar(_g, x='bucket_lbl', y='pct', color='produto', barmode='stack',
+                                     text=_g['pct'].map(lambda v: f"{v:.0f}%" if v >= 6 else ""),
+                                     color_discrete_sequence=_TV_CORES_A, template='cdt_a' if _CDT_THEME else 'plotly_white',
+                                     category_orders={'bucket_lbl': [_AP_BUCKET_LBL[k] for k in sorted(_AP_BUCKET_LBL)]})
+                        fig.update_traces(textposition='inside', insidetextanchor='middle', textfont_size=10.5, textfont_color='#ffffff')
+                        fig.update_layout(height=360, xaxis_title='', yaxis_title='', legend_title_text='', yaxis_ticksuffix='%',
+                                          uniformtext_minsize=9, uniformtext_mode='hide')
+                        st.plotly_chart(fig, use_container_width=True)
+                        st.caption(f"Uso de hoje (como cliente) na janela {_ap_mes_lbl(_mg2[0])}–{_ap_mes_lbl(_mg2[-1])}: "
+                                   "% = usuários do produto ÷ soma de usuários de todos os produtos na faixa (um CPF conta em cada produto que usou).")
+                    else:
+                        st.info("Sem linhas de uso por faixa na janela.")
+                with cb2:
+                    if not _pre.empty:
+                        _pre2 = _pre[_pre['mes'] == _pre['mes'].max()].pivot_table(index='dim', columns='metrica', values='valor', aggfunc='sum').fillna(0)
+                        _pre2 = _pre2.reindex(sorted(_pre2.index))
+                        _rows3 = []
+                        for b_, r in _pre2.iterrows():
+                            n_ = float(r.get('n', 0))
+                            _rows3.append({'Tempo como freemium': _AP_BUCKET_LBL.get(b_, b_), 'Convertidos': format_br(n_),
+                                           'Farmácia antes': _tv_pct(r.get('com_farmacia'), n_), 'Outros parceiros': _tv_pct(r.get('com_outros'), n_),
+                                           'Cartão ativado': _tv_pct(r.get('com_cartao'), n_), 'Nenhum uso': _tv_pct(r.get('nenhum'), n_),
+                                           '_level': 0, '_is_eff': False})
+                        _n_tot = float(_pre2['n'].sum()) if 'n' in _pre2.columns else 0
+                        _rows3.append({'Tempo como freemium': 'Total', 'Convertidos': format_br(_n_tot),
+                                       'Farmácia antes': _tv_pct(_pre2['com_farmacia'].sum(), _n_tot), 'Outros parceiros': _tv_pct(_pre2['com_outros'].sum(), _n_tot),
+                                       'Cartão ativado': _tv_pct(_pre2['com_cartao'].sum(), _n_tot), 'Nenhum uso': _tv_pct(_pre2['nenhum'].sum(), _n_tot),
+                                       '_level': 0, '_is_eff': False})
+                        st.markdown("**O que usaram ANTES de converter** (entre o cadastro e a 1ª filiação)")
+                        st.markdown(render_metric_table(_rows3, ['Tempo como freemium', 'Convertidos', 'Farmácia antes', 'Outros parceiros', 'Cartão ativado', 'Nenhum uso']),
+                                    unsafe_allow_html=True)
+                        st.caption("Sinal disponível para não filiado = cashback (farmácia × outros) e ativação do cartão; "
+                                   "'Nenhum uso' = nem cashback nem cartão antes de filiar. População de hoje (convertidos ativos).")
+
+    # =================================================================
+    # 3 · FREEMIUM — estoque × gerados
+    # =================================================================
+    with _ap_tabs[2]:
+        S = 's3_freemium'
+        _mg3, _esc3 = _ap_janela('t7_s3_jan', opcoes=("Mês atual", "3 meses", "12 meses"), padrao=1)
+        _ult3 = _mg3[-1]
+        est = _ap_val(S, 'estoque_fim_mes', dim='freemium', meses=[_ult3])
+        est_ini = _ap_val(S, 'estoque_fim_mes', dim='freemium', meses=[_mg3[0] - pd.DateOffset(months=1)])
+        ger = _ap_val(S, 'gerados', dim='freemium', meses=_mg3); ger_ult = _ap_val(S, 'gerados', dim='freemium', meses=[_ult3])
+        cvm = _ap_val(S, 'convertidos', dim='freemium', meses=_mg3); cvm_ult = _ap_val(S, 'convertidos', dim='freemium', meses=[_ult3])
+        gcm = _ap_val(S, 'gerados_convertidos_no_mes', dim='freemium', meses=[_ult3])
+        ger_prev = _ap_val(S, 'gerados', dim='freemium', meses=[_ult3 - pd.DateOffset(months=1)])
+        cvm_prev = _ap_val(S, 'convertidos', dim='freemium', meses=[_ult3 - pd.DateOffset(months=1)])
+        k1, k2, k3, k4 = st.columns(4)
+        _tv_kpi(k1, "🌱", f"Estoque de freemiums no fim de {_ap_mes_lbl(_ult3)}", _tv_n(est),
+                (f"{_tv_delta(est, est_ini)} vs fim de {_ap_mes_lbl(_mg3[0] - pd.DateOffset(months=1))}" if est_ini else "cadastrados sem nenhuma filiação até o fim do mês"))
+        _tv_kpi(k2, "➕", f"Freemiums gerados em {_ap_mes_lbl(_ult3)}", f"{_tv_n(ger_ult)} {_tv_delta(ger_ult, ger_prev)}",
+                f"cadastros do mês sem filiação anterior nem venda no dia · {_tv_n(gcm)} já converteram no próprio mês", color="#2e8a4f")
+        _tv_kpi(k3, "🛒", f"Freemiums convertidos em {_ap_mes_lbl(_ult3)}", f"{_tv_n(cvm_ult)} {_tv_delta(cvm_ult, cvm_prev)}",
+                f"1ª filiação no mês, de qualquer coorte · {_tv_pct(cvm_ult, est_ini if est_ini else est)} do estoque inicial", color="#0f172a")
+        _tv_kpi(k4, "📊", f"Janela: {_esc3}", f"+{_tv_n(ger)} · −{_tv_n(cvm)}",
+                "gerados · convertidos na janela (o estoque também perde cadastros excluídos e ganha regularizações)", color="#b45309")
+
+        c1, c2 = st.columns([1.9, 1])
+        with c1:
+            _s3 = _ap_serie(S, 'estoque_fim_mes', dim='freemium', meses=_mg3).rename(columns={'valor': 'estoque'})
+            _s3 = _s3.merge(_ap_serie(S, 'gerados', dim='freemium', meses=_mg3).rename(columns={'valor': 'gerados'}), on='mes', how='left')
+            _s3 = _s3.merge(_ap_serie(S, 'convertidos', dim='freemium', meses=_mg3).rename(columns={'valor': 'convertidos'}), on='mes', how='left')
+            _tv_titulo("Estoque de freemiums no fim do mês — o que ficou, o que entrou, o que saiu",
+                       "barra = estoque no fim do mês: base clara = o que sobrou do estoque anterior, topo escuro = gerados no mês; "
+                       "laranja abaixo do zero = convertidos no mês (saíram do estoque)", "A")
+            if not _s3.empty:
+                import plotly.graph_objects as _go
+                _x = [_ap_mes_lbl(m) for m in _s3['mes']]
+                _ger = _s3['gerados'].fillna(0); _cvm = _s3['convertidos'].fillna(0); _est = _s3['estoque'].fillna(0)
+                _base = (_est - _ger).clip(lower=0)
+                fig = _go.Figure()
+                fig.add_bar(name='Ficou do estoque anterior', x=_x, y=_base, marker_color='#8cc79e',
+                            hovertemplate='%{x}<br>ficou do estoque anterior: %{y:,.0f}<extra></extra>')
+                fig.add_bar(name='Gerados no mês (entraram)', x=_x, y=_ger, marker_color='#166534',
+                            hovertemplate='%{x}<br>gerados no mês: %{y:,.0f}<extra></extra>')
+                fig.add_bar(name='Convertidos no mês (saíram)', x=_x, y=-_cvm, marker_color='#b45309',
+                            text=[f"−{_tv_fmt_k(v)}" for v in _cvm], textposition='outside', cliponaxis=False,
+                            textfont=dict(color='#b45309', size=11),
+                            hovertemplate='%{x}<br>convertidos no mês: %{customdata:,.0f}<extra></extra>', customdata=_cvm)
+                for xx, e, g in zip(_x, _est, _ger):
+                    fig.add_annotation(x=xx, y=e, text=f"<b>{_tv_fmt_k(e)}</b><span style='color:#166534'>  +{_tv_fmt_k(g)}</span>",
+                                       showarrow=False, yshift=12, font=dict(size=11))
+                fig.update_layout(template='cdt_a' if _CDT_THEME else 'plotly_white', barmode='relative', height=400,
+                                  xaxis_title='', yaxis_title='', legend_title_text='', margin=dict(l=45, r=60, t=40, b=30))
+                fig.update_yaxes(zeroline=True, zerolinecolor='#0f172a', zerolinewidth=1.2)
+                st.plotly_chart(fig, use_container_width=True)
+                _tv_fonte("Athena: fl_plano_usuario × 1ª filiação por CPF (fl_filiado) · estoque(m) = ficou do anterior + gerados; "
+                          "ficou do anterior = estoque(m−1) − convertidos − cadastros removidos/regularizados")
+            else:
+                st.info("Sem série de freemium na janela.")
+        with c2:
+            _tv_note(
+                "<b>Como ler.</b> Cada barra é o <b>estoque de freemiums no fim do mês</b>: usuários cadastrados no app até "
+                "ali que ainda não tinham nenhuma filiação (a 1ª filiação por CPF vem do histórico do fl_filiado — quem já "
+                "era cliente ou ex-cliente ao cadastrar não é freemium). A parte <b>clara</b> é o que sobrou do estoque do mês "
+                "anterior; a parte <b>escura</b> são os <b>gerados</b> no mês (cadastros que entraram como freemium). A barra "
+                "<b>laranja</b>, abaixo do zero, são os <b>convertidos</b> no mês — freemiums de qualquer coorte cuja 1ª "
+                "filiação caiu ali — e por isso saem do estoque. Estoque(m) = estoque(m−1) + gerados − convertidos − "
+                "cadastros removidos/regularizados.<br><br>"
+                "<b>Ressalvas.</b> Freemium só existe desde 2024 (antes, 0,08% dos cadastros); o mês corrente é parcial; "
+                "ex-filiados que usam o app no plano Freemium não entram no estoque (aparecem à parte na sub-aba 2). "
+                "Cadastros sem CPF no login (até 25% em jun/26) não cruzam.")
+
+        # ---- convertidos no mês por tipo de venda da 1ª filiação ----
+        _ct = _apd[(_apd['secao'] == S) & (_apd['metrica'] == 'convertidos') & (_apd['dim'].str.startswith('tipo:'))
+                   & (_apd['mes'].isin(_mg3))].copy() if not _apd.empty else pd.DataFrame(columns=_AP_COLS)
+        _tv_titulo(f"Convertidos por tipo de venda da 1ª filiação — {_ap_mes_lbl(_mg3[0])}" + (f" a {_ap_mes_lbl(_mg3[-1])}" if len(_mg3) > 1 else ""),
+                   "com que canal o freemium fechou a compra (tipo_prospeccao da filiação); % do total de convertidos na janela, do maior para o menor", "A")
+        if _ct.empty:
+            st.caption("sem abertura por tipo de venda: rode `gt7 run app_dash --arg only=s3` para gravar `s3_freemium · tipo:*`.")
+        else:
+            _ct['tipo'] = _ct['dim'].str[5:]
+            _tt = _ct.groupby('tipo')['valor'].sum().sort_values(ascending=False)
+            _tot_ct = float(_tt.sum())
+            _sh = (_tt / _tot_ct * 100) if _tot_ct else _tt * 0
+            _peq = _sh[_sh < 0.5]
+            _rk = _sh[_sh >= 0.5].to_frame('pct')
+            _rk['n'] = _tt[_rk.index]
+            if len(_peq):
+                _rk.loc[f"Outros ({len(_peq)} tipos)"] = [float(_peq.sum()), float(_tt[_peq.index].sum())]
+            _rk = _rk.reset_index().rename(columns={'index': 'tipo'})
+            _rk['rotulo'] = _rk.apply(lambda r: f"{r['pct']:.1f}%".replace('.', ',') + f"  ({_tv_fmt_k(r['n'])})", axis=1)
+            _rk['cor'] = _rk['tipo'].map(lambda t: '#94a3b8' if t.startswith('Outros') else '#166534')
+            _rk = _rk.sort_values('pct', ascending=True)
+            fig = px.bar(_rk, x='pct', y='tipo', orientation='h', text='rotulo', template='cdt_a' if _CDT_THEME else 'plotly_white')
+            fig.update_traces(textposition='outside', cliponaxis=False, marker_color=_rk['cor'].tolist(), textfont_size=11,
+                              hovertemplate='%{y}<br>%{x:.1f}% · %{text}<extra></extra>')
+            fig.update_layout(height=max(300, 30 * len(_rk) + 70), margin=dict(l=150, r=110, t=10, b=30), xaxis_title='', yaxis_title='',
+                              showlegend=False, yaxis=dict(autorange=True, side='left', showgrid=False, tickfont=dict(size=12, color='#0f172a')))
+            fig.update_xaxes(ticksuffix='%', range=[0, float(_rk['pct'].max()) * 1.25])
+            st.plotly_chart(fig, use_container_width=True)
+            _tv_fonte(f"Athena: fl_plano_usuario × fl_filiado (tipo_prospeccao da linha com dt_filiacao = 1ª filiação) · "
+                      f"{format_br(_tot_ct)} convertidos na janela · tipos com menos de 0,5% agrupados em Outros")
+            _pv = _ct.pivot_table(index='tipo', columns='mes', values='valor', aggfunc='sum').fillna(0)
+            _pv = _pv.loc[_pv.sum(axis=1).sort_values(ascending=False).index]
+            _pv.columns = [_ap_mes_lbl(c) for c in _pv.columns]
+            _pv['Total'] = _pv.sum(axis=1)
+            _pv['% do total'] = (_pv['Total'] / _pv['Total'].sum() * 100).round(1).map(lambda v: f"{v:.1f}%".replace('.', ','))
+            for _c in [c for c in _pv.columns if c != '% do total']:
+                _pv[_c] = _pv[_c].map(format_br)
+            with st.expander("Tabela — convertidos por tipo de venda, mês a mês (absolutos)"):
+                st.dataframe(_pv.reset_index().rename(columns={'tipo': 'Tipo de venda'}), use_container_width=True, hide_index=True)
+                st.caption("Leitura do estudo de 20/08: o app é presença no caminho, não o canal de fechamento — parte grande da "
+                           "conversão do freemium fecha no porta a porta; APP DO FILIADO é a venda concluída dentro do app.")
+
+    # =================================================================
+    # 4 · LTV E ENTRADA NO APP (evolução das coortes no app, 05/08)
+    # -----------------------------------------------------------------
+    # Lê secao 's4_ltv' (pipeline app_dash s4): por MÊS DA VENDA (coorte de titulares) e por dim
+    # ('total', 'entrada:*', 'tipo:*'), n = tamanho da coorte e pag_k{0..11}_{A|C|B} = quantos pagavam
+    # no mês k depois da venda. LTV em N meses = 33,40 × (1 + Σ_{k<N} pag_k / n) — receita bruta,
+    # antes de desconto, 1 = adesão. Uma coorte só entra numa janela de N meses quando o painel já
+    # tem o mês k = N−1 dela (ref_max_idx).
+    # =================================================================
+    with _ap_tabs[3]:
+        S = 's4_ltv'
+        _L4 = _apd[_apd['secao'] == S] if not _apd.empty else pd.DataFrame(columns=_AP_COLS)
+        _LTV_MENS = 33.40
+        _ENT_LBL = {'antes': 'Baixou antes da venda', 'no_mes': 'Baixou no mês da venda',
+                    'depois': 'Baixou depois da venda', 'nunca': 'Nunca baixou'}
+        _ENT_ORD = ['antes', 'no_mes', 'depois', 'nunca']
+        _ENT_COR = {'Baixou antes da venda': '#166534', 'Baixou no mês da venda': '#57a86f',
+                    'Baixou depois da venda': '#8cc79e', 'Nunca baixou': '#b45309'}
+        _DEF_LBL = {'A': 'A · contrato ativo', 'C': 'C · até 1 mês de atraso', 'B': 'B · sem nenhum atraso'}
+        _JAN = [3, 6, 12]
+        _JAN_COR = {3: '#8cc79e', 6: '#57a86f', 12: '#166534'}
+        _NCO = 6                                    # coortes agregadas por janela nos gráficos por grupo
+        _rm = _L4[(_L4['dim'] == 'painel') & (_L4['metrica'] == 'ref_max_idx')]['valor']
+        _ref_max = int(_rm.max()) if not _rm.empty and pd.notna(_rm.max()) else None
+        _ref_max_lbl = (f"{(_ref_max - 1) % 12 + 1:02d}/{(_ref_max - 1) // 12}" if _ref_max else "—")
+        _todas4 = [pd.Timestamp(m) for m in sorted(_L4[_L4['dim'] == 'total']['mes'].dropna().unique())]
+
+        def _s4_idx(ts):
+            ts = pd.Timestamp(ts)
+            return ts.year * 12 + ts.month
+
+        def _s4_sum(dim, metrica, meses):
+            d = _L4[(_L4['dim'] == dim) & (_L4['metrica'] == metrica) & (_L4['mes'].isin(list(meses)))]
+            return float(d['valor'].sum()) if not d.empty else 0.0
+
+        def _s4_eleg(meses, N):
+            """Coortes (meses de venda) que já têm o mês k = N−1 no painel."""
+            if _ref_max is None:
+                return []
+            return [m for m in meses if _s4_idx(m) + N - 1 <= _ref_max]
+
+        def _s4_ltv(dim, N, defn, meses):
+            """(ltv, n, ret_{N-1}, coortes usadas) sob a definição defn, agregando as coortes elegíveis (peso = n)."""
+            el = _s4_eleg(meses, N)
+            n = _s4_sum(dim, 'n', el) if el else 0.0
+            if n <= 0:
+                return None, 0.0, None, el
+            s = sum(_s4_sum(dim, f'pag_k{k}_{defn}', el) for k in range(N))
+            r = _s4_sum(dim, f'pag_k{N - 1}_{defn}', el) / n
+            return _LTV_MENS * (1 + s / n), n, r, el
+
+        def _s4_brl(v, nd=2):
+            return "—" if v is None or pd.isna(v) else f"R$ {v:,.{nd}f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+
+        def _s4_ult_coortes(N, quantas=_NCO):
+            """As últimas `quantas` coortes com a janela de N meses completa (entre todas as gravadas)."""
+            el = _s4_eleg(_todas4, N)
+            return el[-quantas:] if el else []
+
+        def _s4_rng(meses):
+            return (f"{_ap_mes_lbl(meses[0])}–{_ap_mes_lbl(meses[-1])}" if len(meses) > 1
+                    else (_ap_mes_lbl(meses[0]) if meses else "—"))
+
+        _tv_note(
+            "<b>Esta sub-aba não segue o Período de análise dos Controles Globais.</b> Aqui o eixo do tempo é o "
+            "<b>mês da venda</b> (coorte), e cada coorte precisa envelhecer no painel para ter LTV: uma venda de junho só tem "
+            "3 meses de vida em agosto. Por isso os controles são outros — quantas coortes mostrar e qual definição de "
+            f"pagante usar — e as janelas de 6 e 12 meses só existem para coortes mais antigas. Painel até <b>{_ref_max_lbl}</b> "
+            "(o mês corrente é provisório: a inadimplência dele ainda está acumulando).", bg="#f8fafc", icon="🧭")
+        with st.expander("📖 Como ler esta sub-aba (coortes, janelas fixas e definições)"):
+            st.markdown(
+                "**Coorte de venda** = todos os titulares que compraram num mês (`fl_filiado`, registro_atual = 1, "
+                "flag_titular = 1). Ela é acompanhada mês a mês no painel `fl_nominal_qca_qcd`: no mês da venda (k = 0), no "
+                "mês seguinte (k = 1) e assim por diante.\n\n"
+                "**LTV em N meses (janela fixa)** = R$ 33,40 × (1 + meses pagos em k = 0…N−1). O 1 é a adesão; R$ 33,40 é a "
+                "mensalidade típica (receita bruta, antes de desconto — premissa, não faturamento medido). Comparar coortes só "
+                "faz sentido com a mesma janela: uma coorte de janeiro já viveu 8 meses, uma de junho viveu 3 — sem janela fixa, "
+                "a média mede exposição, não qualidade.\n\n"
+                "**Por que as linhas param.** A linha de 12 meses só existe para coortes que já têm o 12º mês no painel "
+                f"(hoje: vendas até {_ap_mes_lbl(_s4_eleg(_todas4, 12)[-1]) if _s4_eleg(_todas4, 12) else '—'}); a de 6 meses, "
+                f"até {_ap_mes_lbl(_s4_eleg(_todas4, 6)[-1]) if _s4_eleg(_todas4, 6) else '—'}; a de 3 meses, até "
+                f"{_ap_mes_lbl(_s4_eleg(_todas4, 3)[-1]) if _s4_eleg(_todas4, 3) else '—'}. Coortes mais novas ainda não têm "
+                "o número — não é falta de dado, é falta de tempo.\n\n"
+                "**Definições de pagante** (o mês k conta como pago se…): **A** contrato ativo (`qca = 1`) — conta quem está "
+                "devendo há meses; **C** até 1 mês de atraso (`vam_inadimplente ≤ 34`) — tolera a defasagem normal de "
+                "cobrança; **B** sem nenhum atraso (`vam = 0`). A distância A → B é a inadimplência; é ela que separa canais "
+                "cedo, quando a retenção ainda não separa.\n\n"
+                f"**Gráficos por grupo (entrada no app, tipo de venda).** Cada janela usa as **últimas {_NCO} coortes que já a "
+                "completaram** — o rótulo diz quais. Dentro de uma janela os grupos são comparáveis entre si (mesmas coortes); "
+                "entre janelas, não (coortes diferentes, épocas diferentes).\n\n"
+                "**Ressalvas.** Só titulares (o contrato é a unidade que paga). Sem desconto/voucher (fl_contagem_filiados_v2 não "
+                "alcança 2026). A referência 2026/04 do painel veio com vam = 0 em todas as linhas — para ela, C e B valem a "
+                "média do estado do mesmo CPF em 2026/03 e 2026/05. Leitura precoce engana: nas coortes de 2025 a retenção no "
+                "mês 3 explicou só 3% da retenção no mês 12 (TUTTI era 4º no mês 3 e último no mês 12) — use as janelas curtas "
+                "para inadimplência e espere a de 12 meses para ranquear canal por LTV.")
+        if _L4.empty or _ref_max is None:
+            st.warning("⚠️ A seção `s4_ltv` ainda não existe em `alex_app_dash_mes`. Rode `gt7 run app_dash --arg only=s4` "
+                       "(claude-toolkit) e recarregue os dados.")
+        else:
+            _c4a, _c4b = st.columns([1, 1.4])
+            with _c4a:
+                _nco_show = int(st.radio("Coortes mostradas (meses de venda):", ["12 coortes", "24 coortes"], index=0, horizontal=True,
+                                         key='t7_s4_jan').split()[0])
+            with _c4b:
+                _def4 = st.radio("Definição de pagante:", ['A', 'C', 'B'], index=1, horizontal=True, key='t7_s4_def',
+                                 format_func=lambda k: _DEF_LBL[k])
+            _co4 = _todas4[-_nco_show:]
+            _xs = [_ap_mes_lbl(m) for m in _co4]
+            _denso = len(_co4) > 12
+
+            # ---------- (a) entrada no app por coorte de venda ----------
+            _rows_a = []
+            for m in _co4:
+                for g in _ENT_ORD:
+                    _rows_a.append({'mes': m, 'serie': _ENT_LBL[g], 'valor': _s4_sum(f'entrada:{g}', 'n', [m])})
+            _da = pd.DataFrame(_rows_a)
+            _tv_titulo("Entrada no app por coorte de venda",
+                       "como cada mês de venda se divide entre quem já tinha o app, baixou no mês da venda, baixou depois ou nunca baixou", "A")
+            if _da.empty:
+                st.caption("sem coortes gravadas.")
+            else:
+                _da['x'] = _da['mes'].map(_ap_mes_lbl)
+                _da['rotulo'] = "" if _denso else _da['valor'].map(_tv_fmt_k)
+                fig = px.bar(_da, x='x', y='valor', color='serie', barmode='stack', text='rotulo',
+                             category_orders={'serie': [_ENT_LBL[g] for g in _ENT_ORD], 'x': _xs},
+                             color_discrete_map=_ENT_COR, template='cdt_a' if _CDT_THEME else 'plotly_white')
+                fig.update_traces(textposition='inside', insidetextanchor='middle', textfont_size=10.5, textfont_color='#ffffff')
+                _tot_a = _da.groupby('x', sort=False)['valor'].sum()
+                _nun_a = _da[_da['serie'] == 'Nunca baixou'].set_index('x')['valor']
+                for xx in _xs:
+                    t = float(_tot_a.get(xx, 0)); nn = float(_nun_a.get(xx, 0))
+                    _pn = f"{(nn / t * 100 if t else 0):.1f}%".replace('.', ',')
+                    fig.add_annotation(x=xx, y=t, text=(f"<span style='color:#b45309'>{_pn}</span>" if _denso
+                                                        else f"<b>{_tv_fmt_k(t)}</b><br><span style='color:#b45309'>{_pn}</span>"),
+                                       showarrow=False, yshift=(12 if _denso else 22), font=dict(size=(9.5 if _denso else 10.5)), align='center')
+                fig.update_layout(height=380, xaxis_title='', yaxis_title='titulares vendidos', legend_title_text='',
+                                  uniformtext_minsize=9, uniformtext_mode='hide', margin=dict(t=56))
+                st.plotly_chart(fig, use_container_width=True)
+                _tv_fonte("Athena: fl_filiado (titulares) × fl_data_login (1º login) · sobre cada coluna: total e, em laranja, a fatia que nunca baixou o app")
+                _ta = []
+                for m in _co4:
+                    tot = _s4_sum('total', 'n', [m])
+                    row = {'Mês da venda': _ap_mes_lbl(m), 'Titulares': format_br(tot)}
+                    for g in _ENT_ORD:
+                        row[_ENT_LBL[g]] = _tv_pct(_s4_sum(f'entrada:{g}', 'n', [m]), tot)
+                    _ta.append(row)
+                with st.expander("Tabela da composição (%)"):
+                    st.dataframe(pd.DataFrame(_ta), use_container_width=True, hide_index=True)
+                    st.caption("Entrada = mês do 1º login no app (fl_data_login, 1 linha por usuário; logins sem CPF não cruzam) "
+                               "comparado com o mês da venda. 'Depois' encolhe nos meses recentes por exposição: quem comprou "
+                               "há um mês teve um mês para baixar.")
+
+            st.markdown("---")
+            # ---------- (b) LTV por coorte de venda — janelas fixas de 3, 6 e 12 meses ----------
+            _cmp4 = st.toggle("Ver A × C × B em vez das três janelas (janela fixa de 3 meses)", value=False, key='t7_s4_cmp')
+            _rows_b = []
+            if _cmp4:
+                for m in _co4:
+                    for dk in ['A', 'C', 'B']:
+                        v, n, r, el = _s4_ltv('total', 3, dk, [m])
+                        _rows_b.append({'mes': m, 'serie': _DEF_LBL[dk], 'valor': v})
+                _cores_b = ['#166534', '#57a86f', '#b45309']
+                _tit_b = "LTV em 3 meses por coorte de venda — A × C × B"
+                _sub_b = "mesma janela (k = 0, 1, 2) sob as três definições de pagante; a distância A → B é a inadimplência"
+            else:
+                for m in _co4:
+                    for N in _JAN:
+                        v, n, r, el = _s4_ltv('total', N, _def4, [m])
+                        _rows_b.append({'mes': m, 'serie': f"{N} meses", 'valor': v})
+                _cores_b = [_JAN_COR[N] for N in _JAN]
+                _tit_b = f"LTV por coorte de venda em janelas fixas de 3, 6 e 12 meses — {_DEF_LBL[_def4]}"
+                _sub_b = "R$ 33,40 × (1 + meses pagos na janela); cada linha para onde as coortes ainda não completaram a janela"
+            _db = pd.DataFrame(_rows_b)
+            _tv_titulo(_tit_b, _sub_b, "B")
+            if _db.empty or _db['valor'].dropna().empty:
+                st.caption(f"nenhuma coorte mostrada tem janela completa no painel (última referência {_ref_max_lbl}).")
+            else:
+                _db['x'] = _db['mes'].map(_ap_mes_lbl)
+                _db = _db.dropna(subset=['valor']).copy()
+                _db['rotulo'] = "" if _denso else _db['valor'].map(lambda v: _s4_brl(v, 0))
+                _ylo, _yhi = float(_db['valor'].min()), float(_db['valor'].max())
+                _pad = max(6.0, (_yhi - _ylo) * 0.18)
+                fig = px.line(_db, x='x', y='valor', color='serie', markers=True, text='rotulo',
+                              category_orders={'x': _xs, 'serie': ([_DEF_LBL[k] for k in ['A', 'C', 'B']] if _cmp4 else [f"{N} meses" for N in _JAN])},
+                              color_discrete_sequence=_cores_b, template='cdt_b' if _CDT_THEME else 'plotly_white')
+                fig.update_traces(line_width=2.5, marker_size=7, textposition='top center', textfont_size=10, mode='lines+markers+text',
+                                  connectgaps=False, hovertemplate='%{x} · %{fullData.name}: R$ %{y:,.2f}<extra></extra>')
+                fig.update_layout(height=360, xaxis_title='', yaxis_title='', legend_title_text='', margin=dict(l=45, r=110))
+                fig.update_yaxes(tickprefix='R$ ', range=[_ylo - _pad, _yhi + _pad], rangemode='normal')
+                fig.update_xaxes(categoryorder='array', categoryarray=_xs)
+                if _CDT_THEME:
+                    cdt_theme.rotular_pontas(fig)
+                st.plotly_chart(fig, use_container_width=True)
+                _tv_fonte("Athena: fl_filiado (coorte) × fl_nominal_qca_qcd (painel mensal, qca/vam_inadimplente)")
+                _tb = []
+                for m in _co4:
+                    row = {'Coorte': _ap_mes_lbl(m), 'Titulares': format_br(_s4_sum('total', 'n', [m]))}
+                    for N in _JAN:
+                        v, n, r, el = _s4_ltv('total', N, _def4, [m])
+                        row[f'LTV {N}m'] = _s4_brl(v)
+                        row[f'ret. m{N - 1}'] = ("—" if r is None else f"{r * 100:.1f}%".replace('.', ','))
+                    for dk in ['A', 'B']:
+                        if dk != _def4:
+                            v, n, r, el = _s4_ltv('total', 3, dk, [m])
+                            row[f'LTV 3m · {dk}'] = _s4_brl(v)
+                    _tb.append(row)
+                with st.expander(f"Tabela por coorte — janelas de 3, 6 e 12 meses sob {_def4}, e o 3 meses sob as outras definições"):
+                    st.dataframe(pd.DataFrame(_tb), use_container_width=True, hide_index=True)
+                    st.caption("ret. m(N−1) = fração da coorte pagando no último mês da janela, sob a definição escolhida. "
+                               "Coortes sem a janela completa ficam com '—'.")
+
+            st.markdown("---")
+            # ---------- (c) LTV por entrada no app · 3 / 6 / 12 meses ----------
+            _rows_c, _tab_c = [], []
+            for N in _JAN:
+                el = _s4_ult_coortes(N)
+                for g in _ENT_ORD:
+                    v, n, r, _ = _s4_ltv(f'entrada:{g}', N, _def4, el)
+                    _rows_c.append({'janela': f"{N} meses", 'serie': _ENT_LBL[g], 'valor': v, 'n': n, 'ret': r, 'coortes': _s4_rng(el)})
+            _dc = pd.DataFrame(_rows_c)
+            _tv_titulo(f"LTV por entrada no app — {_DEF_LBL[_def4]}",
+                       f"janelas fixas de 3, 6 e 12 meses; cada janela agrega as últimas {_NCO} coortes que já a completaram (o rótulo diz quais)", "A")
+            if _dc.empty or _dc['valor'].dropna().empty:
+                st.caption("sem coortes com janela completa.")
+            else:
+                _dcp = _dc.dropna(subset=['valor']).copy()
+                _dcp['x'] = _dcp.apply(lambda r: f"{r['janela']}<br><span style='font-size:10px'>coortes {r['coortes']}</span>", axis=1)
+                _dcp['rotulo'] = _dcp['valor'].map(lambda v: _s4_brl(v).replace('R$ ', ''))
+                fig = px.bar(_dcp, x='x', y='valor', color='serie', barmode='group', text='rotulo',
+                             category_orders={'serie': [_ENT_LBL[g] for g in _ENT_ORD]}, color_discrete_map=_ENT_COR,
+                             template='cdt_a' if _CDT_THEME else 'plotly_white')
+                fig.update_traces(textposition='outside', textfont_size=10.5, cliponaxis=False)
+                fig.update_layout(height=380, xaxis_title='', yaxis_title='', legend_title_text='', bargap=0.25, margin=dict(b=62))
+                fig.update_yaxes(tickprefix='R$ ')
+                st.plotly_chart(fig, use_container_width=True)
+                _tv_fonte("Athena: fl_filiado × fl_data_login × fl_nominal_qca_qcd")
+                for N in _JAN:
+                    d = _dc[_dc['janela'] == f"{N} meses"].dropna(subset=['valor'])
+                    if d.empty:
+                        _tab_c.append({'Janela': f"{N} meses", 'Coortes': '— (nenhuma coorte completou a janela)'})
+                        continue
+                    row = {'Janela': f"{N} meses", 'Coortes': d['coortes'].iloc[0]}
+                    for _, r in d.iterrows():
+                        _rp = ("" if r['ret'] is None else " · ret. " + f"{r['ret'] * 100:.1f}%".replace('.', ','))
+                        row[r['serie']] = f"{_s4_brl(r['valor'])} · n {_tv_fmt_k(r['n'])}{_rp}"
+                    _tab_c.append(row)
+                with st.expander("Tabela por janela (LTV · tamanho · retenção no último mês da janela)"):
+                    st.dataframe(pd.DataFrame(_tab_c), use_container_width=True, hide_index=True)
+                    st.caption("Cuidado com 'baixou depois': para baixar depois é preciso sobreviver até baixar — quem cancelou antes "
+                               "cai em 'nunca baixou'. Parte da vantagem desse grupo é artefato (evolução do app, seção 3).")
+
+            st.markdown("---")
+            # ---------- (d) LTV por tipo de venda · 3 / 6 / 12 meses (um painel por janela) ----------
+            _tipos = sorted({d[5:] for d in _L4['dim'].unique() if str(d).startswith('tipo:')})
+            _rows_d = []
+            for t in _tipos:
+                row = {'Tipo de venda': t}
+                for N in _JAN:
+                    v, n, r, _ = _s4_ltv(f'tipo:{t}', N, _def4, _s4_ult_coortes(N))
+                    row[f'ltv{N}'] = v; row[f'n{N}'] = n; row[f'ret{N}'] = r
+                _rows_d.append(row)
+            _dd = pd.DataFrame(_rows_d)
+            _tv_titulo(f"LTV por tipo de venda — {_DEF_LBL[_def4]}",
+                       f"um painel por janela, cada um ordenado pelo próprio LTV e agregando as últimas {_NCO} coortes que completaram a janela; "
+                       "eixos cortados para abrir a diferença entre canais; tipos com menos de 200 vendas ficam só na tabela", "A")
+            if _dd.empty:
+                st.caption("sem tipos de venda gravados.")
+            else:
+                _cols_d = st.columns(3)
+                for _cd, N in zip(_cols_d, _JAN):
+                    with _cd:
+                        el = _s4_ult_coortes(N)
+                        _ddp = _dd.dropna(subset=[f'ltv{N}']).copy()
+                        _ddp = _ddp[_ddp[f'n{N}'] >= 200].sort_values(f'ltv{N}', ascending=True)
+                        st.markdown(f"<div style='font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 0;'>{N} meses</div>"
+                                    f"<div style='font-size:11px;color:#64748b;'>coortes {_s4_rng(el)} · "
+                                    f"{_tv_fmt_k(float(_ddp[f'n{N}'].sum())) if not _ddp.empty else '—'} titulares</div>", unsafe_allow_html=True)
+                        if _ddp.empty:
+                            st.caption("nenhuma coorte completou esta janela.")
+                            continue
+                        _ddp['rotulo'] = _ddp[f'ltv{N}'].map(lambda v: _s4_brl(v, 0).replace('R$ ', ''))
+                        fig = px.bar(_ddp, x=f'ltv{N}', y='Tipo de venda', orientation='h', text='rotulo',
+                                     color_discrete_sequence=[_JAN_COR[N]], template='cdt_a' if _CDT_THEME else 'plotly_white',
+                                     custom_data=[f'n{N}', f'ret{N}'])
+                        fig.update_traces(textposition='outside', textfont_size=10.5, cliponaxis=False,
+                                          hovertemplate='%{y}<br>LTV R$ %{x:,.2f} · n %{customdata[0]:,.0f} · ret. %{customdata[1]:.1%}<extra></extra>')
+                        _xmin = float(_ddp[f'ltv{N}'].min()); _xmax = float(_ddp[f'ltv{N}'].max()); _sp = max(_xmax - _xmin, 1.0)
+                        fig.update_layout(height=max(280, 30 * len(_ddp) + 60), xaxis_title='', yaxis_title='',
+                                          margin=dict(l=8, r=48, t=6, b=28), showlegend=False,
+                                          yaxis=dict(side='left', showgrid=False, automargin=True,
+                                                     tickfont=dict(size=10, color='#0f172a')))
+                        fig.update_xaxes(tickprefix='R$ ', range=[max(0, _xmin - _sp * 1.2 - 3), _xmax + _sp * 0.45 + 3], nticks=4)
+                        st.plotly_chart(fig, use_container_width=True)
+                _tv_fonte("Athena: fl_filiado (tipo_prospeccao) × fl_nominal_qca_qcd")
+                _td = []
+                for _, r in _dd.sort_values('ltv3', ascending=False, na_position='last').iterrows():
+                    row = {'Tipo de venda': r['Tipo de venda']}
+                    for N in _JAN:
+                        row[f'LTV {N}m'] = _s4_brl(r[f'ltv{N}'])
+                        row[f'n {N}m'] = _tv_fmt_k(r[f'n{N}']) if r[f'n{N}'] else "—"
+                        row[f'ret. m{N - 1}'] = ("—" if r[f'ret{N}'] is None else f"{r[f'ret{N}'] * 100:.1f}%".replace('.', ','))
+                    _td.append(row)
+                with st.expander("Tabela por tipo de venda (3 · 6 · 12 meses, todos os tipos)"):
+                    st.dataframe(pd.DataFrame(_td), use_container_width=True, hide_index=True)
+                    st.caption("Leitura precoce engana: nas coortes de 2025 a retenção no mês 3 explicou só 3% da retenção no mês 12 "
+                               "(TUTTI era 4º no mês 3 e último no mês 12). Use as janelas curtas para inadimplência (que já separa "
+                               "canais) e espere a de 12 meses para ranquear canal por LTV.")
