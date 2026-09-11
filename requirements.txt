@@ -4,3 +4,8 @@ numpy
 plotly>=5.20
 SQLAlchemy>=2.0
 PyMySQL
+# Previsão de vendas (aba Desempenho). 1.3.0 = versão validada no .venv local (Python 3.14, pandas 3.0, numpy 2.4);
+# tem wheel manylinux py3-none para Python 3.12/3.13 (Streamlit Cloud), com o modelo Stan já compilado.
+prophet==1.3.0
+cmdstanpy>=1.2
+holidays>=0.60
