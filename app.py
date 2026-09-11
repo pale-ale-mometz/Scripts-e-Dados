@@ -234,13 +234,13 @@ brazil_geo = get_brazil_geojson()
 @st.cache_data(ttl=43200)
 def load_calendar():
     try:
-        query = "SELECT data AS data_ref, eh_dia_util AS is_dia_util FROM dim_calendario"
+        query = "SELECT data AS data_ref, eh_dia_util AS is_dia_util, CASE WHEN COALESCE(is_uno,0)+COALESCE(is_uno_premios,0)+COALESCE(is_uno_cashback,0)+COALESCE(is_uno_50_mens,0) > 0 THEN 1 ELSE 0 END AS promo_uno, COALESCE(is_duo,0) AS promo_dupla FROM dim_calendario"
         cal = cquery(query)
         cal['data_ref'] = pd.to_datetime(cal['data_ref'])
         return cal
     except Exception:
         dr = pd.date_range(start='2020-01-01', end='2030-12-31')
-        return pd.DataFrame({'data_ref': dr, 'is_dia_util': (dr.weekday < 5).astype(int)})
+        return pd.DataFrame({'data_ref': dr, 'is_dia_util': (dr.weekday < 5).astype(int), 'promo_uno': 0, 'promo_dupla': 0})
 
 @st.cache_data(ttl=43200) 
 def load_data():
@@ -1113,13 +1113,13 @@ if st.sidebar.button("♻️ Recarregar dados (limpar cache)"):
 st.sidebar.divider()
 
 view_option = st.sidebar.radio("Período de Análise:", [
-    "Semana Atual", "Mês Atual", "Ano Atual", "Últimos 30 Dias", "Últimos 90 Dias", "Último 1 Ano",
-    "Personalizado"
+    "Semana Atual", "Mês Atual", "Ano Atual", "Última Semana", "Último Mês",
+    "Selecionar Período"
 ])
 
 # Custom date range: two pickers that override the preset above.
 custom_start = custom_end = None
-if view_option == "Personalizado":
+if view_option == "Selecionar Período":
     _default_start = reference_date.replace(day=1)
     cds_col, cde_col = st.sidebar.columns(2)
     custom_start = cds_col.date_input("Data inicial:", value=_default_start, key='custom_start')
@@ -1161,9 +1161,9 @@ if not df_fcst.empty and filtro_dias != "Todos os dias":
 if view_option == "Semana Atual": proj_days = 7
 elif view_option == "Mês Atual": proj_days = 30
 elif view_option == "Ano Atual": proj_days = 365
-elif view_option == "Últimos 30 Dias": proj_days = 30
-elif view_option == "Últimos 90 Dias": proj_days = 90
-elif view_option == "Personalizado": proj_days = (custom_end - custom_start).days + 1
+elif view_option == "Última Semana": proj_days = 7
+elif view_option == "Último Mês": proj_days = 30
+elif view_option == "Selecionar Período": proj_days = (custom_end - custom_start).days + 1
 else: proj_days = 365
 
 if view_option == "Semana Atual":
@@ -1183,15 +1183,19 @@ elif view_option == "Ano Atual":
     c_e = c_s + pd.DateOffset(years=1) - pd.DateOffset(days=1)
     p_s, p_e = c_s - pd.DateOffset(years=1), c_e - pd.DateOffset(years=1)
     l_s, l_e = p_s, p_e 
-elif view_option == "Últimos 30 Dias":
-    c_s, c_e = ref_datetime - pd.DateOffset(days=29), ref_datetime
-    p_s, p_e = c_s - pd.DateOffset(days=30), c_e - pd.DateOffset(days=30)
-    l_s, l_e = c_s - pd.DateOffset(years=1), c_e - pd.DateOffset(years=1)
-elif view_option == "Últimos 90 Dias":
-    c_s, c_e = ref_datetime - pd.DateOffset(days=89), ref_datetime
-    p_s, p_e = c_s - pd.DateOffset(days=90), c_e - pd.DateOffset(days=90)
-    l_s, l_e = c_s - pd.DateOffset(years=1), c_e - pd.DateOffset(years=1)
-elif view_option == "Personalizado":
+elif view_option == "Última Semana":
+    c_s = ref_datetime - pd.to_timedelta(ref_datetime.weekday(), unit='D') - pd.DateOffset(weeks=1)
+    c_e = c_s + pd.DateOffset(days=6)
+    p_s, p_e = c_s - pd.DateOffset(weeks=1), c_e - pd.DateOffset(weeks=1)
+    l_s, l_e = c_s - pd.DateOffset(weeks=52), c_e - pd.DateOffset(weeks=52)
+elif view_option == "Último Mês":
+    c_s = ref_datetime.replace(day=1) - pd.DateOffset(months=1)
+    c_e = ref_datetime.replace(day=1) - pd.DateOffset(days=1)
+    p_s = c_s - pd.DateOffset(months=1)
+    p_e = c_s - pd.DateOffset(days=1)
+    l_s = c_s - pd.DateOffset(years=1)
+    l_e = l_s + pd.DateOffset(months=1) - pd.DateOffset(days=1)
+elif view_option == "Selecionar Período":
     c_s, c_e = pd.to_datetime(custom_start), pd.to_datetime(custom_end)
     _plen = (c_e - c_s).days + 1
     p_e = c_s - pd.DateOffset(days=1)
@@ -1227,7 +1231,51 @@ st.title("📊 Vendas Dashboard")
 if not PROPHET_AVAILABLE:
     st.warning("⚠️ O pacote `prophet` não está instalado no ambiente. O modelo de previsão de Vendas baseado em IA não será executado.")
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📈 Desempenho de Vendas", "🗺️ Mapa Regional (UF)", "💰 Investimento", "📣 Campanhas", "🧪 Funil (Piloto)", "📞 Televendas", "📱 App"])
+# ---- loaders compartilhados entre abas (definidos ANTES das abas para que 📞, 💰 e 🧲 leiam a mesma fonte) ----
+_AQ_COLS = ['mes', 'secao', 'dim', 'metrica', 'valor', 'atualizado_em']
+
+
+@st.cache_data(ttl=43200)
+def _load_aq_raw():
+    d = cquery("SELECT mes, secao, dim, metrica, valor, atualizado_em FROM alex_aq_dash_mes", ttl=0)
+    d['mes'] = pd.to_datetime(d['mes'])
+    d['valor'] = pd.to_numeric(d['valor'], errors='coerce')
+    return d
+
+
+def load_aq():
+    try:
+        return _load_aq_raw(), None
+    except Exception as e:
+        return pd.DataFrame(columns=_AQ_COLS), f"{type(e).__name__}: {str(e)[:400]}"
+
+
+@st.cache_data(ttl=43200)
+def _load_crm_cpa_raw():
+    g = cquery("""SELECT report_date AS dia, ROUND(SUM(total_cost), 2) AS gasto_zenvia,
+                         ROUND(SUM(CASE WHEN status IN ('Enviada','Entregue','Lida')
+                                        THEN total_messages ELSE 0 END) * 0.32, 2) AS gasto_bd
+                  FROM alex_zenvia_template_status
+                  WHERE UPPER(template_name) LIKE '%%GT7%%'
+                  GROUP BY 1""", ttl=0)
+    v = cquery("""SELECT date AS dia, SUM(event_count) AS vendas_ga,
+                         SUM(CASE WHEN session_campaign_name LIKE '%%crm%%' THEN event_count ELSE 0 END) AS vendas_crm
+                  FROM alex_crm_wpp_sms_vendas GROUP BY 1""", ttl=0)
+    l = cquery("SELECT date AS dia, SUM(event_count) AS leads FROM alex_crm_wpp_sms_leads GROUP BY 1", ttl=0)
+    d = g.merge(v, on='dia', how='outer').merge(l, on='dia', how='outer')
+    d = d.fillna(0)
+    d['dia'] = pd.to_datetime(d['dia'])
+    return d.sort_values('dia')
+
+
+def load_crm_cpa():
+    try:
+        return _load_crm_cpa_raw(), None
+    except Exception as e:
+        return pd.DataFrame(columns=['dia', 'gasto', 'vendas', 'leads', 'gasto_bd', 'gasto_zenvia', 'vendas_ga', 'vendas_bd']), f"{type(e).__name__}: {str(e)[:300]}"
+
+
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab10, tab11 = st.tabs(["📈 Desempenho de Vendas", "🗺️ Mapa Regional (UF)", "💰 Investimento", "📣 Campanhas", "🌐 Site", "📞 Televendas", "📱 App", "📨 CRM", "🧲 Aquisição", "🧭 Funil Ponta a Ponta"])
 
 # =====================================================================
 # TAB 1: DESEMPENHO DE VENDAS
@@ -1886,6 +1934,9 @@ with tab1:
 
         # ---- grade ----
         medias = _cal_medias_semana(sel, m_start) if mostrar_medias else None
+        _pm = df_cal[(df_cal['data_ref'] >= m_start) & (df_cal['data_ref'] <= m_end)]
+        _promo_uno = set(_pm[_pm['promo_uno'] == 1]['data_ref']) if 'promo_uno' in _pm.columns else set()
+        _promo_dupla = set(_pm[_pm['promo_dupla'] == 1]['data_ref']) if 'promo_dupla' in _pm.columns else set()
         max_v = float(por_dia.max()) if not por_dia.empty else 0.0
         cells = []
         for wd in range(7):
@@ -1903,6 +1954,10 @@ with tab1:
             passado = last_day is not None and ts <= last_day
             v = por_dia.get(ts)
             style = "border:1px solid #e2e8f0;border-radius:8px;padding:5px 6px;min-height:52px;background:#fff;"
+            if ts in _promo_dupla:
+                style += "border-left:6px solid #2563eb;"
+            elif ts in _promo_uno:
+                style += "border-left:6px solid #f59e0b;"
             num = f"<div style='font-size:10.5px;color:#64748b;font-weight:600;'>{d:02d}</div>"
             if passado:
                 if v is None:
@@ -1955,7 +2010,7 @@ with tab1:
             "existe. **Esperado até hoje** = projeção do mês distribuída linearmente pelos dias de operação do mês. "
             "O calendário não segue o período da barra lateral, mas respeita o filtro **Dias de Operação** "
             "(dias excluídos aparecem como —). Na janela de comparação, *Até o dia N* soma os mesmos dias do mês "
-            "da janela principal."
+            "da janela principal. **Faixa lateral amarela** = qualquer campanha **Uno** ativa (is_uno / prêmios / cashback / 50% mens.); **azul** = **Dupla** (is_duo) — dia com as duas fica azul. Flags da `dim_calendario`, preenchidas até abr/26; meses recentes dependem de atualização manual."
         )
 
 # =====================================================================
@@ -2524,6 +2579,42 @@ with tab3:
             st.caption("ℹ️ O custo Zenvia é o total de mensageria (todos os disparos), não atribuído "
                        "por campanha — o custo por venda CRM é uma aproximação.")
 
+            # ---- ponte com a aba 📨 CRM: o mesmo período, os dois recortes lado a lado ----
+            _c8i, _c8i_err = load_crm_cpa()
+            if not _c8i_err and not _c8i.empty:
+                _c8i_c = _c8i[(_c8i['dia'] >= c_s) & (_c8i['dia'] <= ref_datetime)]
+                _c8i_p = _c8i[(_c8i['dia'] >= p_s) & (_c8i['dia'] <= p_partial)]
+                _gt7_zen_c, _gt7_zen_p = float(_c8i_c['gasto_zenvia'].sum()), float(_c8i_p['gasto_zenvia'].sum())
+                _gt7_bd_c, _gt7_bd_p = float(_c8i_c['gasto_bd'].sum()), float(_c8i_p['gasto_bd'].sum())
+                _gt7_v_c, _gt7_v_p = float(_c8i_c['vendas_ga'].sum()), float(_c8i_p['vendas_ga'].sum())
+                rows_ponte = [
+                    {'Métrica': '🏢 Mensageria da empresa — todos os remetentes (cobrado pela Zenvia)', '_level': 0, '_is_eff': True,
+                     'Atual': format_money(_cost_c), 'vs Anterior (Parcial)': fmt_val_delta_money(_cost_c, _cost_p)},
+                    {'Métrica': 'Instância Aquisição — templates GT7, cobrado (inclui Não Entregue)', '_level': 1, '_is_eff': True,
+                     'Atual': format_money(_gt7_zen_c), 'vs Anterior (Parcial)': fmt_val_delta_money(_gt7_zen_c, _gt7_zen_p)},
+                    {'Métrica': 'Instância Aquisição — régua da aba 📨 CRM (Enviada+Entregue+Lida × R$ 0,32)', '_level': 1, '_is_eff': True,
+                     'Atual': format_money(_gt7_bd_c), 'vs Anterior (Parcial)': fmt_val_delta_money(_gt7_bd_c, _gt7_bd_p)},
+                    {'Métrica': '🛒 Vendas mkt direto (GA4 · sessionSourceMedium contém mkt_direto) — régua da aba 📨', '_level': 0, '_is_eff': False,
+                     'Atual': format_br(_gt7_v_c), 'vs Anterior (Parcial)': fmt_val_delta(_gt7_v_c, _gt7_v_p)},
+                    {'Métrica': '🎯 CPA do CRM de Aquisição (régua da aba 📨)', '_level': 0, '_is_eff': True,
+                     'Atual': format_money(_gt7_bd_c / _gt7_v_c if _gt7_v_c else 0.0),
+                     'vs Anterior (Parcial)': fmt_val_delta_money(_gt7_bd_c / _gt7_v_c if _gt7_v_c else 0.0, _gt7_bd_p / _gt7_v_p if _gt7_v_p else 0.0)},
+                ]
+                st.markdown("**Ponte com a aba 📨 CRM (mesmo período):**")
+                st.markdown(render_metric_table(rows_ponte, ['Métrica', 'Atual', 'vs Anterior (Parcial)']),
+                            unsafe_allow_html=True)
+                st.markdown(
+                    "<div style='border-radius:12px;padding:12px 14px;background:#f8fafc;font-size:12.5px;color:#0f172a;line-height:1.5;'>"
+                    "<b>Por que os dois números são tão diferentes.</b> O bloco acima soma <b>toda</b> a mensageria da empresa "
+                    "(remetentes <i>CDT Relacionamento 9713</i>, <i>CDT Nacional 7537</i>, Energia de Todos, TIM/Tutti, SMS…): "
+                    "em ago/26 foram ~1,03 milhão de mensagens e ~R$ 302 mil, dos quais ~90% são réguas de relacionamento e "
+                    "engajamento com a base (retenção), não aquisição. A aba 📨 CRM e o relatório da Mesa olham só a "
+                    "<b>Instância de Aquisição</b> (templates com 'GT7' no nome — ~108 mil mensagens em ago/26) e usam a régua da "
+                    "BD_CRM: mensagens Enviada + Entregue + Lida × R$ 0,32 (a Zenvia cobra também as 'Não Entregue'; a Mesa não "
+                    "conta). <b>Quando usar cada um:</b> este bloco para custo total de mensageria (orçamento/contrato Zenvia, "
+                    "visão da empresa); a aba 📨 para CPA e CPL do marketing direto de aquisição (a régua do relatório mensal).</div>",
+                    unsafe_allow_html=True)
+
             if not _z_c.empty:
                 _top_send = (_z_c.groupby('sender_name')[['total_messages', 'total_price']]
                              .sum().sort_values('total_messages', ascending=False).head(8).reset_index())
@@ -2901,7 +2992,7 @@ with tab4:
                        "do conjunto. Clique num cabeçalho para ordenar.")
 
 # =====================================================================
-# TAB 5: FUNIL (PILOTO) — Website Checkout
+# TAB 5: SITE — funil do checkout (piloto) + visão site (abaixo)
 # ---------------------------------------------------------------------
 # Aba piloto para o uso diário do especialista de mídia. Funil do checkout
 # do site (hosts adesao/solicite), com dados da tabela alex_ga_checkout_funnel
@@ -2926,7 +3017,10 @@ with tab5:
     st.markdown("## Performance do Funil de Vendas — Website Checkout")
     st.caption("🧪 **Aba piloto** — em teste para o uso diário do especialista de mídia. "
                "O período atual e o de comparação seguem os **Controles Globais** da barra lateral. "
-               "Funil restrito ao checkout do site (hosts adesao/solicite).")
+               "Funil restrito ao checkout do site (hosts adesao/solicite). "
+               "O mesmo funil aparece na aba 🧲 Aquisição (Funis por superfície · Site) **no grão mensal e em usuários**: com o "
+               "período igual a meses inteiros os números coincidem; com dias/semanas, só aqui o corte é exato. Os **Leads Únicos do "
+               "HubSpot** não entram neste funil — contam Contatos de todas as portas, não só o checkout.")
 
     # ---- linha de filtros (período | comparação | canal fixo | exportar) ----
     f5c1, f5c2, f5c3, f5c4 = st.columns([1.35, 1.35, 1, 0.8])
@@ -3438,6 +3532,11 @@ with tab6:
         f"<div style='font-size:10.5px;color:#64748b;'>semanal: {pd.Timestamp(_tv_atual_w).strftime('%d/%m %H:%M') if _tv_atual_w is not None else 'não carregado'}</div>"
         "</div>", unsafe_allow_html=True)
 
+    if _tv_atual is not None and pd.Timestamp(_tv_atual).date() < reference_date:
+        st.warning(f"⏳ O agregado `alex_tv_dash_mes` foi calculado em **{pd.Timestamp(_tv_atual):%d/%m/%Y %H:%M}** e a base vai até "
+                   f"**{reference_date:%d/%m/%Y}** — o mês corrente (e o último mês, se a carga foi antes do fechamento) está "
+                   "**parcial** aqui. Rode `gt7 run televendas_dash` no claude-toolkit e clique em ♻️ Recarregar dados. "
+                   "A aba 🧲 Aquisição lê outro agregado (`alex_aq_dash_mes`), com a própria data de cálculo.")
     if _tv_err:
         st.error(f"⚠️ Falha ao ler `alex_tv_dash_mes` — a query levantou: `{_tv_err}`. "
                  "A leitura é refeita a cada rerun (o erro não fica em cache); se persistir, confira a conexão "
@@ -3644,8 +3743,9 @@ with tab6:
             parts.append(s)
         return pd.concat(parts) if parts else pd.DataFrame(columns=['mes', 'serie', 'valor'])
 
-    _tv_tabs = st.tabs(["📵 1 · Escallo Ativo", "📲 2 · Escallo Receptivo", "🚪 3 · Ganhos por porta",
-                        "📏 4 · Três réguas", "🧭 5 · Pipeline CRM", "🔀 6 · Grupos A–D", "💬 7 · Talkerchat"])
+    _tv_tabs = st.tabs(["📵 1 · Escallo Ativo", "📲 2 · Escallo Receptivo", "🧭 3 · Funil HubSpot (Contatos)",
+                        "💬 4 · Talkerchat", "📟 5 · Por telefone da empresa", "🚪 6 · Ganhos por porta",
+                        "📏 7 · Três réguas", "🔀 8 · Grupos A–D"])
 
     # =================================================================
     # 1 · ESCALLO ATIVO
@@ -3682,6 +3782,29 @@ with tab6:
             ], subtitle=_tv_per_lbl)
             st.caption("Fonte: ESCALLO_LEADS_MES (REL003 ativo + REL086 classificação; carga diária 8h). "
                        "'Confirmada' usa o telefone (tel-8) porque o Escallo não captura CPF — é teto de influência, não atribuição.")
+            # ---- ponte com a régua do relatório (aba 🧲 · s8_mesa): mesma população, outra pergunta ----
+            if _tv_grain == 'M':
+                _aq6, _aq6_err = load_aq()
+                _m8 = _aq6[(_aq6['secao'] == 's8_mesa') & (_aq6['dim'] == 'televendas') & (_aq6['mes'].isin(list(_tv_per)))] if not _aq6_err else pd.DataFrame()
+                if not _m8.empty:
+                    def _v8(met):
+                        d = _m8[_m8['metrica'] == met]
+                        return float(d['valor'].sum()) if not d.empty else None
+                    _d8, _a8, _v8m, _t8 = _v8('discados'), _v8('alo10'), _v8('vendas_mes'), _v8('vendas_mes_tv')
+                    _at8 = pd.Timestamp(_m8['atualizado_em'].max())
+                    _tv_note(
+                        f"<b>Régua do relatório mensal (aba 🧲 Aquisição, mesmos meses):</b> {_tv_n(_d8)} discados · {_tv_n(_a8)} alôs ≥ 10 s · "
+                        f"<b>{_tv_n(_v8m)} filiaram no mês</b> ({_tv_pct(_v8m, _d8)} dos discados; qualquer tipo de venda no NOMINAL, "
+                        f"cruzamento por tel-8 no mesmo mês-calendário) · <b>{_tv_n(_t8)}</b> com tipo_venda TELEVENDAS ({_tv_pct(_t8, _v8m)}). "
+                        f"Agregado calculado em {_at8:%d/%m %H:%M}.<br>"
+                        "<b>Por que difere do funil acima:</b> o funil Escallo conta o que a <i>operação registrou</i> (tabulação 'venda' do "
+                        "operador e a confirmação dessa tabulação no CTN na janela do contato + 14 d); a régua do relatório conta "
+                        "<i>quem filiou</i> entre os discados, por qualquer porta (site, MGM, campo, televendas). Use o funil Escallo para "
+                        "gerir a operação (aproveitamento do discador, gap de tabulação, qualidade do registro); use a régua do relatório "
+                        "para o resultado de negócio e para bater com o Relatório Mensal de Aquisição.",
+                        bg="#f8fafc", icon="🧲")
+                elif not _aq6_err:
+                    st.caption("ℹ️ Régua do relatório (aba 🧲, s8_mesa) sem dados para estes meses — rode `gt7 run aquisicao_dash --arg only=s8`.")
         with c2:
             # esperado só pela coincidência: vendas tabuladas × taxa do piso; efeito líquido = confirmadas − esperado
             _piso_rate = (piso_c / piso_l) if (piso_c is not None and piso_l) else None
@@ -3805,9 +3928,9 @@ with tab6:
                          "Série mensal — receptivo", stacked=False, rotulos=True, fonte="ESCALLO_LEADS_MES (REL002)")
 
     # =================================================================
-    # 3 · GANHOS POR PORTA
+    # 6 · GANHOS POR PORTA
     # =================================================================
-    with _tv_tabs[2]:
+    with _tv_tabs[5]:
         S = 's3_portas'
         g_tot = _tv_val(S, 'ganhos_total'); g = _tv_val(S, 'ganhos')
         p1 = _tv_val(S, 'porta1_tabulacao'); p2 = _tv_val(S, 'porta2_checkout')
@@ -3873,9 +3996,9 @@ with tab6:
                 "meses anteriores a maio são piso.")
 
     # =================================================================
-    # 4 · TRÊS RÉGUAS DA VENDA
+    # 7 · TRÊS RÉGUAS DA VENDA
     # =================================================================
-    with _tv_tabs[3]:
+    with _tv_tabs[6]:
         S = 's4_reguas'
         ganho = _tv_val('s3_portas', 'ganhos_total'); ganho_conf = _tv_val('s3_portas', 'conf_nominal')
         fil = _tv_val(S, 'filiacoes_contato'); fil_tv = _tv_val(S, 'filiacoes_fluxo_tv')
@@ -3939,7 +4062,7 @@ with tab6:
     # =================================================================
     # 5 · PIPELINE CRM
     # =================================================================
-    with _tv_tabs[4]:
+    with _tv_tabs[2]:
         S = 's5_pipeline'
         _stages = ['LEAD', 'EM NEGOCIAÇÃO', 'CONTATO SEM SUCESSO', 'PERDIDO', 'GANHO']
         _ent = {s_: _tv_val(S, 'entradas', dim=s_) for s_ in _stages}
@@ -4039,9 +4162,9 @@ with tab6:
                 bg="#f8fafc", icon="ℹ️")
 
     # =================================================================
-    # 6 · GRUPOS A–D
+    # 8 · GRUPOS A–D
     # =================================================================
-    with _tv_tabs[5]:
+    with _tv_tabs[7]:
         _c6 = _tvd[(_tvd['secao'] == 's6_canal') & (_tvd['mes'].isin(list(_tv_per)))]
         if _c6.empty:
             st.info("Sem linhas de canal para o período.")
@@ -4129,7 +4252,7 @@ with tab6:
     # =================================================================
     # 7 · TALKERCHAT
     # =================================================================
-    with _tv_tabs[6]:
+    with _tv_tabs[3]:
         S = 's7_talkerchat'
         tk = _tv_val(S, 'tickets'); tl = _tv_val(S, 'leads'); tcpf = _tv_val(S, 'com_cpf')
         th = _tv_val(S, 'leads_humano'); tcomp = _tv_val(S, 'compras'); tlia = _tv_val(S, 'compras_lia'); thum = _tv_val(S, 'compras_humano')
@@ -4175,6 +4298,150 @@ with tab6:
                 "Fonte: export do Talkerchat (alex_talkerchat via v_alex_talkerchat); compras confirmadas por CPF ±3 dias no NOMINAL. "
                 "Cobertura do export: reimportar o CSV no fechamento do mês (última data carregada aparece no último mês com dados).",
                 bg="#f8fafc", icon="ℹ️")
+
+    # =================================================================
+    # 8 · POR TELEFONE DA EMPRESA (funil pelo lado-empresa: ramal · porta · WhatsApp)
+    # -----------------------------------------------------------------
+    # Réplica do estudo de 07/08: cada telefone-lead é atribuído ao ramal (ativo, REL003 ligacao.origem) ou à
+    # porta (receptivo, REL002 ligacao.destino) da 1ª ligação do mês; conversa ≥10 s conta em qualquer ligação;
+    # venda/conf vêm do ESCALLO_LEADS_MES por tel-8. WhatsApp: hubspot_leads_raw.whatsapp_de_origem.
+    # Seções s8_ramal / s8_porta / s8_wpp (grão mensal; pipeline `gt7 run televendas_dash --arg only=s8`).
+    # =================================================================
+    with _tv_tabs[4]:
+        _s8 = _tvd_m[_tvd_m['secao'].isin(['s8_ramal', 's8_porta', 's8_wpp'])]
+        if _s8.empty:
+            st.warning("⚠️ As seções `s8_*` ainda não existem em `alex_tv_dash_mes`. Rode "
+                       "`gt7 run televendas_dash --arg only=s8 --arg nv=skip` e recarregue os dados.")
+        else:
+            _s8_meses = [pd.Timestamp(m) for m in sorted(_s8['mes'].dropna().unique(), reverse=True)]
+            _s8_alvo = pd.Timestamp(_tv_meses[-1]) if len(_tv_meses) else _s8_meses[0]
+            _s8_idx = next((i for i, m in enumerate(_s8_meses) if m == _s8_alvo), 0)
+            _s8_mes = st.selectbox("Mês:", _s8_meses, index=_s8_idx,
+                                   format_func=lambda m: f"{pd.Timestamp(m):%m/%Y}", key='t6_s8_mes')
+            st.caption("Cada telefone-lead é atribuído ao **ramal/porta da 1ª ligação que recebeu no mês**; a conversa "
+                       "(≥10 s) conta em qualquer ligação do lead. Venda registrada = tabulação 'venda' no Escallo; conf = "
+                       "confirmação por tel-8 no NOMINAL (teto de influência). Este funil é sempre mensal, mesmo com o "
+                       "período em semana.")
+
+            def _s8_piv(secao, mes):
+                d = _s8[(_s8['secao'] == secao) & (_s8['mes'] == mes)]
+                if d.empty:
+                    return pd.DataFrame()
+                return d.pivot_table(index='dim', columns='metrica', values='valor', aggfunc='sum').fillna(0)
+
+            def _s8_lista(df, rotulo, col_map, titulo, subtitulo, fonte, flag_sistema=False):
+                """Lista estilo relatório: label | barra(vol) | nº | barra(%alô) | vendas (conf). col_map define as colunas."""
+                _tv_titulo(titulo, subtitulo, "A")
+                if df.empty:
+                    st.caption("sem linhas para o mês.")
+                    return
+                df = df.sort_values(col_map['vol'], ascending=False)
+                vmax = float(df[col_map['vol']].max()) or 1.0
+                pcts = (df[col_map['alo']] / df[col_map['vol']].replace(0, pd.NA) * 100).fillna(0)
+                pmax = float(pcts.max()) or 1.0
+                linhas = [(
+                    "<div style='display:flex;gap:10px;align-items:center;padding:3px 0;font-size:11px;color:#64748b;"
+                    "font-weight:700;text-transform:uppercase;letter-spacing:.03em;'>"
+                    f"<div style='flex:0 0 92px;'>{rotulo}</div><div style='flex:2.4;'>{col_map['vol_lbl']}</div>"
+                    f"<div style='flex:0 0 90px;text-align:right;'>Ligações (tentativas)</div>"
+                    f"<div style='flex:1.6;'>{col_map['alo_lbl']} <span style='font-weight:400;text-transform:none;letter-spacing:0;'>· % sobre {col_map['vol_lbl'].lower()}</span></div>"
+                    f"<div style='flex:0 0 150px;text-align:right;'>{col_map['venda_lbl']}</div></div>")]
+                for dim, r in df.iterrows():
+                    vol = float(r[col_map['vol']]); alo = float(r[col_map['alo']])
+                    pct = alo / vol * 100 if vol else 0
+                    venda = float(r[col_map['venda']]); conf = float(r[col_map['conf']]) if col_map.get('conf') else None
+                    sistema = flag_sistema and venda == 0 and (conf or 0) <= 5 and vol >= 800
+                    _bg = ("repeating-linear-gradient(45deg,#c7cdf5 0 6px,#e4e7fb 6px 12px)" if sistema else "#7c86e8")
+                    _fg = '#94a3b8' if sistema else '#0f172a'
+                    lig = format_br(r['ligacoes']) if 'ligacoes' in r else ''
+                    _vtx = (f"{format_br(venda)} <span style='color:#94a3b8'>· conf. CTN: {format_br(conf)}</span>" if conf is not None
+                            else f"{format_br(venda)} · {_tv_pct(venda, vol)}")
+                    linhas.append(
+                        "<div style='display:flex;gap:10px;align-items:center;padding:3px 0;border-top:1px solid #f1f5f9;'>"
+                        f"<div style='flex:0 0 92px;font-size:12.5px;font-weight:700;color:{_fg};'>{dim}"
+                        + ("<div style='font-size:9.5px;color:#94a3b8;'>linha de sistema?</div>" if sistema else "") + "</div>"
+                        f"<div style='flex:2.4;display:flex;align-items:center;gap:8px;'>"
+                        f"<div style='height:14px;border-radius:4px;background:{_bg};width:{max(2, vol / vmax * 100):.1f}%;'></div>"
+                        f"<span style='font-size:11.5px;color:#334155;'>{format_br(vol)}</span></div>"
+                        f"<div style='flex:0 0 90px;text-align:right;font-size:11.5px;color:#64748b;'>{lig}</div>"
+                        f"<div style='flex:1.6;display:flex;align-items:center;gap:8px;'>"
+                        f"<div style='height:12px;border-radius:4px;background:#199e70;width:{max(2, pct / pmax * 88):.1f}%;'></div>"
+                        f"<span style='font-size:11.5px;color:#334155;white-space:nowrap;'>{format_br(alo)} · {f'{pct:.1f}'.replace('.', ',')}%</span></div>"
+                        f"<div style='flex:0 0 150px;text-align:right;font-size:12px;color:#0f172a;'>{_vtx}</div></div>")
+                st.markdown("<div style='border:1px solid #e2e8f0;border-radius:12px;padding:12px 16px;background:#fff;'>"
+                            + "".join(linhas) + "</div>", unsafe_allow_html=True)
+                st.caption("**Como ler as colunas:** a % da conversa é sobre a **1ª coluna** (telefones/leads), não sobre "
+                           "as ligações — ligações são tentativas, e um mesmo lead recebe várias no mês. **conf. CTN** = "
+                           "telefones do grupo que apareceram com filiação no CTN dentro da janela (teto de influência "
+                           "por tel-8): pode haver conf. com 0 vendas tabuladas quando o cliente filia por outro canal "
+                           "(site, app, porta a porta) ou quando o operador não tabula a venda.")
+                _tv_fonte(fonte)
+
+            _pr = _s8_piv('s8_ramal', _s8_mes)
+            _s8_lista(_pr, "Ramal", {'vol': 'leads', 'vol_lbl': 'Leads trabalhados', 'alo': 'alo10',
+                                     'alo_lbl': 'Conversa ≥10 s', 'venda': 'venda', 'conf': 'conf',
+                                     'venda_lbl': 'Venda registrada'},
+                      "Escallo ativo — o funil de cada ramal",
+                      "cada telefone discado pertence ao ramal da 1ª ligação do mês; hachura = suspeita de linha de "
+                      "sistema (muitos leads, zero venda) — confirmar no codigoAgenteOrigem do REL003",
+                      f"Televendas_REL003 (ligacao.origem) × ESCALLO_LEADS_MES (ATIVO) · {pd.Timestamp(_s8_mes):%m/%Y}",
+                      flag_sistema=True)
+            if not _pr.empty:
+                _alos = (_pr['alo10'] / _pr['leads'].replace(0, pd.NA) * 100).dropna()
+                _re = _pr[(_pr['venda'] > 0) | (_pr['conf'] > 5)]
+                if len(_re) >= 3:
+                    _ral = (_re['alo10'] / _re['leads'].replace(0, pd.NA) * 100).dropna()
+                    _f = lambda v: f"{v:.1f}".replace('.', ',')
+                    st.caption(f"Taxa de conversa entre ramais reais: {_f(_ral.min())}% a {_f(_ral.max())}% "
+                               f"(média {_f(_ral.mean())}%) — mesma lista, mesmo mês: a diferença é ritmo, horário e "
+                               "insistência de cada posição.")
+
+            st.markdown("---")
+            _pp = _s8_piv('s8_porta', _s8_mes)
+            _s8_lista(_pp, "Porta", {'vol': 'leads', 'vol_lbl': 'Leads atendidos', 'alo': 'alo10',
+                                     'alo_lbl': 'Conversa ≥10 s', 'venda': 'venda', 'conf': 'conf',
+                                     'venda_lbl': 'Venda registrada'},
+                      "Escallo receptivo — o funil de cada porta de entrada",
+                      "no receptivo o telefone-empresa é a fila/URA que atendeu (ligacao.destino); a venda se concentra "
+                      "nas primeiras portas — portas que falam pouco e vendem quase nada tendem a ser tráfego de outra "
+                      "natureza (cobrança, retorno de URA)",
+                      f"Televendas_REL002 (ligacao.destino) × ESCALLO_LEADS_MES (RECEPTIVO) · {pd.Timestamp(_s8_mes):%m/%Y}")
+
+            st.markdown("---")
+            _pw = _s8_piv('s8_wpp', _s8_mes)
+            if not _pw.empty:
+                _tv_titulo("HubSpot — o funil por número de WhatsApp de origem",
+                           "Leads nascidos em WhatsApp: criados → com CPF → trabalhados no objeto Leads → filiaram; "
+                           "os demais leads do mês nasceram fora de WhatsApp (site, mídia) e não têm telefone-empresa", "A")
+                _pw = _pw.sort_values('criados', ascending=False)
+                _vmax = float(_pw['criados'].max()) or 1.0
+                linhas = [("<div style='display:flex;gap:10px;align-items:center;padding:3px 0;font-size:11px;color:#64748b;"
+                           "font-weight:700;text-transform:uppercase;letter-spacing:.03em;'>"
+                           "<div style='flex:0 0 130px;'>Número</div><div style='flex:2.2;'>Leads criados</div>"
+                           "<div style='flex:0 0 120px;text-align:right;'>Com CPF</div>"
+                           "<div style='flex:0 0 100px;text-align:right;'>Trabalhados</div>"
+                           "<div style='flex:0 0 120px;text-align:right;'>Filiaram</div></div>")]
+                for dim, r in _pw.iterrows():
+                    cri = float(r['criados']); vazio = cri >= 300 and float(r['com_cpf']) == 0 and float(r['filiaram']) == 0
+                    _bg = ("repeating-linear-gradient(45deg,#c7cdf5 0 6px,#e4e7fb 6px 12px)" if vazio else "#199e70")
+                    linhas.append(
+                        "<div style='display:flex;gap:10px;align-items:center;padding:3px 0;border-top:1px solid #f1f5f9;'>"
+                        f"<div style='flex:0 0 130px;font-size:12.5px;font-weight:700;color:{'#94a3b8' if vazio else '#0f172a'};'>{dim}"
+                        + ("<div style='font-size:9.5px;color:#94a3b8;'>lead vazio?</div>" if vazio else "") + "</div>"
+                        f"<div style='flex:2.2;display:flex;align-items:center;gap:8px;'>"
+                        f"<div style='height:14px;border-radius:4px;background:{_bg};width:{max(2, cri / _vmax * 100):.1f}%;'></div>"
+                        f"<span style='font-size:11.5px;color:#334155;'>{format_br(cri)}</span></div>"
+                        f"<div style='flex:0 0 120px;text-align:right;font-size:11.5px;'>{format_br(r['com_cpf'])} · {_tv_pct(r['com_cpf'], cri)}</div>"
+                        f"<div style='flex:0 0 100px;text-align:right;font-size:11.5px;'>{format_br(r['trabalhados'])}</div>"
+                        f"<div style='flex:0 0 120px;text-align:right;font-size:11.5px;'>{format_br(r['filiaram'])} · {_tv_pct(r['filiaram'], cri)}</div></div>")
+                st.markdown("<div style='border:1px solid #e2e8f0;border-radius:12px;padding:12px 16px;background:#fff;'>"
+                            + "".join(linhas) + "</div>", unsafe_allow_html=True)
+                _tv_fonte(f"hubspot_leads_raw (whatsapp_de_origem, hs_createdate) · {pd.Timestamp(_s8_mes):%m/%Y} · "
+                          "trabalhado = entrou em Attempting/Connected/Qualified/Unqualified; filiou = data_de_filiacao "
+                          "preenchida (qualquer data). Hachura = número criando leads sem CPF, trabalho ou filiação "
+                          "(auditar a integração)")
+            else:
+                st.caption("sem funil de WhatsApp para o mês (s8_wpp vazio).")
 
 
 # =====================================================================
@@ -4306,7 +4573,7 @@ with tab7:
         ts = pd.Timestamp(ts)
         return f"{_AP_MESES_PT[ts.month - 1]}/{ts.strftime('%y')}"
 
-    _ap_tabs = st.tabs(["📲 1 · Funil do app", "🧩 2 · Uso de produtos", "🌱 3 · Freemium", "💰 4 · LTV e entrada no app"])
+    _ap_tabs = st.tabs(["📲 1 · Funil do app", "🧩 2 · Uso de produtos", "🌱 3 · Freemium", "💰 4 · LTV e entrada no app", "🎯 5 · Leads do app", "🔗 6 · Uso × conversão × LTV"])
 
     # =================================================================
     # 1 · FUNIL DO APP
@@ -4432,8 +4699,9 @@ with tab7:
         _pop = cc1.radio("População:", list(_AP_POP_LBL.keys()), format_func=lambda k: _AP_POP_LBL[k], horizontal=True, key='t7_s2_pop')
         with cc2:
             _mg2, _ = _ap_janela('t7_s2_jan')
-        _pop_n = _ap_val('s2_pop', 'populacao', dim=_pop, meses=[_apd['mes'].max()] if not _apd.empty else [])
-        _ex_free = _ap_val('s2_pop', 'populacao', dim='exfiliados_plano_freemium', meses=[_apd['mes'].max()] if not _apd.empty else [])
+        _mes_pop = _apd[_apd['secao'] == 's2_pop']['mes'].max() if not _apd.empty else None
+        _pop_n = _ap_val('s2_pop', 'populacao', dim=_pop, meses=[_mes_pop] if _mes_pop is not None else [])
+        _ex_free = _ap_val('s2_pop', 'populacao', dim='exfiliados_plano_freemium', meses=[_mes_pop] if _mes_pop is not None else [])
         _uso = _apd[(_apd['secao'] == 's2_uso') & (_apd['mes'].isin(_mg2)) & (_apd['dim'].str.startswith(_pop + '|'))].copy()
         _tot = _apd[(_apd['secao'] == 's2_uso_tot') & (_apd['mes'].isin(_mg2)) & (_apd['dim'] == _pop)]
         _ult = _mg2[-1]
@@ -4512,6 +4780,71 @@ with tab7:
                          "Cashback de 'outros parceiros' sinaliza o contrário (3,1% de conversão; 37,3% de inadimplência). "
                          "Cartão ativado: 3,8%, igual a nada.", bg="#ecfdf5", icon="💡")
 
+
+            st.markdown("---")
+            _su = _uso[(_uso['mes'] == _ult) & (_uso['metrica'] == 'usuarios')].copy()
+            _su_usos = _uso[(_uso['mes'] == _ult) & (_uso['metrica'] == 'usos')].copy()
+            if not _su.empty:
+                _tv_titulo("Composição por subproduto",
+                           f"como cada produto se divide em {_ap_mes_lbl(_ult)} — % sobre a soma dos usuários por subproduto", "A")
+                _prods = _su.groupby('produto')['valor'].sum().sort_values(ascending=False)
+                _prod_sel = st.selectbox("Produto:", list(_prods.index), key=f't7_s2_sub_{_pop}')
+                _sb1, _sb2 = st.columns([1, 1.4])
+                with _sb1:
+                    _ss = _su[_su['produto'] == _prod_sel].groupby('sub')['valor'].sum().sort_values(ascending=False)
+                    _ssu = _su_usos[_su_usos['produto'] == _prod_sel].groupby('sub')['valor'].sum()
+                    _den = float(_ss.sum())
+                    _rows_sb = []
+                    for _sb_, _v in _ss.items():
+                        _rows_sb.append({'Subproduto': _sb_, '_level': 0, '_is_eff': False,
+                                         'Usuários': format_br(_v), '% do produto': _tv_pct(_v, _den),
+                                         'Usos': format_br(_ssu.get(_sb_, 0)),
+                                         'Usos/usuário': (f"{(_ssu.get(_sb_, 0) / _v):.2f}".replace('.', ',') if _v else '—')})
+                    st.markdown(render_metric_table(_rows_sb, ['Subproduto', 'Usuários', '% do produto', 'Usos', 'Usos/usuário']),
+                                unsafe_allow_html=True)
+                    st.caption("Um CPF pode usar mais de um subproduto no mês: as fatias fecham 100% sobre a **soma** das linhas, "
+                               "que pode passar dos usuários únicos do produto.")
+                with _sb2:
+                    _ev = _uso[(_uso['produto'] == _prod_sel) & (_uso['metrica'] == 'usuarios')] \
+                        .groupby(['mes', 'sub'], as_index=False)['valor'].sum().rename(columns={'sub': 'serie'})
+                    _tv_chart_mensal(_ev, f"{_prod_sel} — usuários por subproduto e mês", stacked=True, rotulos=False,
+                                     subtitle=f"população {_AP_POP_LBL[_pop]} · janela selecionada",
+                                     fonte="Athena: fl_utilizacao_filiado (produto × sub_produto), agregado em alex_app_dash_mes (s2_uso)")
+
+                if _prod_sel == 'CASHBACK' and _pop == 'clientes_ativos':
+                    _pc = _apd[(_apd['secao'] == 's2_parc') & (_apd['mes'].isin(_mg2))
+                               & (_apd['dim'].str.startswith('clientes_ativos|'))].copy()
+                    if _pc.empty:
+                        st.caption("ℹ️ Abertura por parceiro ainda não materializada: rode `gt7 run app_dash --arg only=s2p`.")
+                    else:
+                        _pc['parceiro'] = _pc['dim'].str.split('|', n=1).str[1]
+                        _npar = _ap_val('s2_parc_tot', 'parceiros', dim='clientes_ativos', meses=[_ult])
+                        _tv_titulo("Cashback por parceiro",
+                                   f"onde os clientes ativos usaram cashback em {_ap_mes_lbl(_ult)} — top 20 do mês "
+                                   f"(de {_tv_n(_npar)} parceiros distintos); o resto vira 'OUTROS PARCEIROS'", "A")
+                        _pu = _pc[(_pc['mes'] == _ult) & (_pc['metrica'] == 'usuarios')].groupby('parceiro')['valor'].sum().sort_values(ascending=False)
+                        _po = _pc[(_pc['mes'] == _ult) & (_pc['metrica'] == 'usos')].groupby('parceiro')['valor'].sum()
+                        _denp = float(_pu.sum())
+                        _pb1, _pb2 = st.columns([1, 1.4])
+                        with _pb1:
+                            _rows_pc = []
+                            for _pp_, _v in _pu.items():
+                                _rows_pc.append({'Parceiro': _pp_, '_level': 0, '_is_eff': _pp_ == 'OUTROS PARCEIROS',
+                                                 'Usuários': format_br(_v), '% do cashback': _tv_pct(_v, _denp),
+                                                 'Usos': format_br(_po.get(_pp_, 0))})
+                            st.markdown(render_metric_table(_rows_pc, ['Parceiro', 'Usuários', '% do cashback', 'Usos']),
+                                        unsafe_allow_html=True)
+                        with _pb2:
+                            _tops = [p for p in _pu.index if p != 'OUTROS PARCEIROS'][:6]
+                            _evp = _pc[(_pc['metrica'] == 'usuarios') & (_pc['parceiro'].isin(_tops))] \
+                                .groupby(['mes', 'parceiro'], as_index=False)['valor'].sum().rename(columns={'parceiro': 'serie'})
+                            _tv_chart_mensal(_evp, "Top parceiros — usuários por mês", stacked=False, rotulos=False,
+                                             subtitle="6 maiores do último mês (sem o agregado OUTROS)",
+                                             fonte="Athena: fl_utilizacao_filiado.cash_nome_parceiro (s2_parc)")
+                            _tv_note("<b>Leitura.</b> O subproduto NACIONAIS concentra Raia/Drogasil — aqui esse bloco abre por bandeira. "
+                                     "O top 20 é recalculado a cada mês, então a lista de parceiros pode mudar de um mês para outro; "
+                                     "a fatia OUTROS PARCEIROS agrega todos os demais.", bg="#f8fafc", icon="ℹ️")
+
             if _pop in ('clientes_nao_freemium', 'freemium_conv'):
                 st.markdown("---")
                 _tv_titulo("Penetração por produto — clientes de sempre × freemium convertido",
@@ -4519,7 +4852,7 @@ with tab7:
                            "populações de tamanhos muito diferentes, por isso a comparação é em %", "A")
                 _cmp_rows = []
                 for _pp, _lbl in [('clientes_nao_freemium', 'Clientes que não vieram do freemium'), ('freemium_conv', 'Freemium → cliente ativo')]:
-                    _pn_ = _ap_val('s2_pop', 'populacao', dim=_pp, meses=[_apd['mes'].max()])
+                    _pn_ = _ap_val('s2_pop', 'populacao', dim=_pp, meses=[_mes_pop] if _mes_pop is not None else [])
                     _u_ = _apd[(_apd['secao'] == 's2_uso') & (_apd['mes'] == _ult) & (_apd['metrica'] == 'usuarios')
                                & (_apd['dim'].str.startswith(_pp + '|'))].copy()
                     if _u_.empty or not _pn_:
@@ -5015,3 +5348,1707 @@ with tab7:
                     st.caption("Leitura precoce engana: nas coortes de 2025 a retenção no mês 3 explicou só 3% da retenção no mês 12 "
                                "(TUTTI era 4º no mês 3 e último no mês 12). Use as janelas curtas para inadimplência (que já separa "
                                "canais) e espere a de 12 meses para ranquear canal por LTV.")
+
+    # =================================================================
+    # 5 · LEADS DO APP (não-filiados) — mapa "App leads in Athena" (30/07)
+    # -----------------------------------------------------------------
+    # Retrato de hoje da fl_usuario_nao_filiado_atual (secao 's5_leads', carimbo no último mês do pipeline):
+    # leads puros (nunca filiaram) por recência de login × cartão digital; mornos (≤90 d) × cashback; quadrante de
+    # score comportamental; desfiliados por recência + motivo. E a conversão pós-cadastro por coorte (s1_funil).
+    # =================================================================
+    with _ap_tabs[4]:
+        S = 's5_leads'
+        _L5 = _apd[_apd['secao'] == S] if not _apd.empty else pd.DataFrame(columns=_AP_COLS)
+        _REC_LBL = {'a_ate7d': '≤ 7 d', 'b_8_30d': '8–30 d', 'c_31_90d': '31–90 d', 'd_91_180d': '91–180 d',
+                    'e_181_365d': '181–365 d', 'f_mais365d': '> 365 d', 'g_nunca': 'nunca logou'}
+        _REC_ORD = ['a_ate7d', 'b_8_30d', 'c_31_90d', 'd_91_180d', 'e_181_365d', 'f_mais365d', 'g_nunca']
+        if _L5.empty:
+            st.warning("⚠️ A seção `s5_leads` ainda não existe em `alex_app_dash_mes`. Rode `gt7 run app_dash --arg only=s5` "
+                       "e recarregue os dados.")
+        else:
+            _st5 = _L5['mes'].max()
+
+            def _v5(dim, met='n'):
+                d = _L5[(_L5['mes'] == _st5) & (_L5['dim'] == dim) & (_L5['metrica'] == met)]
+                return float(d['valor'].sum()) if not d.empty else 0.0
+
+            _nf = _L5[(_L5['mes'] == _st5) & (_L5['dim'].str.startswith('nf:')) & (_L5['metrica'] == 'n')].copy()
+            _nf[['rec', 'cartao']] = _nf['dim'].str[3:].str.split('|', n=1, expand=True)
+            _tot_nf = float(_nf['valor'].sum())
+            _login90 = float(_nf[_nf['rec'].isin(['a_ate7d', 'b_8_30d', 'c_31_90d'])]['valor'].sum())
+            _wm = {seg: {m: _v5(f'warm:{seg}', m) for m in ('n', 'transacoes', 'cashback')}
+                   for seg in ('cartao_sim|cash_sim', 'cartao_sim|cash_nao', 'cartao_nao|cash_sim', 'cartao_nao|cash_nao')}
+            _cash_n = _wm['cartao_sim|cash_sim']['n'] + _wm['cartao_nao|cash_sim']['n']
+            _cash_v = _wm['cartao_sim|cash_sim']['cashback'] + _wm['cartao_nao|cash_sim']['cashback']
+            _df5 = _L5[(_L5['mes'] == _st5) & (_L5['dim'].str.startswith('desf:')) & (_L5['metrica'] == 'n')].copy()
+            _df5['rec'] = _df5['dim'].str[5:]
+            _tot_desf = float(_df5['valor'].sum())
+            _desf90 = float(_df5[_df5['rec'].isin(['a_ate7d', 'b_8_30d', 'c_31_90d'])]['valor'].sum())
+
+            st.caption(f"Retrato de **{pd.Timestamp(_st5):%m/%Y}** (última carga do pipeline) da base do app fora do "
+                       "quadro de filiados (`fl_usuario_nao_filiado_atual`). **Lead puro** = cadastrou o app e nunca "
+                       "foi cliente; **desfiliado** = já foi cliente (dt_filiacao preenchida). O HubSpot diz de onde o "
+                       "lead veio; esta base diz o que ele FEZ depois — login, cartão digital, cashback.")
+            k1, k2, k3, k4 = st.columns(4)
+            _tv_kpi(k1, "🌡️", "Leads puros (nunca filiaram)", _tv_n(_tot_nf),
+                    f"{_tv_pct(_login90, _tot_nf)} abriram o app nos últimos 90 d")
+            _tv_kpi(k2, "🔥", "Mornos: login ≤ 90 d", _tv_n(_login90),
+                    f"alcançáveis agora · {_tv_n(_v5('warm:cartao_sim|cash_sim') + _v5('warm:cartao_sim|cash_nao'))} com cartão ativado", color="#2e8a4f")
+            _tv_kpi(k3, "💳", "Mornos já transacionando cashback", _tv_n(_cash_n),
+                    f"R$ {format_br(_cash_v)} em cashback — usam o benefício sem pagar: a lista de upsell mais limpa", color="#b45309")
+            _tv_kpi(k4, "🚪", "Desfiliados na base do app", _tv_n(_tot_desf),
+                    f"{_tv_n(_desf90)} ainda abriram o app em 90 d — win-back com o app instalado", color="#0f172a")
+
+            st.markdown("---")
+            # ---- (a) recência × cartão ----
+            _tv_titulo("Onde os leads do app estão — por recência do último login",
+                       "leads puros; a recência é o termômetro: quem nunca logou é falha de onboarding, quem esfriou é nutrição", "A")
+            _da5 = _nf.copy()
+            _da5['x'] = _da5['rec'].map(_REC_LBL)
+            _da5['serie'] = _da5['cartao'].map({'cartao_sim': 'Ativou o cartão digital', 'cartao_nao': 'Nunca ativou'})
+            _da5['rotulo'] = _da5['valor'].map(_tv_fmt_k)
+            fig = px.bar(_da5, x='x', y='valor', color='serie', barmode='group', text='rotulo',
+                         category_orders={'x': [_REC_LBL[r] for r in _REC_ORD],
+                                          'serie': ['Ativou o cartão digital', 'Nunca ativou']},
+                         color_discrete_map={'Ativou o cartão digital': '#166534', 'Nunca ativou': '#b45309'},
+                         template='cdt_a' if _CDT_THEME else 'plotly_white')
+            fig.update_traces(textposition='outside', textfont_size=10.5, cliponaxis=False)
+            fig.update_layout(height=360, xaxis_title='', yaxis_title='leads', legend_title_text='', bargap=0.25)
+            st.plotly_chart(fig, use_container_width=True)
+            _tv_fonte("Athena: fl_usuario_nao_filiado_atual (dt_ultimo_login_app · dt_ativacao_pl · dt_filiacao IS NULL)")
+            _nunca_card = _v5('nf:g_nunca|cartao_sim')
+            st.caption(f"Quem **nunca logou** ({_tv_n(float(_nf[_nf['rec'] == 'g_nunca']['valor'].sum()))}) é um problema "
+                       f"diferente de quem esfriou: só {_tv_n(_nunca_card)} deles ativaram o cartão — baixaram, cadastraram "
+                       "e pararam. Isso é falha de onboarding (medir contra a campanha que os trouxe), não oportunidade de nutrição.")
+
+            st.markdown("---")
+            # ---- quadrante ----
+            _tv_titulo("Quadrante de score comportamental — cartão digital × login em 90 dias",
+                       "o gt7_score do HubSpot não enxerga nada depois da captura; estes dois sinais separam os leads que convertem", "A")
+            _q = {('sim', 'sim'): float(_nf[(_nf['cartao'] == 'cartao_sim') & (_nf['rec'].isin(['a_ate7d', 'b_8_30d', 'c_31_90d']))]['valor'].sum()),
+                  ('sim', 'nao'): float(_nf[(_nf['cartao'] == 'cartao_sim') & (~_nf['rec'].isin(['a_ate7d', 'b_8_30d', 'c_31_90d']))]['valor'].sum()),
+                  ('nao', 'sim'): float(_nf[(_nf['cartao'] == 'cartao_nao') & (_nf['rec'].isin(['a_ate7d', 'b_8_30d', 'c_31_90d']))]['valor'].sum()),
+                  ('nao', 'nao'): float(_nf[(_nf['cartao'] == 'cartao_nao') & (~_nf['rec'].isin(['a_ate7d', 'b_8_30d', 'c_31_90d']))]['valor'].sum())}
+            _qc1, _qc2 = st.columns(2)
+            for _col, _cart, _t in [(_qc1, 'sim', '💳 Cartão ativado'), (_qc2, 'nao', 'Sem cartão')]:
+                with _col:
+                    for _lg, _lt in [('sim', 'login ≤ 90 d'), ('nao', 'sem login em 90 d')]:
+                        _n = _q[(_cart, _lg)]
+                        _top = _cart == 'sim' and _lg == 'sim'
+                        st.markdown(
+                            f"<div style='border:2px solid {'#166534' if _top else '#e2e8f0'};border-radius:12px;"
+                            f"padding:12px 16px;margin-bottom:8px;background:{'#ecfdf5' if _top else '#fff'};'>"
+                            f"<div style='font-size:12px;color:#64748b;font-weight:600;'>{_t} · {_lt}</div>"
+                            f"<div style='font-size:22px;font-weight:800;color:#0f172a;'>{_tv_n(_n)}"
+                            f" <span style='font-size:12px;color:#64748b;font-weight:600;'>{_tv_pct(_n, _tot_nf)} dos leads puros</span></div>"
+                            + ("<div style='font-size:11px;color:#166534;font-weight:700;'>quadrante de maior conversão — "
+                               "priorizar no score e nas réguas</div>" if _top else "") + "</div>", unsafe_allow_html=True)
+            st.caption("Quatro sinais comportamentais duros que o CRM não tem: onboarding concluído (flg_onboarding — morto "
+                       "desde out/25, não usar), cartão digital ativado, recência de login e cashback transacionado. Leads com "
+                       "cartão + login em 90 d convertem a taxas visivelmente diferentes dos sem nada.")
+
+            st.markdown("---")
+            _cw1, _cw2 = st.columns(2)
+            with _cw1:
+                # ---- mornos × cashback ----
+                _tv_titulo("Os mornos (login ≤ 90 d) — cartão × cashback",
+                           "quem já transaciona cashback usa o benefício sem pagar a mensalidade", "A")
+                _rows_w = []
+                for seg, lbl in [('cartao_sim|cash_sim', 'Cartão + cashback'), ('cartao_sim|cash_nao', 'Cartão, sem cashback'),
+                                 ('cartao_nao|cash_sim', 'Cashback, sem cartão'), ('cartao_nao|cash_nao', 'Nenhum dos dois')]:
+                    _rows_w.append({'seg': lbl, 'n': _wm[seg]['n'], 'cash': _wm[seg]['cashback']})
+                _dw = pd.DataFrame(_rows_w).sort_values('n', ascending=True)
+                _dw['rotulo'] = _dw.apply(lambda r: f"{_tv_fmt_k(r['n'])}" + (f"  (R$ {_tv_fmt_k(r['cash'])})" if r['cash'] else ""), axis=1)
+                fig = px.bar(_dw, x='n', y='seg', orientation='h', text='rotulo',
+                             color_discrete_sequence=['#166534'], template='cdt_a' if _CDT_THEME else 'plotly_white')
+                fig.update_traces(textposition='outside', textfont_size=10.5, cliponaxis=False)
+                fig.update_layout(height=300, xaxis_title='', yaxis_title='', showlegend=False,
+                                  margin=dict(l=10, r=90, t=8, b=28), yaxis=dict(automargin=True, side='left', showgrid=False))
+                st.plotly_chart(fig, use_container_width=True)
+                _tv_fonte("fl_usuario_nao_filiado_atual × fl_cashback (flg_cashback = 1) · entre parênteses, cashback acumulado")
+            with _cw2:
+                # ---- desfiliados ----
+                _tv_titulo("Desfiliados com o app instalado — por recência de login",
+                           "ex-clientes na mesma base; win-back com o app na mão é outra campanha", "A")
+                _dd5 = _df5.copy()
+                _dd5['x'] = _dd5['rec'].map(_REC_LBL)
+                _dd5['rotulo'] = _dd5['valor'].map(_tv_fmt_k)
+                fig = px.bar(_dd5, x='x', y='valor', text='rotulo',
+                             category_orders={'x': [_REC_LBL[r] for r in _REC_ORD]},
+                             color_discrete_sequence=['#0f172a'], template='cdt_a' if _CDT_THEME else 'plotly_white')
+                fig.update_traces(textposition='outside', textfont_size=10.5, cliponaxis=False)
+                fig.update_layout(height=300, xaxis_title='', yaxis_title='', showlegend=False, margin=dict(t=8, b=28))
+                st.plotly_chart(fig, use_container_width=True)
+                _tv_fonte("fl_usuario_nao_filiado_atual (dt_filiacao NOT NULL) · histórico completo: franquia, forma de "
+                          "pagamento e motivo via fl_filiado")
+            _mot = _L5[(_L5['mes'] == _st5) & (_L5['dim'].str.startswith('desf_motivo:')) & (_L5['metrica'] == 'n')].copy()
+            if not _mot.empty:
+                _mot['motivo'] = _mot['dim'].str[12:]
+                _mot = _mot.sort_values('valor', ascending=False)
+                _tm = float(_mot['valor'].sum())
+                with st.expander(f"Motivo de desfiliação dos {_tv_n(_desf90)} desfiliados ativos em 90 d (top {len(_mot)})"):
+                    st.dataframe(pd.DataFrame({'Motivo': _mot['motivo'], 'Ex-clientes': _mot['valor'].map(format_br),
+                                               '%': (_mot['valor'] / _tm * 100).map(lambda v: f"{v:.1f}%".replace('.', ','))}),
+                                 use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+            # ---- conversão pós-cadastro por coorte (dados do s1_funil) ----
+            _tv_titulo("Conversão pós-cadastro em 90 dias — coortes mensais",
+                       "dos que cadastraram o app SEM comprar no dia, % que filiou em até 90 dias; isola a contribuição própria "
+                       "do app da venda de balcão", "B")
+            _cf = _apd[(_apd['secao'] == 's1_funil') & (_apd['dim'] == 'app')
+                       & (_apd['metrica'].isin(['cadastros_freemium', 'freemium_conv_90d']))]
+            if _cf.empty:
+                st.caption("sem dados do funil (s1).")
+            else:
+                _cp = _cf.pivot_table(index='mes', columns='metrica', values='valor', aggfunc='sum').reset_index()
+                _cp = _cp[_cp['cadastros_freemium'] > 0].sort_values('mes')
+                _cp['pct'] = _cp['freemium_conv_90d'] / _cp['cadastros_freemium'] * 100
+                _hoje5 = pd.Timestamp(reference_date)
+                _cp['madura'] = _cp['mes'] <= _hoje5 - pd.DateOffset(days=90)
+                _cpm = _cp[_cp['madura']]
+                if not _cpm.empty:
+                    fig = px.line(_cpm.assign(x=_cpm['mes'].map(_ap_mes_lbl)), x='x', y='pct', markers=True,
+                                  text=_cpm['pct'].map(lambda v: f"{v:.1f}%".replace('.', ',')),
+                                  color_discrete_sequence=['#166534'], template='cdt_b' if _CDT_THEME else 'plotly_white')
+                    fig.update_traces(line_width=2.5, marker_size=7, textposition='top center', textfont_size=10,
+                                      mode='lines+markers+text')
+                    _ylo5, _yhi5 = float(_cpm['pct'].min()), float(_cpm['pct'].max())
+                    fig.update_layout(height=320, xaxis_title='', yaxis_title='', showlegend=False, margin=dict(l=45, r=40))
+                    fig.update_yaxes(ticksuffix='%', range=[max(0, _ylo5 - 4), _yhi5 + 4])
+                    st.plotly_chart(fig, use_container_width=True)
+                    _tv_fonte("s1_funil: freemium_conv_90d ÷ cadastros_freemium por mês de cadastro · coortes com menos de "
+                              "90 dias ficam fora (imaturas)")
+                    st.caption("A oscilação é real e grande (o estudo mediu 11,5% em fev/26 contra 25,4% em abr/26 — mais de "
+                               "2×): é esta a métrica para pôr contra o gasto de campanha, porque tira da conta a venda no ato. "
+                               "Meses de pico de volume tendem a puxar a taxa para baixo (volume × qualidade).")
+                else:
+                    st.caption("nenhuma coorte com 90 dias completos ainda.")
+
+    # =================================================================
+    # 6 · USO × CONVERSÃO × LTV — correlações (s6_free_uso, s6_cli_uso) e cruzamentos do LTV (s4_ltv)
+    # -----------------------------------------------------------------
+    # (a) freemium: conversão por uso ANTES de converter, nos 30 primeiros dias (a régua 3,5× do estudo de 20/08,
+    #     agora com o denominador certo: toda a coorte, convertida ou não);
+    # (b) clientes: retenção/adimplência no mês 3 e 5 por produto usado nos 60 primeiros dias;
+    # (c) LTV cruzado: tipo de venda × entrada no app, e por promoção (voucher) onde a base alcança.
+    # =================================================================
+    with _ap_tabs[5]:
+        _F6 = _apd[_apd['secao'] == 's6_free_uso'] if not _apd.empty else pd.DataFrame(columns=_AP_COLS)
+        _C6 = _apd[_apd['secao'] == 's6_cli_uso'] if not _apd.empty else pd.DataFrame(columns=_AP_COLS)
+        _USO_LBL = {'a_farmacia': 'Cashback de farmácia', 'b_outros': 'Cashback de outros parceiros',
+                    'c_farmacia_e_outros': 'Farmácia + outros', 'd_so_cartao': 'Só ativou o cartão',
+                    'e_nenhum': 'Nenhum uso'}
+        _USO_ORD = ['a_farmacia', 'c_farmacia_e_outros', 'b_outros', 'd_so_cartao', 'e_nenhum']
+        if _F6.empty and _C6.empty:
+            st.warning("⚠️ As seções `s6_*` ainda não existem em `alex_app_dash_mes`. Rode `gt7 run app_dash --arg only=s6` "
+                       "e recarregue os dados.")
+        else:
+            st.caption("Duas perguntas de causa e efeito, com as coortes certas: **o que o freemium precisa fazer para "
+                       "virar cliente** e **o que o cliente precisa usar para continuar pagando**. O uso é sempre medido "
+                       "ANTES do desfecho (para o freemium, só o que ele fez antes de filiar) — senão o número mede "
+                       "consequência, não causa.")
+            # ---------- (a) freemium ----------
+            _j6 = st.radio("Coortes de cadastro:", ["3 meses", "12 meses"], index=1, horizontal=True, key='t7_s6_jan')
+            _n6 = 3 if _j6.startswith("3") else 12
+            _hoje6 = pd.Timestamp(reference_date)
+            _mF = [m for m in sorted(_F6['mes'].dropna().unique()) if pd.Timestamp(m) <= _hoje6 - pd.DateOffset(days=90)]
+            _mF = _mF[-_n6:]
+            _sub6 = (f"coortes de cadastro {_ap_mes_lbl(_mF[0])}–{_ap_mes_lbl(_mF[-1])} (só as que já completaram 90 dias)"
+                     if _mF else "sem coortes maduras")
+            _tv_titulo("Freemium → cliente: conversão por uso nos 30 primeiros dias", _sub6, "A")
+            if not _mF:
+                st.caption("nenhuma coorte com 90 dias completos.")
+            else:
+                _fd = _F6[_F6['mes'].isin(_mF)].copy()
+                _fd['uso'] = _fd['dim'].str[4:]
+                _pv6 = _fd.pivot_table(index='uso', columns='metrica', values='valor', aggfunc='sum').fillna(0)
+                _pv6 = _pv6.reindex([u for u in _USO_ORD if u in _pv6.index])
+                _base90 = (float(_pv6.loc['e_nenhum', 'conv_90d']) / float(_pv6.loc['e_nenhum', 'n'])
+                           if 'e_nenhum' in _pv6.index and float(_pv6.loc['e_nenhum', 'n']) else None)
+                _rows6 = []
+                for u, r in _pv6.iterrows():
+                    n = float(r['n'])
+                    if n <= 0:
+                        continue
+                    for met, lbl in [('conv_30d', 'em 30 dias'), ('conv_90d', 'em 90 dias')]:
+                        _rows6.append({'grupo': _USO_LBL.get(u, u), 'serie': lbl, 'pct': float(r[met]) / n * 100, 'n': n})
+                _d6c = pd.DataFrame(_rows6)
+                _d6c['rotulo'] = _d6c['pct'].map(lambda v: f"{v:.1f}%".replace('.', ','))
+                fig = px.bar(_d6c, x='grupo', y='pct', color='serie', barmode='group', text='rotulo',
+                             category_orders={'grupo': [_USO_LBL[u] for u in _USO_ORD if u in _pv6.index],
+                                              'serie': ['em 30 dias', 'em 90 dias']},
+                             color_discrete_map={'em 30 dias': '#8cc79e', 'em 90 dias': '#166534'},
+                             template='cdt_a' if _CDT_THEME else 'plotly_white')
+                fig.update_traces(textposition='outside', textfont_size=10.5, cliponaxis=False)
+                fig.update_layout(height=380, xaxis_title='', yaxis_title='da coorte que converteu', legend_title_text='',
+                                  bargap=0.28)
+                fig.update_yaxes(ticksuffix='%')
+                if _base90:
+                    fig.add_hline(y=_base90 * 100, line_dash='dot', line_color='#b45309',
+                                  annotation_text=f"linha de base (nenhum uso, 90 d): {_base90 * 100:.1f}%".replace('.', ','),
+                                  annotation_position='top right', annotation_font_size=10.5)
+                st.plotly_chart(fig, use_container_width=True)
+                _tv_fonte("Athena: fl_plano_usuario (coorte de freemium) × fl_cashback (cashin, exceto cashback de adesão) × "
+                          "1ª filiação por CPF · uso contado só ANTES da filiação")
+                _t6 = []
+                for u, r in _pv6.iterrows():
+                    n = float(r['n'])
+                    _lift = (float(r['conv_90d']) / n / _base90) if (_base90 and n) else None
+                    _t6.append({'Uso nos 30 primeiros dias': _USO_LBL.get(u, u), 'Freemiums': format_br(n),
+                                '% da coorte': _tv_pct(n, float(_pv6['n'].sum())),
+                                'Converteu em 30 d': _tv_pct(r['conv_30d'], n), 'Em 90 d': _tv_pct(r['conv_90d'], n),
+                                'Até hoje': _tv_pct(r['conv_total'], n),
+                                'vs quem não usou nada (90 d)': ("—" if not _lift else f"{_lift:.1f}×".replace('.', ','))})
+                with st.expander("Tabela — conversão por uso prévio"):
+                    st.dataframe(pd.DataFrame(_t6), use_container_width=True, hide_index=True)
+                    st.caption("'Até hoje' tem horizonte aberto (coortes antigas tiveram mais tempo) — compare pelas colunas "
+                               "de 30 e 90 dias. O cartão virtual sozinho não separa nada: fica na linha de base. Cashback de "
+                               "farmácia é o único sinal forte, e é acionável no primeiro mês.")
+
+            st.markdown("---")
+            # ---------- (b) clientes ----------
+            _tv_titulo("Cliente: retenção por produto usado nos 60 primeiros dias",
+                       "% da coorte de venda ainda pagando (definição C: até 1 mês de atraso) no mês 3 e no mês 5", "A")
+            _mC = [m for m in sorted(_C6['mes'].dropna().unique()) if pd.Timestamp(m) <= _hoje6 - pd.DateOffset(months=6)]
+            _mC = _mC[-_n6:]
+            if not _mC:
+                st.caption("nenhuma coorte de venda com 6 meses completos.")
+            else:
+                _cd = _C6[_C6['mes'].isin(_mC)].copy()
+                _cd['prod'] = _cd['dim'].str[5:]
+                _pc6 = _cd.pivot_table(index='prod', columns='metrica', values='valor', aggfunc='sum').fillna(0)
+                _pc6 = _pc6[_pc6['n'] >= 500].sort_values('n', ascending=False)
+                _rows7 = []
+                for prod, r in _pc6.iterrows():
+                    n = float(r['n'])
+                    for met, lbl in [('ret_m3_C', 'mês 3'), ('ret_m5_C', 'mês 5')]:
+                        _rows7.append({'grupo': prod.title() if prod not in ('NENHUM USO', 'QUALQUER PRODUTO') else prod.capitalize(),
+                                       'serie': lbl, 'pct': float(r[met]) / n * 100, 'n': n})
+                _d7c = pd.DataFrame(_rows7)
+                _ordp7 = list(dict.fromkeys(_d7c[_d7c['serie'] == 'mês 5'].sort_values('pct', ascending=False)['grupo']))
+                _d7c['rotulo'] = _d7c['pct'].map(lambda v: f"{v:.1f}%".replace('.', ','))
+                fig = px.bar(_d7c, x='grupo', y='pct', color='serie', barmode='group', text='rotulo',
+                             category_orders={'grupo': _ordp7, 'serie': ['mês 3', 'mês 5']},
+                             color_discrete_map={'mês 3': '#8cc79e', 'mês 5': '#166534'},
+                             template='cdt_a' if _CDT_THEME else 'plotly_white')
+                fig.update_traces(textposition='outside', textfont_size=10, cliponaxis=False)
+                fig.update_layout(height=380, xaxis_title='', yaxis_title='ainda pagando', legend_title_text='', bargap=0.28)
+                fig.update_yaxes(ticksuffix='%', range=[0, 100])
+                st.plotly_chart(fig, use_container_width=True)
+                _tv_fonte(f"Athena: fl_filiado (coortes de venda {_ap_mes_lbl(_mC[0])}–{_ap_mes_lbl(_mC[-1])}, titulares) × "
+                          "fl_utilizacao_filiado (60 primeiros dias) × fl_nominal_qca_qcd")
+                _nen = _pc6.loc['NENHUM USO'] if 'NENHUM USO' in _pc6.index else None
+                _qq = _pc6.loc['QUALQUER PRODUTO'] if 'QUALQUER PRODUTO' in _pc6.index else None
+                if _nen is not None and _qq is not None:
+                    _d3 = (float(_qq['ret_m3_C']) / float(_qq['n']) - float(_nen['ret_m3_C']) / float(_nen['n'])) * 100
+                    _d5 = (float(_qq['ret_m5_C']) / float(_qq['n']) - float(_nen['ret_m5_C']) / float(_nen['n'])) * 100
+                    st.caption(f"Usar **qualquer** produto nos 2 primeiros meses vale **+{_d3:.1f} p.p.** de retenção no mês 3 "
+                               f"e **+{_d5:.1f} p.p.** no mês 5 — e a diferença abre com o tempo. Um CPF entra em todos os "
+                               "produtos que usou, então as barras não somam 100%.".replace('.', ','))
+                with st.expander("Tabela — retenção e adimplência por produto"):
+                    _t7 = []
+                    for prod, r in _pc6.iterrows():
+                        n = float(r['n'])
+                        _t7.append({'Produto usado (60 d)': prod, 'Clientes': format_br(n),
+                                    'Mês 3 · A (contrato ativo)': _tv_pct(r.get('ret_m3_A'), n),
+                                    'Mês 3 · C (até 1 mês atraso)': _tv_pct(r.get('ret_m3_C'), n),
+                                    'Mês 3 · B (sem atraso)': _tv_pct(r.get('ret_m3_B'), n),
+                                    'Mês 5 · C': _tv_pct(r.get('ret_m5_C'), n)})
+                    st.dataframe(pd.DataFrame(_t7), use_container_width=True, hide_index=True)
+                    st.caption("A distância entre A e B é a inadimplência do grupo: produto usado também prediz pagar em dia, "
+                               "não só continuar no contrato.")
+
+            st.markdown("---")
+            # ---------- (c) LTV cruzado: tipo × entrada, e promoção ----------
+            _tv_titulo("LTV cruzado — tipo de venda × entrada no app",
+                       "LTV na janela de 3 meses, pelas últimas coortes completas; cada célula é um cruzamento", "A")
+            if _L4.empty or _ref_max is None:
+                st.caption("sem s4_ltv — rode `gt7 run app_dash --arg only=s4`.")
+            else:
+                _el3 = _s4_ult_coortes(3)
+                _tipos6 = sorted({d[9:].split('|')[0] for d in _L4['dim'].unique() if str(d).startswith('tipo_ent:')})
+                _cells = []
+                for t in _tipos6:
+                    for g in _ENT_ORD:
+                        v, n, r, _ = _s4_ltv(f'tipo_ent:{t}|{g}', 3, _def4, _el3)
+                        if v is not None and n >= 200:
+                            _cells.append({'tipo': t, 'entrada': _ENT_LBL[g], 'ltv': v, 'n': n})
+                _dm = pd.DataFrame(_cells)
+                if _dm.empty:
+                    st.caption("sem cruzamentos com volume suficiente (n ≥ 200) na janela.")
+                else:
+                    _piv = _dm.pivot(index='tipo', columns='entrada', values='ltv')
+                    _piv = _piv.reindex(columns=[_ENT_LBL[g] for g in _ENT_ORD if _ENT_LBL[g] in _piv.columns])
+                    _piv = _piv.loc[_dm.groupby('tipo')['n'].sum().sort_values(ascending=False).index]
+                    _pn = _dm.pivot(index='tipo', columns='entrada', values='n').reindex(index=_piv.index, columns=_piv.columns)
+                    fig = px.imshow(_piv, text_auto=False, aspect='auto', color_continuous_scale=['#fee2e2', '#fef9c3', '#166534'],
+                                    template='cdt_a' if _CDT_THEME else 'plotly_white')
+                    fig.update_traces(text=_piv.map(lambda v: "" if pd.isna(v) else _s4_brl(v, 0).replace('R$ ', '')),
+                                      texttemplate='%{text}', textfont_size=10.5,
+                                      customdata=_pn.values,
+                                      hovertemplate='%{y} · %{x}<br>LTV R$ %{z:,.2f} · n %{customdata:,.0f}<extra></extra>')
+                    fig.update_layout(height=max(320, 38 * len(_piv) + 120), xaxis_title='', yaxis_title='',
+                                      coloraxis_colorbar=dict(title=dict(text='LTV 3m', side='right'), tickprefix='R$ ',
+                                                              thickness=12, len=0.85, x=1.02),
+                                      margin=dict(l=8, r=150, t=58, b=10))
+                    fig.update_xaxes(side='top', automargin=True, tickangle=0, showgrid=False)
+                    fig.update_yaxes(side='left', automargin=True, showgrid=False, tickfont=dict(size=11, color='#0f172a'))
+                    st.plotly_chart(fig, use_container_width=True)
+                    _tv_fonte(f"coortes {_s4_rng(_el3)} · {_DEF_LBL[_def4]} (o seletor da sub-aba 4 vale aqui) · células com "
+                              "menos de 200 clientes ficam vazias")
+                    st.caption("Leitura: dentro de uma mesma linha (tipo de venda), a variação entre colunas é o efeito do app; "
+                               "entre linhas, o efeito do canal. Onde as duas coisas se somam é onde vale investir.")
+
+                _promos = sorted({d[6:] for d in _L4['dim'].unique() if str(d).startswith('promo:')})
+                _vrm = _L4[(_L4['dim'] == 'painel') & (_L4['metrica'] == 'voucher_ref_max_idx')]['valor']
+                if _promos:
+                    _vr = int(_vrm.max()) if not _vrm.empty and pd.notna(_vrm.max()) else None
+                    _vr_lbl = (f"{(_vr - 1) % 12 + 1:02d}/{(_vr - 1) // 12}" if _vr else "—")
+                    st.markdown("---")
+                    _tv_titulo("LTV e inadimplência por promoção (voucher da mensalidade)",
+                               f"base de voucher (fl_contagem_filiados_v2) vai até {_vr_lbl}; o último mês costuma vir parcial", "A")
+                    _rp = []
+                    _elp = [m for m in _s4_eleg(_todas4, 3) if not _vr or _s4_idx(m) <= _vr]
+                    _elp = _elp[-_NCO:]
+                    for pr in _promos:
+                        row = {'promo': pr}
+                        for dk in ['A', 'C', 'B']:
+                            v, n, r, _ = _s4_ltv(f'promo:{pr}', 3, dk, _elp)
+                            row[f'ltv_{dk}'] = v
+                            row['n'] = n
+                        _rp.append(row)
+                    _dp6 = pd.DataFrame(_rp).dropna(subset=['ltv_A'])
+                    _dp6 = _dp6[_dp6['n'] >= 200].sort_values('ltv_B', ascending=True)
+                    if _dp6.empty:
+                        st.caption("sem coortes com voucher e janela de 3 meses completa.")
+                    else:
+                        _dl = _dp6.melt(id_vars=['promo', 'n'], value_vars=['ltv_A', 'ltv_C', 'ltv_B'],
+                                        var_name='defn', value_name='ltv')
+                        _dl['defn'] = _dl['defn'].str[4:].map(_DEF_LBL)
+                        _dl['rotulo'] = _dl['ltv'].map(lambda v: _s4_brl(v, 0).replace('R$ ', ''))
+                        fig = px.bar(_dl, x='ltv', y='promo', color='defn', orientation='h', barmode='group', text='rotulo',
+                                     category_orders={'defn': [_DEF_LBL[k] for k in ['A', 'C', 'B']]},
+                                     color_discrete_map={_DEF_LBL['A']: '#166534', _DEF_LBL['C']: '#57a86f', _DEF_LBL['B']: '#b45309'},
+                                     template='cdt_a' if _CDT_THEME else 'plotly_white')
+                        fig.update_traces(textposition='outside', textfont_size=10, cliponaxis=False)
+                        fig.update_layout(height=max(320, 60 * len(_dp6) + 90), xaxis_title='', yaxis_title='',
+                                          legend_title_text='', margin=dict(l=8, r=70),
+                                          yaxis=dict(automargin=True, side='left', showgrid=False))
+                        fig.update_xaxes(tickprefix='R$ ')
+                        st.plotly_chart(fig, use_container_width=True)
+                        _tv_fonte(f"coortes {_s4_rng(_elp)} · LTV de 3 meses · A→B mede a inadimplência de cada promoção")
+                        _t8p = []
+                        for _, r in _dp6.sort_values('n', ascending=False).iterrows():
+                            _perda = ((r['ltv_A'] - r['ltv_B']) / r['ltv_A'] * 100) if r['ltv_A'] else None
+                            _t8p.append({'Promoção (voucher da mensalidade)': r['promo'], 'Clientes': _tv_fmt_k(r['n']),
+                                         'LTV 3m · A': _s4_brl(r['ltv_A']), 'LTV 3m · C': _s4_brl(r['ltv_C']),
+                                         'LTV 3m · B': _s4_brl(r['ltv_B']),
+                                         'Perdido A → B': ("—" if _perda is None else f"{_perda:.1f}%".replace('.', ','))})
+                        with st.expander("Tabela — LTV por promoção e perda para inadimplência"):
+                            st.dataframe(pd.DataFrame(_t8p), use_container_width=True, hide_index=True)
+                            st.caption("'(fora da base de voucher)' = venda que não casou com a fl_contagem_filiados_v2 no mês "
+                                       "(a tabela está incompleta desde 2026/04) — não é 'sem desconto'. O LTV aqui é bruto, "
+                                       "antes do desconto concedido: uma promoção com LTV parecido custou mais para chegar lá.")
+
+# =====================================================================
+# TAB 8: CRM — WhatsApp/SMS da Instância Aquisição: gasto por disparo × vendas GA4 × CPA
+# ---------------------------------------------------------------------
+# Réplica viva do estudo "CRM WhatsApp — Agosto vs Julho 2026 · dias 1–15" (18/08), generalizada:
+# mês atual × mês anterior, alinhados pelo dia do mês, em buckets semanais (1–7 · 8–14 · 15–21 · 22–fim).
+# Fontes: alex_zenvia_template_status (custo por disparo; recarregada da planilha Ad Sources & Events pela
+# pipeline `gt7 run zenvia_sheet_load`) e alex_crm_wpp_sms_vendas / _leads (GA4, campanhas CRM wpp/sms).
+# Disparo da Aquisição = template com 'GT7' no nome (GT7 - AQUI…, AQUI - GT7…, GT7 - Contato sem sucesso) —
+# regra validada contra o estudo: ago 1–15 = R$ 12.783,04 exato; jul 1–15 = R$ 17.238,40 (estudo: 17.351,36).
+# Reaproveita helpers das abas 6/7 (_tv_kpi, _tv_titulo, _tv_fonte, format_br, cquery) — vem depois delas.
+# =====================================================================
+
+
+with tab8:
+    st.markdown("## CRM — WhatsApp/SMS da Instância Aquisição")
+    _c8, _c8_err = load_crm_cpa()
+    if _c8_err:
+        st.error(f"⚠️ Falha ao ler as tabelas do CRM: `{_c8_err}`")
+    elif _c8.empty:
+        st.warning("⚠️ Sem dados: rode `gt7 run zenvia_sheet_load` (recarrega alex_zenvia_template_status da planilha) "
+                   "e confira alex_crm_wpp_sms_vendas/leads.")
+    else:
+        _CRIT_BD = "Critério da planilha BD_CRM (padrão)"
+        _CRIT_OLD = "Recorte antigo do dashboard"
+        _crit8 = st.radio("Critério dos números:", [_CRIT_BD, _CRIT_OLD], index=0, horizontal=True, key='t8_crit',
+                          help="Padrão: disparos Enviada/Entregue/Lida × R$ 0,32 (exclui 'Não Entregue') e vendas GA4 com "
+                               "sessionSourceMedium contendo mkt_direto — 100% fonte própria, mesma régua da Mesa. "
+                               "Recorte antigo: custo cobrado pela Zenvia (inclui 'Não Entregue') e vendas GA4 só das "
+                               "campanhas com 'crm' no nome.")
+        if _crit8 == _CRIT_BD:
+            _c8['gasto'] = _c8['gasto_bd']
+            _c8['vendas'] = _c8['vendas_ga']
+            st.caption("**100% fonte própria, régua da Mesa**: investimento = disparos Enviada/Entregue/Lida × R$ 0,32 "
+                       "(API Zenvia, exclui 'Não Entregue'); vendas = GA4 com `sessionSourceMedium` contendo "
+                       "**mkt_direto** (`alex_crm_wpp_sms_vendas`). Validado contra a BD_CRM_V2: ago/26 = 1.152 vendas "
+                       "e custo diário idêntico (o dia 31/08 está zerado só LÁ). Sem dependência de preenchimento manual. "
+                       "**Não confundir** com o bloco 'CRM & Mensageria' da aba 💰 Investimento: lá é a mensageria da empresa inteira "
+                       "(todos os remetentes, ~R$ 300 mil/mês, 90% relacionamento/engajamento com a base, cobrado pela Zenvia); aqui é "
+                       "só a Instância de Aquisição (templates GT7) na régua da BD_CRM — a ponte entre os dois está naquele bloco.")
+        else:
+            _c8['gasto'] = _c8['gasto_zenvia']
+            _c8['vendas'] = _c8['vendas_crm']
+            st.caption("Recorte antigo: custo cobrado pela Zenvia (inclui 'Não Entregue', que é cobrada) e vendas GA4 "
+                       "só das campanhas com 'crm' no nome — por definição, gasto maior e vendas menores que o padrão.")
+        _c8m = sorted({pd.Timestamp(d).to_period('M').to_timestamp() for d in _c8[_c8['gasto'] > 0]['dia']}, reverse=True)
+        _c8_ult = _c8[_c8['gasto'] > 0]['dia'].max()
+        if pd.notna(_c8_ult) and (pd.Timestamp(reference_date) - pd.Timestamp(_c8_ult)).days > 7:
+            st.warning(f"⚠️ O custo (Zenvia) está carregado só até **{pd.Timestamp(_c8_ult):%d/%m/%Y}** — o import "
+                       "automático da planilha *Ad Sources & Events* quebrou em ago/26 e a recarga é manual. O seletor "
+                       "de mês só lista meses **com custo dos templates GT7** (a convenção de nome 'GT7' começou em "
+                       "jul/2025 — por isso não há meses anteriores). Para atualizar: preencher a planilha e rodar "
+                       "`gt7 run zenvia_sheet_load`.")
+        _cc1, _cc2, _cc3 = st.columns([1, 1, 1.6])
+        with _cc1:
+            _m_atu = st.selectbox("Mês:", _c8m, index=0, format_func=_ap_mes_lbl, key='t8_mes')
+        with _cc2:
+            _m_ant_def = _m_atu - pd.DateOffset(months=1)
+            _outros = [m for m in _c8m if m != _m_atu]
+            _m_ant = st.selectbox("Comparar com:", _outros,
+                                  index=next((i for i, m in enumerate(_outros) if m == _m_ant_def), 0),
+                                  format_func=_ap_mes_lbl, key='t8_mes_ant')
+        _da = _c8[(_c8['dia'] >= _m_atu) & (_c8['dia'] < _m_atu + pd.DateOffset(months=1))].copy()
+        _dp = _c8[(_c8['dia'] >= _m_ant) & (_c8['dia'] < _m_ant + pd.DateOffset(months=1))].copy()
+        _dlim = int(_da[_da['gasto'] > 0]['dia'].dt.day.max()) if (_da['gasto'] > 0).any() else int(_da['dia'].dt.day.max() or 0)
+        with _cc3:
+            st.markdown(f"<div style='padding-top:30px;font-size:12.5px;color:#64748b;'>Recorte comparável: "
+                        f"<b>dias 1–{_dlim}</b> nos dois meses (último dia com disparo em {_ap_mes_lbl(_m_atu)}).</div>",
+                        unsafe_allow_html=True)
+        _da, _dp = _da[_da['dia'].dt.day <= _dlim], _dp[_dp['dia'].dt.day <= _dlim]
+
+        def _kpis(d):
+            g, v, l = float(d['gasto'].sum()), float(d['vendas'].sum()), float(d['leads'].sum())
+            return g, v, l, (g / v if v else None), (g / l if l else None)
+
+        _ga, _va, _la, _cpa_a, _cpl_a = _kpis(_da)
+        _gp, _vp, _lp, _cpa_p, _cpl_p = _kpis(_dp)
+        _lbl_a, _lbl_p = _ap_mes_lbl(_m_atu), _ap_mes_lbl(_m_ant)
+        k1, k2, k3, k4 = st.columns(4)
+        _tv_kpi(k1, "💸", f"Valor gasto — {_lbl_a} 1–{_dlim}", f"{format_money(_ga)} {_tv_delta(_ga, _gp)}",
+                f"{_lbl_p} 1–{_dlim}: {format_money(_gp)} · disparos GT7 (Aquisição)")
+        _tv_kpi(k2, "🛒", f"Vendas — {_lbl_a} 1–{_dlim}", f"{format_br(_va)} {_tv_delta(_va, _vp)}",
+                f"{_lbl_p} 1–{_dlim}: {format_br(_vp)} · GA4, campanhas CRM wpp/sms", color="#2e8a4f")
+        _chip_cpa = ""
+        if _cpa_a and _cpa_p:
+            _dd = (_cpa_a - _cpa_p) / _cpa_p * 100
+            _bgc, _fgc = ("#dcfce7", "#15803d") if _dd < 0 else ("#fee2e2", "#b91c1c")
+            _chip_cpa = (f"<span style='background:{_bgc};color:{_fgc};font-weight:700;font-size:11.5px;"
+                         f"padding:2px 8px;border-radius:10px;white-space:nowrap;'>{'+' if _dd > 0 else ''}{_dd:.0f}%</span>")
+        _tv_kpi(k3, "🎯", f"CPA — {_lbl_a} 1–{_dlim}", (f"{format_money(_cpa_a)} " if _cpa_a else "— ") + _chip_cpa,
+                f"{_lbl_p} 1–{_dlim}: {format_money(_cpa_p) if _cpa_p else '—'} · gasto ÷ vendas (verde = CPA caiu)",
+                color="#0f172a")
+        _tv_kpi(k4, "🧲", f"Leads e CPL — {_lbl_a} 1–{_dlim}", f"{format_br(_la)} · {format_money(_cpl_a) if _cpl_a else '—'}",
+                f"{_lbl_p} 1–{_dlim}: {format_br(_lp)} · {format_money(_cpl_p) if _cpl_p else '—'} · leads GA4 CRM",
+                color="#b45309")
+
+        _BUCKETS = [("Sem 1", 1, 7), ("Sem 2", 8, 14), ("Sem 3", 15, 21), ("Sem 4", 22, 31)]
+
+        def _bucket_df(metrica):
+            rows = []
+            for nome, d0, d1 in _BUCKETS:
+                if d0 > _dlim:
+                    continue
+                d1e = min(d1, _dlim)
+                lbl = f"{nome}<br><span style='font-size:10px'>{d0}–{d1e}" + (" (parcial)" if d1e < d1 else "") + "</span>"
+                for serie, dd in [(f"Mês atual ({_lbl_a})", _da), (f"Mês anterior ({_lbl_p})", _dp)]:
+                    f = dd[(dd['dia'].dt.day >= d0) & (dd['dia'].dt.day <= d1e)]
+                    g, v = float(f['gasto'].sum()), float(f['vendas'].sum())
+                    val = {'gasto': g, 'vendas': v, 'cpa': (g / v if v else None)}[metrica]
+                    rows.append({'x': lbl, 'serie': serie, 'valor': val})
+            return pd.DataFrame(rows)
+
+        _CORES8 = {f"Mês atual ({_lbl_a})": '#166534', f"Mês anterior ({_lbl_p})": '#94a3b8'}
+        for _met, _tit, _fmt, _pref in [('gasto', 'Valor gasto (R$)', lambda v: _tv_fmt_k(v), 'R$ '),
+                                        ('vendas', 'Vendas', lambda v: format_br(v), ''),
+                                        ('cpa', 'CPA — custo por aquisição (R$)', lambda v: f"R$ {v:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'), 'R$ ')]:
+            _db8 = _bucket_df(_met).dropna(subset=['valor'])
+            _tv_titulo(_tit, f"buckets pelo dia do mês, dias 1–{_dlim} nos dois meses", "A")
+            if _db8.empty:
+                st.caption("sem dados na janela.")
+                continue
+            _db8['rotulo'] = _db8['valor'].map(_fmt)
+            fig = px.bar(_db8, x='x', y='valor', color='serie', barmode='group', text='rotulo',
+                         color_discrete_map=_CORES8, template='cdt_a' if _CDT_THEME else 'plotly_white')
+            fig.update_traces(textposition='outside', textfont_size=10.5, cliponaxis=False)
+            fig.update_layout(height=330, xaxis_title='', yaxis_title='', legend_title_text='', bargap=0.3,
+                              margin=dict(b=52))
+            if _pref:
+                fig.update_yaxes(tickprefix=_pref)
+            st.plotly_chart(fig, use_container_width=True)
+        _tv_fonte("alex_zenvia_template_status (custo por disparo; templates com 'GT7' no nome = Instância Aquisição; "
+                  "recarga: gt7 run zenvia_sheet_load) × alex_crm_wpp_sms_vendas/leads (GA4)")
+
+        with st.expander("Ver dados em tabela (dia a dia)"):
+            _t8 = []
+            for _, r in _da.iterrows():
+                dd = int(r['dia'].day)
+                rp = _dp[_dp['dia'].dt.day == dd]
+                _t8.append({'Dia': dd,
+                            f'Gasto {_lbl_a}': format_money(r['gasto']), f'Vendas {_lbl_a}': format_br(r['vendas']),
+                            f'Gasto {_lbl_p}': format_money(float(rp['gasto'].sum())), f'Vendas {_lbl_p}': format_br(float(rp['vendas'].sum()))})
+            st.dataframe(pd.DataFrame(_t8), use_container_width=True, hide_index=True)
+        _tv_note(
+            "<b>Definições e ressalvas.</b> <b>Gasto</b> = custo por disparo (status × template × dia) dos templates da "
+            "Instância Aquisição — regra: nome contém <code>GT7</code> (GT7 - AQUI…, AQUI - GT7…, GT7 - Contato sem "
+            "sucesso). Validação contra o estudo de 18/08: ago 1–15 = R$ 12.783,04 exato; jul 1–15 = R$ 17.238,40 "
+            "(estudo: R$ 17.351,36 — diferença de R$ 113, um template renomeado). <b>Vendas/Leads</b> = eventos GA4 "
+            "atribuídos às campanhas CRM wpp/sms (podem sofrer pequenas revisões retroativas). Picos isolados de CPA "
+            "geralmente são testes — ex.: 15/07, teste 'engajamento base lia' (R$ 4.742 num dia, 23 vendas). A tabela "
+            "de custo é recarregada da planilha Ad Sources & Events pela pipeline <code>gt7 run zenvia_sheet_load</code> "
+            "(o import automático quebrou em ago/26 — rodar após atualizar a planilha).", bg="#fff7ed", icon="⚠️")
+
+# =====================================================================
+# TAB 9: SITE — comparação entre períodos (investimento · leads · vendas · CPA · CPL) e mídia × mkt direto
+# ---------------------------------------------------------------------
+# Lê a agregada mensal `alex_aq_dash_mes` (pipeline `gt7 run aquisicao_dash`): s5_invest (RESUMO_INVESTIMENTO_DIARIO
+# por canal|plataforma), s4_ga (funil do checkout no GA4), s6_crm (leads/vendas GA4 das campanhas CRM wpp/sms),
+# s1_rma (Leads Únicos do HubSpot) e s3_nominal (vendas por tipo_venda no CTN).
+# Três definições de CPL, porque cada área usa uma régua: HubSpot (Leads Únicos), GA (generate_lead) e CTN
+# (vol_leads do RESUMO). Reaproveita helpers das abas 6/7.
+# =====================================================================
+with tab5:
+    st.markdown("---")
+    st.markdown("## Site — investimento, leads, vendas e custo por resultado")
+    _aq, _aq_err = load_aq()
+    if _aq_err:
+        st.error(f"⚠️ Falha ao ler `alex_aq_dash_mes`: `{_aq_err}`")
+    elif _aq.empty:
+        st.warning("⚠️ A tabela `alex_aq_dash_mes` ainda não existe ou está vazia. Rode `gt7 run aquisicao_dash` "
+                   "(claude-toolkit) e recarregue os dados.")
+    else:
+        _aq_m = sorted(_aq['mes'].dropna().unique())
+
+        def _aqv(secao, metrica, meses, dim=None, dim_pref=None):
+            d = _aq[(_aq['secao'] == secao) & (_aq['metrica'] == metrica) & (_aq['mes'].isin(list(meses)))]
+            if dim is not None:
+                d = d[d['dim'] == dim]
+            if dim_pref is not None:
+                d = d[d['dim'].str.startswith(dim_pref)]
+            return float(d['valor'].sum()) if not d.empty else 0.0
+
+        def _aqs(secao, metrica, meses, dim=None, dim_pref=None):
+            d = _aq[(_aq['secao'] == secao) & (_aq['metrica'] == metrica) & (_aq['mes'].isin(list(meses)))]
+            if dim is not None:
+                d = d[d['dim'] == dim]
+            if dim_pref is not None:
+                d = d[d['dim'].str.startswith(dim_pref)]
+            return d.groupby('mes', as_index=False)['valor'].sum().sort_values('mes')
+
+        _c9a, _c9b, _c9c = st.columns([1.1, 1.1, 1.2])
+        with _c9a:
+            _p9 = st.selectbox("Período:", ["Últimos 3 meses", "Últimos 6 meses", "Últimos 12 meses", "Ano atual"],
+                               index=1, key='t9_per')
+        _fim9 = pd.Timestamp(_aq_m[-1])
+        _n9 = {"Últimos 3 meses": 3, "Últimos 6 meses": 6, "Últimos 12 meses": 12}.get(_p9)
+        if _n9:
+            _mA = [m for m in _aq_m if pd.Timestamp(m) > _fim9 - pd.DateOffset(months=_n9)]
+        else:
+            _mA = [m for m in _aq_m if pd.Timestamp(m).year == _fim9.year]
+        _dur = len(_mA)
+        with _c9b:
+            _cmp9 = st.selectbox("Comparar com:", [f"{_dur} meses anteriores", "Mesmo período do ano passado"],
+                                 index=0, key='t9_cmp')
+        if _cmp9.startswith("Mesmo"):
+            _mB = [pd.Timestamp(m) - pd.DateOffset(years=1) for m in _mA]
+        else:
+            _ini = pd.Timestamp(_mA[0])
+            _mB = [m for m in _aq_m if _ini - pd.DateOffset(months=_dur) <= pd.Timestamp(m) < _ini]
+        _mB = [m for m in _mB if m in list(_aq_m)]
+        with _c9c:
+            _cl9 = st.radio("Definição de lead (para o CPL):", ["HubSpot", "HubSpot pagos", "GA", "CTN"], index=0, horizontal=True,
+                            key='t9_cpl', help="HubSpot = Leads Únicos da instância de Aquisição · HubSpot pagos = Contatos do núcleo "
+                                               "criados por canais de mídia paga nacional (Facebook, formulários de LP, Great Pages, WhatsApp "
+                                               "Nacional Mídias — a régua da coluna Leads_Pagos_HubSpot da planilha Aquisição | Resumo; o CPL "
+                                               "usa só o investimento em campanhas de leads) · GA = evento generate_lead do checkout · "
+                                               "CTN = vol_leads do RESUMO_INVESTIMENTO_DIARIO")
+            st.caption("ℹ️ **Por que o lead CTN é ~1/3 menor que GA e HubSpot** (jul/26: CTN 59,9 mil · GA 96,7 mil · HubSpot 107,1 mil): "
+                       "o `vol_leads` do RESUMO conta só os leads **atribuídos a campanhas de mídia paga** (as sessões com campanha do GA, recortadas para o tráfego pago e abertas por plataforma); o **GA** conta *todos* os eventos `generate_lead` do checkout — pago, orgânico, direto e CRM; e o **HubSpot** conta Contatos criados por *todas* as portas (formulários, WhatsApp, parcerias). "
+                       "Não é erro de coleta: são três réguas, do recorte mais estreito ao mais largo — compare cada uma só com ela mesma no tempo.")
+        _lbl9A = (f"{_ap_mes_lbl(_mA[0])}–{_ap_mes_lbl(_mA[-1])}" if len(_mA) > 1 else _ap_mes_lbl(_mA[0])) if _mA else "—"
+        _lbl9B = (f"{_ap_mes_lbl(_mB[0])}–{_ap_mes_lbl(_mB[-1])}" if len(_mB) > 1 else (_ap_mes_lbl(_mB[0]) if _mB else "—"))
+
+        def _leads(meses):
+            if _cl9 == "HubSpot":
+                return _aqv('s1_rma', 'leads_unicos', meses, dim='rma')
+            if _cl9 == "HubSpot pagos":
+                return _aqv('s9_pagos', 'leads_pagos', meses, dim='hs')
+            if _cl9 == "GA":
+                return _aqv('s4_ga', 'generate_lead', meses, dim='ga')
+            return _aqv('s5_invest', 'vol_leads', meses, dim_pref='Website|')
+
+        def _leads_serie(meses):
+            if _cl9 == "HubSpot":
+                return _aqs('s1_rma', 'leads_unicos', meses, dim='rma')
+            if _cl9 == "HubSpot pagos":
+                return _aqs('s9_pagos', 'leads_pagos', meses, dim='hs')
+            if _cl9 == "GA":
+                return _aqs('s4_ga', 'generate_lead', meses, dim='ga')
+            return _aqs('s5_invest', 'vol_leads', meses, dim_pref='Website|')
+
+        # CPL: investimento total do Website para as réguas largas; só as campanhas de LEADS para a régua "pagos"
+        _inv_cpl = (lambda ms: _aqv('s5_invest', 'leads_custo', ms, dim_pref='Website|')) if _cl9 == "HubSpot pagos" \
+                   else (lambda ms: _aqv('s5_invest', 'total', ms, dim_pref='Website|'))
+        if _cl9 == "HubSpot pagos" and not _aq[(_aq['secao'] == 's9_pagos')].shape[0]:
+            st.info("A seção `s9_pagos` ainda não está em `alex_aq_dash_mes` — rode `gt7 run aquisicao_dash --arg only=s9`.")
+        _inv = lambda ms: _aqv('s5_invest', 'total', ms, dim_pref='Website|')
+        _inv_s = lambda ms: _aqs('s5_invest', 'total', ms, dim_pref='Website|')
+        _vga = lambda ms: _aqv('s4_ga', 'purchase', ms, dim='ga')
+        _vga_s = lambda ms: _aqs('s4_ga', 'purchase', ms, dim='ga')
+        _vsite = lambda ms: _aqv('s3_nominal', 'vendas', ms, dim='WEBSITE')
+        _vsite_s = lambda ms: _aqs('s3_nominal', 'vendas', ms, dim='WEBSITE')
+
+        _iA, _iB = _inv(_mA), _inv(_mB)
+        _lA, _lB = _leads(_mA), _leads(_mB)
+        _sA, _sB = _vsite(_mA), _vsite(_mB)
+        _gA, _gB = _vga(_mA), _vga(_mB)
+        k1, k2, k3, k4 = st.columns(4)
+        _tv_kpi(k1, "💸", f"Investimento · {_lbl9A}", f"{format_money(_iA)} {_tv_delta(_iA, _iB)}",
+                f"{_lbl9B}: {format_money(_iB)} · mídia paga do canal Website")
+        _icA = _inv_cpl(_mA)
+        _tv_kpi(k2, "🧲", f"Leads ({_cl9}) · {_lbl9A}", f"{_tv_n(_lA)} {_tv_delta(_lA, _lB)}",
+                f"{_lbl9B}: {_tv_n(_lB)} · CPL {format_money(_icA / _lA) if _lA else '—'}"
+                + (" (investimento em campanhas de leads)" if _cl9 == "HubSpot pagos" else ""), color="#2e8a4f")
+        _tv_kpi(k3, "🛒", f"Vendas WEBSITE (CTN) · {_lbl9A}", f"{_tv_n(_sA)} {_tv_delta(_sA, _sB)}",
+                f"{_lbl9B}: {_tv_n(_sB)} · GA purchase: {_tv_n(_gA)}", color="#0f172a")
+        _cpaA = _iA / _sA if _sA else None
+        _cpaB = _iB / _sB if _sB else None
+        _chip9 = ""
+        if _cpaA and _cpaB:
+            _d9 = (_cpaA - _cpaB) / _cpaB * 100
+            _bg9, _fg9 = ("#dcfce7", "#15803d") if _d9 < 0 else ("#fee2e2", "#b91c1c")
+            _chip9 = (f"<span style='background:{_bg9};color:{_fg9};font-weight:700;font-size:11.5px;"
+                      f"padding:2px 8px;border-radius:10px;'>{'+' if _d9 > 0 else ''}{_d9:.0f}%</span>")
+        _tv_kpi(k4, "🎯", f"CPA (invest ÷ vendas CTN) · {_lbl9A}",
+                (f"{format_money(_cpaA)} " if _cpaA else "— ") + _chip9,
+                f"{_lbl9B}: {format_money(_cpaB) if _cpaB else '—'} · verde = CPA caiu", color="#b45309")
+
+        # ---------- gráfico 1: série mensal da métrica escolhida, dois períodos sobrepostos ----------
+        _met9 = st.radio("Métrica dos gráficos:", ["Investimento", "Leads", "Vendas", "CPA", "CPL"], index=0,
+                         horizontal=True, key='t9_met')
+
+        def _serie(meses):
+            inv = _inv_s(meses).rename(columns={'valor': 'inv'})
+            lea = _leads_serie(meses).rename(columns={'valor': 'lead'})
+            ven = _vsite_s(meses).rename(columns={'valor': 'venda'})
+            d = inv.merge(lea, on='mes', how='outer').merge(ven, on='mes', how='outer').fillna(0).sort_values('mes')
+            d['CPA'] = d.apply(lambda r: (r['inv'] / r['venda']) if r['venda'] else None, axis=1)
+            d['CPL'] = d.apply(lambda r: (r['inv'] / r['lead']) if r['lead'] else None, axis=1)
+            return d.rename(columns={'inv': 'Investimento', 'lead': 'Leads', 'venda': 'Vendas'})
+
+        _dA, _dB = _serie(_mA), _serie(_mB)
+        _rows9 = []
+        for _d, _per in [(_dA, f"Período atual ({_lbl9A})"), (_dB, f"Comparação ({_lbl9B})")]:
+            for i, (_, r) in enumerate(_d.iterrows()):
+                _rows9.append({'i': i + 1, 'mes': r['mes'], 'serie': _per, 'valor': r[_met9]})
+        _d9c = pd.DataFrame(_rows9).dropna(subset=['valor'])
+        _dinheiro = _met9 in ("Investimento", "CPA", "CPL")
+        _tv_titulo(f"{_met9} — período atual × comparação",
+                   "os dois períodos alinhados pela posição do mês (1º mês do período, 2º…); o rótulo do eixo mostra o "
+                   "mês do período atual", "A" if _met9 in ("Investimento", "Leads", "Vendas") else "B")
+        if _d9c.empty:
+            st.caption("sem dados nos períodos escolhidos.")
+        else:
+            _xmap = {i + 1: _ap_mes_lbl(m) for i, m in enumerate(_dA['mes'])} if not _dA.empty else {}
+            _d9c['x'] = _d9c['i'].map(lambda i: _xmap.get(i, f"mês {i}"))
+            _d9c['rotulo'] = _d9c['valor'].map(lambda v: (format_money(v) if _met9 in ("CPA", "CPL") else
+                                                         (_tv_fmt_k(v) if _met9 != "Investimento" else "R$ " + _tv_fmt_k(v))))
+            _cores9 = {f"Período atual ({_lbl9A})": '#166534', f"Comparação ({_lbl9B})": '#94a3b8'}
+            if _met9 in ("Investimento", "Leads", "Vendas"):
+                fig = px.bar(_d9c, x='x', y='valor', color='serie', barmode='group', text='rotulo',
+                             color_discrete_map=_cores9, template='cdt_a' if _CDT_THEME else 'plotly_white')
+                fig.update_traces(textposition='outside', textfont_size=10.5, cliponaxis=False)
+            else:
+                fig = px.line(_d9c, x='x', y='valor', color='serie', markers=True, text='rotulo',
+                              color_discrete_map=_cores9, template='cdt_b' if _CDT_THEME else 'plotly_white')
+                fig.update_traces(line_width=2.5, marker_size=7, textposition='top center', textfont_size=10,
+                                  mode='lines+markers+text')
+            fig.update_layout(height=350, xaxis_title='', yaxis_title='', legend_title_text='', bargap=0.28,
+                              margin=dict(r=90))
+            if _dinheiro:
+                fig.update_yaxes(tickprefix='R$ ')
+            st.plotly_chart(fig, use_container_width=True)
+            _tv_fonte("RESUMO_INVESTIMENTO_DIARIO (canal Website) · " +
+                      {"HubSpot": "HS - Leads Únicos mês", "HubSpot pagos": "hubspot_contacts_raw (núcleo × canais pagos, s9_pagos)",
+                       "GA": "alex_ga_checkout_funnel (generate_lead)", "CTN": "vol_leads do RESUMO"}[_cl9] + " · NOMINAL_VENDAS (tipo_venda WEBSITE)")
+
+        # ---------- gráfico 2: plataformas ----------
+        _tv_titulo("Por plataforma — período atual × comparação",
+                   f"{_met9} por plataforma de mídia do canal Website", "A")
+        _plats = sorted({d.split('|')[1] for d in _aq[_aq['secao'] == 's5_invest']['dim'].unique() if d.startswith('Website|')})
+        _rows10 = []
+        for pl in _plats:
+            for meses, per in [(_mA, f"Período atual ({_lbl9A})"), (_mB, f"Comparação ({_lbl9B})")]:
+                inv = _aqv('s5_invest', 'total', meses, dim=f'Website|{pl}')
+                lea = _aqv('s5_invest', 'vol_leads', meses, dim=f'Website|{pl}')
+                ven = _aqv('s5_invest', 'vol_vendas', meses, dim=f'Website|{pl}')
+                val = {'Investimento': inv, 'Leads': lea, 'Vendas': ven,
+                       'CPA': (inv / ven if ven else None), 'CPL': (inv / lea if lea else None)}[_met9]
+                _rows10.append({'plataforma': pl, 'serie': per, 'valor': val})
+        _d10 = pd.DataFrame(_rows10).dropna(subset=['valor'])
+        if _d10.empty:
+            st.caption("sem investimento por plataforma nos períodos.")
+        else:
+            _ordp = list(_d10[_d10['serie'].str.startswith('Período')].sort_values('valor', ascending=False)['plataforma'])
+            _d10['rotulo'] = _d10['valor'].map(lambda v: (format_money(v) if _met9 in ("CPA", "CPL") else _tv_fmt_k(v)))
+            fig = px.bar(_d10, x='plataforma', y='valor', color='serie', barmode='group', text='rotulo',
+                         category_orders={'plataforma': _ordp}, color_discrete_map=_cores9,
+                         template='cdt_a' if _CDT_THEME else 'plotly_white')
+            fig.update_traces(textposition='outside', textfont_size=10.5, cliponaxis=False)
+            fig.update_layout(height=340, xaxis_title='', yaxis_title='', legend_title_text='', bargap=0.28)
+            if _dinheiro:
+                fig.update_yaxes(tickprefix='R$ ')
+            st.plotly_chart(fig, use_container_width=True)
+            _tv_fonte("RESUMO_INVESTIMENTO_DIARIO · leads/vendas por plataforma são os volumes do próprio RESUMO (CTN), "
+                      "não o GA nem o HubSpot")
+        with st.expander("Como cada CPL é calculado (e por que eles não batem entre si)"):
+            _t9 = []
+            for defn, lbl, fonte in [("HubSpot", "Leads Únicos (instância de Aquisição)", "HS - Leads Únicos mês · createdate no mês, canal de origem conhecido"),
+                                     ("GA", "generate_lead do checkout", "alex_ga_checkout_funnel (GA4)"),
+                                     ("CTN", "vol_leads do RESUMO", "RESUMO_INVESTIMENTO_DIARIO, canal Website")]:
+                if defn == "HubSpot":
+                    lv = _aqv('s1_rma', 'leads_unicos', _mA, dim='rma')
+                elif defn == "GA":
+                    lv = _aqv('s4_ga', 'generate_lead', _mA, dim='ga')
+                else:
+                    lv = _aqv('s5_invest', 'vol_leads', _mA, dim_pref='Website|')
+                _t9.append({'Definição': defn, 'O que conta': lbl, 'Leads no período': format_br(lv),
+                            'CPL': format_money(_iA / lv) if lv else '—', 'Fonte': fonte})
+            st.dataframe(pd.DataFrame(_t9), use_container_width=True, hide_index=True)
+            st.caption("O HubSpot conta a pessoa (1 lead por contato criado, todos os canais da instância); o GA conta o "
+                       "evento no site (mesma pessoa pode gerar vários); o CTN conta o que a mídia reportou. Escolha uma "
+                       "régua e compare sempre com ela — misturar as três é o que faz o CPL 'mudar' sem nada ter mudado.")
+
+        st.markdown("---")
+        # ---------- tabela mídia × marketing direto ----------
+        _tv_titulo("Vendas de mídia × marketing direto",
+                   "mídia = vendas do GA atribuídas às campanhas pagas do checkout · marketing direto = vendas do GA nas "
+                   "campanhas de CRM (WhatsApp/SMS) · base = vendas WEBSITE no CTN", "A")
+        _rows11 = []
+        for meses, per in [(_mA, f"Período atual ({_lbl9A})"), (_mB, f"Comparação ({_lbl9B})")]:
+            if not meses:
+                continue
+            ga_tot = _aqv('s4_ga', 'purchase', meses, dim='ga')
+            crm_v = _aqv('s6_crm', 'vendas', meses, dim='crm')
+            ctn = _aqv('s3_nominal', 'vendas', meses, dim='WEBSITE')
+            midia = max(ga_tot - crm_v, 0)
+            _rows11.append({'Período': per, 'Vendas WEBSITE (CTN)': format_br(ctn),
+                            'Vendas GA (checkout)': format_br(ga_tot),
+                            'Mídia (GA − CRM)': f"{format_br(midia)} · {_tv_pct(midia, ctn)}",
+                            'Marketing direto (CRM)': f"{format_br(crm_v)} · {_tv_pct(crm_v, ctn)}",
+                            'Mídia + mkt direto': f"{format_br(ga_tot)} · {_tv_pct(ga_tot, ctn)}"})
+        st.dataframe(pd.DataFrame(_rows11), use_container_width=True, hide_index=True)
+        _tv_fonte("alex_ga_checkout_funnel (purchase) · alex_crm_wpp_sms_vendas (GA4, campanhas CRM) · NOMINAL_VENDAS "
+                  "(tipo_venda WEBSITE)")
+        _tv_note(
+            "<b>Como ler os percentuais.</b> O denominador é a venda do CTN (a que existe no faturamento). "
+            "<b>Mídia</b> = tudo que o GA registrou como compra no checkout menos o que ele atribuiu às campanhas de CRM; "
+            "<b>marketing direto</b> = o pedaço do CRM (WhatsApp/SMS). A soma das duas raramente dá 100%: o GA perde "
+            "sessões (bloqueio de cookie, app, compra que termina no televendas) e o CTN registra vendas que nunca "
+            "passaram pelo checkout. Trate a diferença como 'venda sem rastro digital', não como erro.<br><br>"
+            "<b>Investimento</b> nesta aba é só o canal <i>Website</i> do RESUMO_INVESTIMENTO_DIARIO (mídia paga; o "
+            "App do Filiado tem verba própria e fica fora). O custo do CRM está na aba 📨 CRM.", bg="#f8fafc", icon="ℹ️")
+
+# =====================================================================
+# TAB 10: AQUISICAO — funis de leads por superfície e as três views do RMA (Apropriação de Leads)
+# ---------------------------------------------------------------------
+# Lê `alex_aq_dash_mes` (pipeline `gt7 run aquisicao_dash`): s1_rma (Leads Únicos → Engajamento → Franquias →
+# vendas nas franquias, coluna Site do RMA), s1_canal (o mesmo por primeiro_canal_de_origem), s2_super (Escallo
+# ativo/receptivo), s4_ga (checkout), s3_nominal (vendas por tipo_venda). O funil do app vem de
+# `alex_app_dash_mes` (aba 📱 App) — aqui ele entra lado a lado, sem deduplicar por CPF (ver a nota).
+# Definições: claude/definicoes_24-08_apropriacao_leads_rma.md.
+# =====================================================================
+
+# --- Leads Únicos por bucket (compartilhado: 🧲 Aquisição e 🧭 Funil Ponta a Ponta; regra em gt7/rules.py) ---
+_LU_LBL = {
+    'core': 'Núcleo (site, checkout, WhatsApp, mídia)', 'tim': 'Parceria B2B2C - TIM',
+    'franquia_promotor': 'Franquia — ID Promotor', 'franquia_facebook': 'Franquia — Facebook (captação)',
+    'franquia_cms': 'Franquia — formulário CMS', 'regional': 'Formulários regionais',
+    'ruptura': 'Projeto Ruptura', 'importacao': 'Importação de base',
+    'desfiliados': 'Desfiliados em massa', 'engajamento': 'Instância de Engajamento',
+    'sem_canal': 'Sem canal registrado',
+}
+_LU_DEFS = {
+    'Abrangente (tudo menos Engajamento)': ['core', 'importacao', 'desfiliados', 'tim', 'franquia_cms',
+                                            'franquia_promotor', 'franquia_facebook', 'ruptura', 'regional', 'sem_canal'],
+    'HubSpot — relatório "Leads Únicos" (347496241)': ['core', 'franquia_cms', 'franquia_promotor',
+                                                       'franquia_facebook', 'ruptura', 'regional', 'sem_canal'],
+    'RMA antiga (só núcleo)': ['core'],
+    'Personalizada': None,
+}
+
+
+@st.cache_data(ttl=43200)
+def load_lu_buckets():
+    d = cquery("SELECT mes, bucket, COUNT(*) criados FROM alex_funil_journey GROUP BY 1,2")
+    d['mes'] = pd.to_datetime(d['mes'])
+    d['criados'] = pd.to_numeric(d['criados'])
+    return d
+
+
+with tab10:
+    st.markdown("## Aquisição — funis de leads e apropriação (RMA)")
+    st.caption("📌 **O que esta aba responde:** a FOTO operacional do período — quanto entrou e quanto virou venda "
+               "em cada superfície (site, app, televendas ativo/receptivo), cada uma medida na própria fonte "
+               "(GA4, CTN, Escallo, HubSpot). Para seguir o CAMINHO de cada Lead — esteira de televendas, "
+               "transbordo para engajamento, rota de franquias — use a aba 🧭 Funil Ponta a Ponta: lá o grão é a "
+               "coorte do mês de criação do Lead, por isso os números não batem 1:1 com os daqui.")
+    _aq10, _aq10_err = load_aq()
+    if _aq10_err:
+        st.error(f"⚠️ Falha ao ler `alex_aq_dash_mes`: `{_aq10_err}`")
+    elif _aq10.empty:
+        st.warning("⚠️ A tabela `alex_aq_dash_mes` ainda não existe ou está vazia. Rode `gt7 run aquisicao_dash`.")
+    else:
+        _m10 = sorted(_aq10['mes'].dropna().unique())
+        # ---- período: por padrão os MESES TOCADOS pelo período dos Controles Globais (mesma régua das abas 📞 e 📱);
+        #      o grão aqui é sempre o mês (lead criado / venda filiada / telefone discado no mês). O toggle desligado
+        #      volta à janela fixa (últimos N meses até o último mês carregado). As coortes da aba 🧭 não mudam. ----
+        _c10a, _c10b = st.columns([1, 2])
+        with _c10a:
+            _t10_glob = st.toggle("Seguir o período dos Controles Globais", value=True, key='t10_global',
+                                  help="Ligado: meses tocados pelo 'Período de Análise' da barra lateral (grão mensal). "
+                                       "Desligado: janela fixa de N meses até o último mês carregado.")
+            if not _t10_glob:
+                _j10 = st.selectbox("Janela:", ["Mês atual", "Últimos 3 meses", "Últimos 6 meses", "Últimos 12 meses"],
+                                    index=1, key='t10_jan')
+        if _t10_glob:
+            _sel10 = [m for m in _m10 if pd.Timestamp(m) in set(_tv_meses)]
+            _t10_fora = not _sel10
+            if _t10_fora:
+                _sel10 = [_m10[-1]]
+            _n10 = len(_sel10)
+        else:
+            _t10_fora = False
+            _n10 = {"Mês atual": 1, "Últimos 3 meses": 3, "Últimos 6 meses": 6, "Últimos 12 meses": 12}[_j10]
+            _sel10 = [m for m in _m10 if pd.Timestamp(m) > pd.Timestamp(_m10[-1]) - pd.DateOffset(months=_n10)]
+        _prev10 = [m for m in _m10 if pd.Timestamp(_sel10[0]) - pd.DateOffset(months=_n10) <= pd.Timestamp(m) < pd.Timestamp(_sel10[0])]
+        _lbl10 = (f"{_ap_mes_lbl(_sel10[0])}–{_ap_mes_lbl(_sel10[-1])}" if len(_sel10) > 1 else _ap_mes_lbl(_sel10[0]))
+        _lbl10_p = (_ap_mes_lbl(_prev10[0]) + '–' + _ap_mes_lbl(_prev10[-1])) if len(_prev10) > 1 else (_ap_mes_lbl(_prev10[0]) if _prev10 else '—')
+        with _c10b:
+            if _t10_glob:
+                st.caption(f"Período: **{_lbl10}** — meses tocados pelo período dos Controles Globais (grão mensal) · "
+                           f"comparação: **{_lbl10_p}** (os {_n10} meses anteriores). "
+                           "Mês corrente = parcial até a última carga. Semanas e dias não se aplicam aqui: o lead é contado "
+                           "no mês em que foi criado, a venda no mês da filiação.")
+                if _t10_fora:
+                    st.info(f"O período dos Controles Globais não toca os meses carregados em `alex_aq_dash_mes` "
+                            f"({_ap_mes_lbl(_m10[0])}–{_ap_mes_lbl(_m10[-1])}); mostrando {_lbl10}.")
+            else:
+                st.caption(f"Janela fixa: **{_lbl10}** · comparação: {_lbl10_p}. "
+                           "Ligue o toggle para seguir o período dos Controles Globais.")
+
+        # ---- frescor: cada seção do agregado tem a própria data de cálculo; o mês corrente é parcial até a última carga ----
+        _fr10 = _aq10[_aq10['mes'].isin(list(_sel10))].groupby('secao')['atualizado_em'].max()
+        _fr_lbl = {'s1_rma': 'Leads/RMA (s1)', 's2_super': 'Escallo (s2)', 's3_nominal': 'CTN (s3)', 's4_ga': 'GA checkout (s4)',
+                   's5_invest': 'Investimento (s5)', 's6_crm': 'CRM (s6)', 's7_canal': 'Qualidade (s7)', 's8_mesa': 'Funis do relatório (s8)'}
+        if not _fr10.empty:
+            _fr_txt = " · ".join(f"{_fr_lbl.get(k, k)} {pd.Timestamp(v):%d/%m %H:%M}" for k, v in _fr10.sort_index().items())
+            _fr_old = [(_fr_lbl.get(k, k)) for k, v in _fr10.items() if pd.Timestamp(v).date() < reference_date and k != 's7_canal']
+            st.caption(f"🗓️ Agregado `alex_aq_dash_mes` calculado em — {_fr_txt}.")
+            if _fr_old and pd.Timestamp(_sel10[-1]) >= pd.Timestamp(reference_date).to_period('M').to_timestamp() - pd.DateOffset(months=1):
+                st.warning("⏳ Seções calculadas antes do último dia completo da base (" + ", ".join(_fr_old) + "): o mês corrente — e o "
+                           "anterior, se a carga foi antes do fechamento — estão **parciais** nelas. Rode `gt7 run aquisicao_dash` "
+                           "(ou `--arg only=s1,s2,s3,s4,s5,s6,s8`) e ♻️ Recarregar dados.")
+
+        with st.expander("📖 Qual visão usar? — os funis desta aba × abas 📞 Televendas, 🧭 Funil Ponta a Ponta e 🌐 Site"):
+            st.markdown(
+                "Os números **não batem entre abas por desenho**: cada uma responde uma pergunta diferente sobre a mesma base. "
+                "Resumo (ago/26 como exemplo):\n\n"
+                "| Pergunta | Onde | O que conta | Ago/26 |\n|---|---|---|---|\n"
+                "| *Quanto o televendas ativo entregou de filiação?* (relatório mensal) | **🧲 · Funis do relatório** e **Funis por superfície** | leads ATIVO discados no mês (Escallo) que aparecem no NOMINAL **no mesmo mês**, por qualquer porta; abertura do tipo TELEVENDAS | 29.746 → 6.035 → 9.844 (1.137 TV) |\n"
+                "| *Como está a operação do discador?* | **📞 Televendas · 1 · Escallo Ativo** | o que o operador registrou: fase de negociação, tabulação 'venda' e a confirmação **dessa tabulação** no CTN na janela do contato + 14 d | 29.746 → 6.035 → 338+342 → 342 → 249 |\n"
+                "| *O que aconteceu com os Contatos criados no mês?* (filme da coorte) | **🧭 Funil Ponta a Ponta** | Contatos criados no mês (espelho vivo, buckets) seguidos até hoje: esteira TV, Distribuição, Validador, venda na franquia em qualquer data | coorte: 259k criados · 83k Distribuição · 63k Validador · 32,7k vendas |\n"
+                "| *Quanto transbordou e vendeu nas franquias no mês?* (relatório mensal) | **🧲 · Funil Franquias** | Leads Únicos da lista `HS - Leads Únicos mês` (regra do deck) → Negócios com 1ª entrada em Distribuição/Validador **no mês** (qualquer coorte) → CPF do lead × NOMINAL campo **no mês** | 178.494 → 100.583 → 29.717 |\n"
+                "| *As três linhas do RMA (coluna Site)* | **🧲 · Apropriação de Leads** | regra RMA (exclui TIM, franquias, regional, ruptura) + seletor de buckets; vendas em qualquer data ≥ lead | 114.862 (regra RMA) |\n"
+                "| *Como está o checkout do site, dia a dia?* | **🌐 Site · Funil do checkout** | GA4 por dia no período exato dos Controles Globais; usuários (padrão) ou eventos | 384.609 → 79.132 → 70.915 → 31.883 → 23.161 |\n"
+                "| *Checkout no grão mensal, ao lado dos outros canais* | **🧲 · Funis por superfície · Site** | as mesmas colunas de usuários do GA4, somadas por mês | idem quando o período é o mês inteiro |\n\n"
+                "**Regras de bolso.** (1) Para o Relatório Mensal de Aquisição e para comparar canais, use a 🧲 — é a régua da Mesa. "
+                "(2) Para gerir o televendas (fila, aproveitamento, tabulação), use a 📞: ela conta registros da operação, por isso as "
+                "'vendas' lá são menores. (3) Para entender **rota e tempo** de um lead (e perdas por etapa), use a 🧭: ela segue a coorte "
+                "até hoje, então os números crescem com a maturação e nunca vão bater com o 'no mês'. (4) Três coisas fazem o mesmo nome "
+                "mudar de valor: **população** (lista `HS - Leads Únicos mês` × Contatos vivos por bucket × telefones discados), "
+                "**janela** (no mês-calendário × janela do contato + 14 d × qualquer data até hoje) e **frescor** (cada agregado tem a "
+                "própria data de cálculo — veja a linha 🗓️ acima e o quadro da aba 📞).")
+
+        # --- definição de Leads Únicos = seleção de buckets (mesmo seletor da aba 🧭) ---
+        _lu_tab_b = None
+        _sel_bk10 = None
+        try:
+            _lub = load_lu_buckets()
+        except Exception:
+            _lub = pd.DataFrame()
+        _lu_bucket_ok = (not _lub.empty) and all(pd.Timestamp(m) in set(_lub['mes']) for m in _sel10)
+        if _lu_bucket_ok:
+            _cd1, _cd2 = st.columns([1.2, 2])
+            _def10 = _cd1.radio("Definição de **Leads Únicos** (seleção de buckets):",
+                                list(_LU_DEFS.keys()), index=0, key='t10_def')
+            if _LU_DEFS[_def10] is None:
+                _sel_bk10 = _cd2.multiselect("Buckets que contam:", sorted(_lub['bucket'].unique()),
+                                             default=[b for b in sorted(_lub['bucket'].unique()) if b != 'engajamento'],
+                                             format_func=lambda b: _LU_LBL.get(b, b), key='t10_bk')
+            else:
+                _sel_bk10 = [b for b in _LU_DEFS[_def10] if b in set(_lub['bucket'])]
+                _cd2.caption("Conta: " + " · ".join(_LU_LBL.get(b, b) for b in _sel_bk10) +
+                             ". Fonte: canal **na criação** do Contato, espelho vivo (`alex_funil_journey`). "
+                             "A composição completa por bucket está na aba 🧭 Funil Ponta a Ponta.")
+        else:
+            st.caption("ℹ️ O seletor de definição de Leads Únicos cobre coortes de mai/2026 em diante "
+                       "(`alex_funil_journey`); nesta janela vale a regra RMA antiga (s1_rma).")
+
+        def _v10(secao, metrica, meses, dim=None):
+            d = _aq10[(_aq10['secao'] == secao) & (_aq10['metrica'] == metrica) & (_aq10['mes'].isin(list(meses)))]
+            if dim is not None:
+                d = d[d['dim'] == dim]
+            return float(d['valor'].sum()) if not d.empty else 0.0
+
+        def _s10(secao, metrica, meses, dim=None):
+            d = _aq10[(_aq10['secao'] == secao) & (_aq10['metrica'] == metrica) & (_aq10['mes'].isin(list(meses)))]
+            if dim is not None:
+                d = d[d['dim'] == dim]
+            return d.groupby('mes', as_index=False)['valor'].sum().sort_values('mes')
+
+        # ---------- 1 · as três linhas do RMA ----------
+        _lu = _v10('s1_rma', 'leads_unicos', _sel10, 'rma')
+        _cpf = _v10('s1_rma', 'com_cpf', _sel10, 'rma')
+        _eng = _v10('s1_rma', 'enviados_engajamento', _sel10, 'rma')
+        _fra = _v10('s1_rma', 'transbordados_franquias', _sel10, 'rma')
+        _vf = _v10('s1_rma', 'vendas', _sel10, 'venda_franquia')
+        _lu_p = _v10('s1_rma', 'leads_unicos', _prev10, 'rma')
+        if _lu_bucket_ok and _sel_bk10:
+            _mm10 = [pd.Timestamp(m) for m in _sel10]
+            _lu = float(_lub[_lub['mes'].isin(_mm10) & _lub['bucket'].isin(_sel_bk10)]['criados'].sum())
+            _lu_tab_b = float(_lub[_lub['mes'].isin(_mm10)]['criados'].sum())
+            _pp10 = [pd.Timestamp(m) for m in _prev10]
+            if _prev10 and all(m in set(_lub['mes']) for m in _pp10):
+                _lu_p = float(_lub[_lub['mes'].isin(_pp10) & _lub['bucket'].isin(_sel_bk10)]['criados'].sum())
+            else:
+                _lu_p = None
+        _eng_p = _v10('s1_rma', 'enviados_engajamento', _prev10, 'rma')
+        _fra_p = _v10('s1_rma', 'transbordados_franquias', _prev10, 'rma')
+        _vf_p = _v10('s1_rma', 'vendas', _prev10, 'venda_franquia')
+        k1, k2, k3, k4 = st.columns(4)
+        _tv_kpi(k1, "🧲", "Leads Únicos", f"{_tv_n(_lu)} {_tv_delta(_lu, _lu_p)}",
+                ((f"{_tv_pct(_cpf, _lu)} com CPF · " if not _lu_bucket_ok else "") + "instância de Aquisição (site, checkout, mídia, WhatsApp)"))
+        _tv_kpi(k2, "📨", "Encaminhados para engajamento", f"{_tv_n(_eng)} {_tv_delta(_eng, _eng_p)}",
+                f"{_tv_pct(_eng, _lu)} dos leads únicos", color="#2e8a4f")
+        _tv_kpi(k3, "🏪", "Transbordados para franquias", f"{_tv_n(_fra)} {_tv_delta(_fra, _fra_p)}",
+                f"{_tv_pct(_fra, _lu)} dos leads únicos", color="#0f172a")
+        _tv_kpi(k4, "🛒", "Vendas nas franquias", f"{_tv_n(_vf)} {_tv_delta(_vf, _vf_p)}",
+                f"{_tv_pct(_vf, _lu)} dos leads únicos (conversão do RMA)", color="#b45309")
+
+        _pg = _v10('s9_pagos', 'leads_pagos', _sel10, 'hs'); _pg_p = _v10('s9_pagos', 'leads_pagos', _prev10, 'hs') if _prev10 else 0.0
+        _core9 = _v10('s9_pagos', 'leads_core', _sel10, 'hs')
+        _inv_leads10 = sum(float(v) for v in _aq10[(_aq10['secao'] == 's5_invest') & (_aq10['metrica'] == 'leads_custo') & (_aq10['dim'].str.startswith('Website|')) & (_aq10['mes'].isin(list(_sel10)))]['valor'])
+        if _pg:
+            st.caption(f"💳 **Leads pagos (mídia nacional):** {_tv_n(_pg)} {_tv_delta(_pg, _pg_p or None)} — {_tv_pct(_pg, _core9)} dos Contatos do núcleo "
+                       f"({_tv_n(_core9)}, `hubspot_contacts_raw`); CPL da mídia de leads = {format_money(_inv_leads10)} ÷ {_tv_n(_pg)} = "
+                       f"**{format_money(_inv_leads10 / _pg)}**. Mesma régua da coluna Leads_Pagos_HubSpot da planilha Aquisição | Resumo "
+                       "(canais Facebook, formulários de LP, Great Pages, WhatsApp Nacional Mídias — `rules.LEADS_PAGOS_CANAIS`).",
+                       unsafe_allow_html=True)
+        _lu_tab = _v10('s1_rma', 'leads_tabela', _sel10, 'rma')
+        _tv_funil("Apropriação de Leads — coluna Site do RMA", [
+            ("🧲", "Leads Únicos", _lu, "contatos criados no mês na instância de Aquisição"),
+            ("🆔", "Com CPF", _cpf, "os únicos que cruzam com venda no CTN"),
+            ("📨", "Encaminhados para engajamento", _eng, "1º envio para a instância de Engajamento"),
+            ("🏪", "Transbordados para franquias", _fra, "entraram em Distribuição de Leads / Validador"),
+            ("🛒", "Vendas nas franquias", _vf, "CPF do lead filiou por porta a porta / link / app do vendedor"),
+        ], subtitle=f"janela {_lbl10}")
+        _bruto_cap = _lu_tab_b if _lu_tab_b else _lu_tab
+        if _bruto_cap and _lu:
+            st.caption(f"Contatos criados na janela: {format_br(_bruto_cap)} — a definição selecionada mantém "
+                       f"{_tv_pct(_lu, _bruto_cap)} (o que fica de fora — TIM, importação etc. — está aberto por bucket na "
+                       "aba 🧭). **Engajamento e franquias vêm dos Negócios** do pipeline CDT - Distribuição — o espelho "
+                       "`hubspot_deals_raw` só cobre bem desde 13/05/2026, então meses anteriores são piso.")
+        _mg10 = _sel10 if len(_sel10) > 1 else _m10[-6:]
+        _long10 = []
+        for met, lbl in [('leads_unicos', 'Leads Únicos'), ('enviados_engajamento', 'Engajamento'),
+                         ('transbordados_franquias', 'Franquias')]:
+            s = _s10('s1_rma', met, _mg10, 'rma')
+            s['serie'] = lbl
+            _long10.append(s)
+        _sv = _s10('s1_rma', 'vendas', _mg10, 'venda_franquia')
+        _sv['serie'] = 'Vendas nas franquias'
+        _long10.append(_sv)
+        _tv_chart_mensal(pd.concat(_long10), "Série mensal — apropriação de leads", stacked=False, rotulos=True,
+                         subtitle="cada linha da tabela do RMA, mês a mês",
+                         fonte="HS - Leads Únicos mês (createdate, data de envio ao engajamento, entrada em Distribuição) × NOMINAL_VENDAS")
+
+        with st.expander("📖 Definições exatas (RMA · coluna Site)"):
+            st.markdown(
+                "| Linha | Objeto | Regra |\n|---|---|---|\n"
+                "| **Leads Únicos** | Contatos | `createdate` no mês, canal de origem conhecido e fora de Importação / Base de "
+                "Desfiliados / Instância de Engajamento. A contagem oficial é **abrangente + seleção de buckets** (seletor no topo da aba) sobre o canal **na criação**, lida do espelho vivo via `alex_funil_journey`; `HS - Leads Únicos mês` virou legado (congelava o canal). |\n"
+                "| **Encaminhados para engajamento** | Contatos ↔ Negócios | tem `data_do_primeiro_envio_para_instancia_de_engajamento` "
+                "(espelho no contato do Negócio criado no pipeline CDT - Distribuição). |\n"
+                "| **Transbordados para franquias** | Negócios | entrou em `Distribuição de Leads` (1020141703) ou `Validador de "
+                "Distribuição` (1020141709). |\n"
+                "| **Vendas nas franquias** | fora do HubSpot | CPF do lead × `NOMINAL_VENDAS` com `tipo_venda` ∈ porta a porta / "
+                "link do vendedor / app do vendedor, filiação a partir da data do lead; dedupe `COUNT(DISTINCT CPF, DT_FILIACAO)`. |\n\n"
+                "**Site aqui é a instância inteira** (site CDT, checkout, formulários de mídia nacional e regional, WhatsApp "
+                "Zenvia, parcerias) — não é o filtro `canal_de_origem_detalhada = 'Site CDT - Checkout Adesão'`, que é outra "
+                "métrica (Leads Únicos no Checkout). A coluna App do RMA é zero por construção: os leads do app vivem no "
+                "Singular/Mais TODOS, fora do CRM — no dashboard eles estão na aba 📱 App.")
+
+        st.markdown("---")
+        # ---------- 1b · os dois funis do Relatório Mensal de Aquisição (Mesa) ----------
+        _tv_titulo("Funis do Relatório Mensal de Aquisição — Televendas e Franquias",
+                   "as mesmas definições dos slides 'Funil Televendas (ligações ativas)' e 'Funil Franquias' do "
+                   "relatório da Mesa (fechadas em 10/09/2026); seção s8_mesa do `aquisicao_dash`", "A")
+        _mesa = _aq10[_aq10['secao'] == 's8_mesa']
+        if _mesa.empty:
+            st.warning("⚠️ A seção `s8_mesa` ainda não está em `alex_aq_dash_mes`. Rode `gt7 run aquisicao_dash --arg only=s8` "
+                       "e recarregue os dados.")
+        else:
+            def _m8(metrica, dim, meses=None):
+                meses = _sel10 if meses is None else meses
+                d = _mesa[(_mesa['dim'] == dim) & (_mesa['metrica'] == metrica) & (_mesa['mes'].isin(list(meses)))]
+                return float(d['valor'].sum()) if not d.empty else None
+
+            def _m8_ok(dim, meses):
+                """True se TODOS os meses pedidos têm a seção (senão a comparação sai truncada)."""
+                d = _mesa[(_mesa['dim'] == dim) & (_mesa['mes'].isin(list(meses)))]
+                return bool(meses) and d['mes'].nunique() == len(list(meses))
+
+            # --- televendas (ligações ativas) ---
+            _d8 = _m8('discados', 'televendas');      _d8p = _m8('discados', 'televendas', _prev10) if _m8_ok('televendas', _prev10) else None
+            _a8 = _m8('alo10', 'televendas');         _a8p = _m8('alo10', 'televendas', _prev10) if _d8p is not None else None
+            _n8 = _m8('negociacao_hs', 'televendas'); _n8p = _m8('negociacao_hs', 'televendas', _prev10) if _d8p is not None else None
+            _v8 = _m8('vendas_mes', 'televendas');    _v8p = _m8('vendas_mes', 'televendas', _prev10) if _d8p is not None else None
+            _t8 = _m8('vendas_mes_tv', 'televendas'); _t8p = _m8('vendas_mes_tv', 'televendas', _prev10) if _d8p is not None else None
+            _ap8 = _m8('vendas_apos', 'televendas')
+            _g8 = _m8('ganho_hs', 'televendas')
+            # --- franquias ---
+            _lu8 = _m8('leads_unicos_deck', 'franquias'); _lu8p = _m8('leads_unicos_deck', 'franquias', _prev10) if _m8_ok('franquias', _prev10) else None
+            _tr8 = _m8('transbordados', 'franquias');     _tr8p = _m8('transbordados', 'franquias', _prev10) if _lu8p is not None else None
+            _va8 = _m8('validador', 'franquias')
+            _vf8 = _m8('vendas_mes', 'franquias');        _vf8p = _m8('vendas_mes', 'franquias', _prev10) if _lu8p is not None else None
+            _fr_tot = sum(_v10('s3_nominal', 'vendas', _sel10, t) for t in ('PORTA A PORTA', 'LINK DO VENDEDOR', 'APP DO VENDEDOR'))
+            _fr_tot_p = sum(_v10('s3_nominal', 'vendas', _prev10, t) for t in ('PORTA A PORTA', 'LINK DO VENDEDOR', 'APP DO VENDEDOR')) if _prev10 else None
+            _tv_ctn = _v10('s3_nominal', 'vendas', _sel10, 'TELEVENDAS')
+
+            _k8 = st.columns(6)
+            _tv_kpi(_k8[0], "📵", "Leads ativos discados", f"{_tv_n(_d8)} {_tv_delta(_d8, _d8p)}", "Escallo, tipo ATIVO, 1º contato no mês")
+            _tv_kpi(_k8[1], "🛒", "Discados que filiaram no mês", f"{_tv_n(_v8)} {_tv_delta(_v8, _v8p)}",
+                    f"{_tv_pct(_v8, _d8)} dos discados · qualquer tipo de venda", color="#2e8a4f")
+            _tv_kpi(_k8[2], "📞", "└ com tipo Televendas", f"{_tv_n(_t8)} {_tv_delta(_t8, _t8p)}",
+                    f"{_tv_pct(_t8, _v8)} das filiações dos discados · {_tv_pct(_t8, _tv_ctn)} das vendas TELEVENDAS do CTN", color="#b45309")
+            _tv_kpi(_k8[3], "🧲", "Leads Únicos (regra do relatório)", f"{_tv_n(_lu8)} {_tv_delta(_lu8, _lu8p)}",
+                    "canal conhecido, fora de Importação / Desfiliados / Engajamento / promotor", color="#0f172a")
+            _tv_kpi(_k8[4], "🏪", "Transbordados para franquias", f"{_tv_n(_tr8)} {_tv_delta(_tr8, _tr8p)}",
+                    f"{_tv_pct(_tr8, _lu8)} dos leads únicos (tx. de transbordo)", color="#0f172a")
+            _tv_kpi(_k8[5], "✅", "Vendas nas franquias (mês do lead)", f"{_tv_n(_vf8)} {_tv_delta(_vf8, _vf8p)}",
+                    f"{_tv_pct(_vf8, _tr8)} dos transbordados · {_tv_pct(_vf8, _fr_tot)} das vendas das franquias", color="#b45309")
+
+            _f8a, _f8b = st.columns(2)
+            with _f8a:
+                _tv_funil("📵 Funil Televendas — pipeline de ligações ativas", [
+                    ("📵", "Leads ativos discados", _d8, "ESCALLO_LEADS_MES, tipo ATIVO"),
+                    ("🗣️", "Ligações qualificadas (≥ 10 s)", _a8, "alô humano em alguma ligação do mês"),
+                    ("🛒", "Vendas — discados que aparecem no NOMINAL no mês", _v8, "inner join por tel-8, 1 lead = 1, mesmo mês-calendário"),
+                    ("📞", "└ com tipo_venda = TELEVENDAS", _t8, "seq. = % das filiações dos discados"),
+                ], subtitle=_lbl10)
+                st.caption(f"Indicadores laterais (HubSpot, pipeline CDT - Lead Televendas): **{_tv_n(_n8)}** Negócios entraram em "
+                           f"EM NEGOCIAÇÃO {_tv_delta(_n8, _n8p)} · **{_tv_n(_g8)}** entraram em GANHO. "
+                           f"Filiações após o 1º contato do mês: **{_tv_n(_ap8)}** de {_tv_n(_v8)}. "
+                           "'Negociação' fica fora do funil porque é menor que 'vendas': a maioria das filiações dos discados "
+                           "fecha fora da esteira do CRM (site, MGM, campo).", unsafe_allow_html=True)
+            with _f8b:
+                _tv_funil("🏪 Funil Franquias — transbordo de leads", [
+                    ("🧲", "Leads Únicos (regra do relatório)", _lu8, "`HS - Leads Únicos mês`, createdate no mês"),
+                    ("🏪", "Leads transbordados", _tr8, "Negócios com 1ª entrada em Distribuição / Validador no mês"),
+                    ("✅", "Vendas nas franquias", _vf8, "CPF do lead × NOMINAL campo, filiação no mês do lead"),
+                ], subtitle=_lbl10)
+                st.caption(f"Entradas no **Validador** (entrega confirmada à franquia): **{_tv_n(_va8)}**. "
+                           f"Vendas das franquias no CTN no período: **{_tv_n(_fr_tot)}** — os leads nacionais respondem por "
+                           f"**{_tv_pct(_vf8, _fr_tot)}**" + (f" (período anterior: {_tv_pct(_vf8p, _fr_tot_p)})" if _vf8p and _fr_tot_p else "") + ".",
+                           unsafe_allow_html=True)
+
+            # --- abertura por tipo de venda dos discados com venda ---
+            _tt8 = _mesa[(_mesa['dim'].str.startswith('tv_tipo|')) & (_mesa['metrica'] == 'vendas_mes') & (_mesa['mes'].isin(list(_sel10)))]
+            _c8a, _c8b = st.columns([1.1, 2])
+            with _c8a:
+                _tv_titulo("Discados com venda — por tipo de venda", f"{_lbl10} · um lead pode ter mais de um tipo", "A")
+                if _tt8.empty:
+                    st.caption("sem abertura por tipo.")
+                else:
+                    _gt8 = _tt8.assign(tipo=_tt8['dim'].str.split('|').str[1]).groupby('tipo', as_index=False)['valor'].sum()
+                    _gt8 = _gt8.sort_values('valor', ascending=True)
+                    _gt8['rotulo'] = _gt8['valor'].map(lambda v: f"{_tv_fmt_k(v)}  ({(v / _v8 * 100 if _v8 else 0):.1f}%)".replace('.', ','))
+                    _gt8['cor'] = _gt8['tipo'].map(lambda t: '#b45309' if t == 'TELEVENDAS' else '#166534')
+                    fig = px.bar(_gt8, x='valor', y='tipo', orientation='h', text='rotulo',
+                                 template='cdt_a' if _CDT_THEME else 'plotly_white')
+                    fig.update_traces(marker_color=list(_gt8['cor']), textposition='outside', textfont_size=10.5, cliponaxis=False)
+                    fig.update_layout(height=max(240, 26 * len(_gt8) + 60), xaxis_title='', yaxis_title='', showlegend=False,
+                                      margin=dict(l=8, r=110, t=8, b=28),
+                                      yaxis=dict(automargin=True, showgrid=False, tickfont=dict(size=11)))
+                    st.plotly_chart(fig, use_container_width=True)
+                    _tv_fonte("ESCALLO_LEADS_MES (ATIVO) × NOMINAL_VENDAS por tel-8, mesmo mês; % sobre os discados com venda")
+            with _c8b:
+                _mg8 = _m10[-12:]
+                _l8 = []
+                for met, lbl, dim in [('discados', 'Discados', 'televendas'), ('vendas_mes', 'Discados que filiaram', 'televendas'),
+                                      ('vendas_mes_tv', '└ tipo Televendas', 'televendas')]:
+                    d = _mesa[(_mesa['dim'] == dim) & (_mesa['metrica'] == met) & (_mesa['mes'].isin(list(_mg8)))]
+                    d = d.groupby('mes', as_index=False)['valor'].sum().sort_values('mes'); d['serie'] = lbl
+                    _l8.append(d)
+                _tv_chart_mensal(pd.concat(_l8), "Série mensal — funil Televendas (ligações ativas)", stacked=False, rotulos=True,
+                                 subtitle="últimos 12 meses carregados", fonte="ESCALLO_LEADS_MES × NOMINAL_VENDAS (tel-8, mesmo mês)")
+                _l8 = []
+                for met, lbl in [('leads_unicos_deck', 'Leads Únicos'), ('transbordados', 'Transbordados'), ('vendas_mes', 'Vendas nas franquias')]:
+                    d = _mesa[(_mesa['dim'] == 'franquias') & (_mesa['metrica'] == met) & (_mesa['mes'].isin(list(_mg8)))]
+                    d = d.groupby('mes', as_index=False)['valor'].sum().sort_values('mes'); d['serie'] = lbl
+                    _l8.append(d)
+                _tv_chart_mensal(pd.concat(_l8), "Série mensal — funil Franquias", stacked=False, rotulos=True,
+                                 subtitle="últimos 12 meses carregados",
+                                 fonte="HS - Leads Únicos mês · hubspot_deals_raw (pipeline CDT - Distribuição) · NOMINAL_VENDAS")
+
+            with st.expander("📖 Definições exatas (slides 'Funil Televendas' e 'Funil Franquias' do relatório da Mesa)"):
+                st.markdown(
+                    "| Etapa | Objeto | Regra |\n|---|---|---|\n"
+                    "| **Leads ativos discados** | telefone | `ESCALLO_LEADS_MES`, `tipo_lead = 'ATIVO'`, mês do 1º contato. |\n"
+                    "| **Ligações qualificadas** | telefone | `alo_humano = 1` — falou ≥ 10 s em alguma ligação do mês. |\n"
+                    "| **Vendas (discados que filiaram)** | telefone × CPF | *inner join* dos discados do mês com `NOMINAL_VENDAS` do **mesmo mês-calendário**, "
+                    "chave tel-8 (`RIGHT(CELULAR, 8) = RIGHT(tel_lead, 8)`; o Escallo não tem CPF), 1 lead contado uma vez. Difere do "
+                    "`venda_confirmada` da própria tabela (janela 1º contato → último + 14 d) e do GANHO do HubSpot (write-back da esteira). |\n"
+                    "| **└ tipo Televendas** | idem | o subconjunto cuja filiação tem `tipo_venda = 'TELEVENDAS'`; a % sequencial é sobre as filiações dos discados. |\n"
+                    "| **Negociação (lateral)** | Negócios | entradas em `EM NEGOCIAÇÃO` (961121695) no pipeline CDT - Lead Televendas no mês. |\n"
+                    "| **Leads Únicos (relatório)** | Contatos | `HS - Leads Únicos mês`, `createdate` no mês, canal conhecido e fora de Importação / "
+                    "Base de Desfiliados / Instância de Engajamento / `Franquia - ID Promotor Lead` (é a regra que reproduz o deck: jul/26 = 184,3k). |\n"
+                    "| **Leads transbordados** | Negócios | pipeline CDT - Distribuição (697831824), 1ª entrada em `Distribuição de Leads` (1020141703) ou "
+                    "`Validador de Distribuição` (1020141709) no mês — `hs_v2_date_entered_*` guarda a ÚLTIMA entrada, então redistribuições reescrevem meses passados. |\n"
+                    "| **Vendas nas franquias** | CPF | leads criados no mês (regra de abril, **com** os promotores — são eles que mais viram venda de franquia) × "
+                    "`NOMINAL_VENDAS` porta a porta / link / app do vendedor, filiação no mesmo mês; dedupe `COUNT(DISTINCT CPF, DT_FILIACAO)`. |\n\n"
+                    "**Ressalva do funil de franquias:** 'transbordados' conta Negócios de qualquer origem (inclusive leads dos promotores das "
+                    "franquias), enquanto 'Leads Únicos' os exclui — a taxa de transbordo pode passar de 50%. A leitura por coorte só com os leads "
+                    "da regra do relatório está na aba 🧭 Funil Ponta a Ponta (buckets ≠ promotor). Fonte de tudo: seção `s8_mesa` do "
+                    "`aquisicao_dash` (`gt7 run aquisicao_dash --arg only=s8`).")
+
+        st.markdown("---")
+        # ---------- 2 · funis por superfície ----------
+        _tv_titulo("Funis de aquisição por superfície",
+                   "cada superfície tem a sua própria definição de 'lead' — os números NÃO são deduplicados entre elas "
+                   "(a mesma pessoa pode ser lead no site, no app e no televendas)", "A")
+        _cs1, _cs2, _cs3, _cs4 = st.columns(4)
+        # helper: métrica do s8_mesa (régua do relatório) para a janela — None se a seção não cobre a janela
+        def _v8s(metrica, dim, meses=None):
+            meses = _sel10 if meses is None else meses
+            d = _aq10[(_aq10['secao'] == 's8_mesa') & (_aq10['dim'] == dim) & (_aq10['metrica'] == metrica) & (_aq10['mes'].isin(list(meses)))]
+            return float(d['valor'].sum()) if not d.empty else None
+        _ga_users_ok = not _aq10[(_aq10['secao'] == 's4_ga') & (_aq10['metrica'] == 'purchase_users') & (_aq10['mes'].isin(list(_sel10)))].empty
+        with _cs1:
+            if _ga_users_ok:
+                _tv_funil("🌐 Site — checkout (usuários, régua da aba 🌐)", [
+                    ("👥", "Etapa 0 · Usuários ativos (GA)", _v10('s4_ga', 'active_users', _sel10, 'ga'), "activeUsers por dia, somados no mês"),
+                    ("📝", "Etapa 1 · Início de checkout", _v10('s4_ga', 'generate_lead_users', _sel10, 'ga'), "generate_lead (usuários)"),
+                    ("🚚", "Etapa 2 · Dados de envio", _v10('s4_ga', 'add_shipping_info_users', _sel10, 'ga'), "add_shipping_info (usuários)"),
+                    ("💳", "Etapa 3 · Dados de pagamento", _v10('s4_ga', 'add_payment_info_users', _sel10, 'ga'), "add_payment_info (usuários)"),
+                    ("🛒", "Etapa 4 · Compra (purchase)", _v10('s4_ga', 'purchase_users', _sel10, 'ga'), "purchase (usuários)"),
+                    ("✅", "Vendas WEBSITE (CTN)", _v10('s3_nominal', 'vendas', _sel10, 'WEBSITE'), "tipo_venda WEBSITE no NOMINAL"),
+                ], subtitle=_lbl10)
+            else:
+                _tv_funil("🌐 Site — checkout (eventos)", [
+                    ("👣", "Usuários ativos (GA)", _v10('s4_ga', 'active_users', _sel10, 'ga'), "usuários ativos no checkout"),
+                    ("📝", "Início de checkout (eventos)", _v10('s4_ga', 'generate_lead', _sel10, 'ga'), "generate_lead"),
+                    ("💳", "Pagamento iniciado (eventos)", _v10('s4_ga', 'add_payment_info', _sel10, 'ga'), "add_payment_info"),
+                    ("🛒", "Compras (eventos)", _v10('s4_ga', 'purchase', _sel10, 'ga'), "purchase no checkout"),
+                    ("✅", "Vendas WEBSITE (CTN)", _v10('s3_nominal', 'vendas', _sel10, 'WEBSITE'), "tipo_venda WEBSITE no NOMINAL"),
+                ], subtitle=_lbl10)
+                st.caption("ℹ️ Colunas de usuários ainda não carregadas — rode `gt7 run aquisicao_dash --arg only=s4` para ver a mesma régua da aba 🌐.")
+            st.caption(f"🧲 Leads Únicos (HubSpot) na janela: **{_tv_n(_lu)}** — ficam fora do funil porque contam Contatos criados por "
+                       "todas as portas (formulários, WhatsApp, parcerias), não só o checkout; a comparação certa é com a Etapa 1.")
+        with _cs2:
+            if _v8s('discados', 'televendas') is not None:
+                _tv_funil("📵 Televendas — Ativo (discador)", [
+                    ("📵", "Leads discados", _v8s('discados', 'televendas'), "ESCALLO_LEADS_MES, tipo ATIVO"),
+                    ("🗣️", "Falaram ≥ 10 s", _v8s('alo10', 'televendas'), "alô humano"),
+                    ("🛒", "Filiaram no mês (NOMINAL)", _v8s('vendas_mes', 'televendas'), "tel-8 × NOMINAL no mesmo mês — régua do relatório"),
+                    ("📞", "└ com tipo_venda TELEVENDAS", _v8s('vendas_mes_tv', 'televendas'), "seq. = % das filiações dos discados"),
+                ], subtitle=_lbl10)
+            else:
+                _tv_funil("📵 Televendas — Ativo (discador)", [
+                    ("📵", "Leads discados", _v10('s2_super', 'leads', _sel10, 'ativo'), "ESCALLO_LEADS_MES, tipo ATIVO"),
+                    ("🗣️", "Falaram ≥ 10 s", _v10('s2_super', 'alo10', _sel10, 'ativo'), "alô humano"),
+                    ("✅", "Vendas confirmadas no CTN", _v10('s2_super', 'venda_confirmada', _sel10, 'ativo'), "tel-8 × NOMINAL na janela do contato"),
+                ], subtitle=_lbl10)
+        with _cs3:
+            if _v8s('discados', 'receptivo') is not None:
+                _tv_funil("📲 Televendas — Receptivo", [
+                    ("📲", "Ligações recebidas", _v8s('discados', 'receptivo'), "ESCALLO_LEADS_MES, tipo RECEPTIVO"),
+                    ("🗣️", "Falaram ≥ 10 s", _v8s('alo10', 'receptivo'), "alô humano"),
+                    ("🛒", "Filiaram no mês (NOMINAL)", _v8s('vendas_mes', 'receptivo'), "tel-8 × NOMINAL no mesmo mês — régua do relatório"),
+                    ("📞", "└ com tipo_venda TELEVENDAS", _v8s('vendas_mes_tv', 'receptivo'), "seq. = % das filiações"),
+                ], subtitle=_lbl10)
+            else:
+                _tv_funil("📲 Televendas — Receptivo", [
+                    ("📲", "Ligações recebidas", _v10('s2_super', 'leads', _sel10, 'receptivo'), "ESCALLO_LEADS_MES, tipo RECEPTIVO"),
+                    ("🗣️", "Falaram ≥ 10 s", _v10('s2_super', 'alo10', _sel10, 'receptivo'), "alô humano"),
+                    ("✅", "Vendas confirmadas no CTN", _v10('s2_super', 'venda_confirmada', _sel10, 'receptivo'), "tel-8 × NOMINAL na janela do contato"),
+                ], subtitle=_lbl10)
+        with _cs4:
+            _ap_dl = _ap_dr = _ap_cad = _ap_com = None
+            if not _apd.empty:
+                _ms_app = [m for m in _sel10 if m in list(_apd['mes'].unique())]
+                _ap_dl = _ap_val('s1_funil', 'downloads', meses=_ms_app)
+                _ap_cad = _ap_val('s1_funil', 'cadastros', meses=_ms_app)
+                _ap_fre = _ap_val('s1_funil', 'cadastros_freemium', meses=_ms_app)
+                _ap_com = _ap_val('s1_funil', 'compras_com_app_ate_venda', meses=_ms_app)
+                _ap_idpv = _ap_val('s1_funil', 'compras_app_do_filiado', meses=_ms_app)
+            _tv_funil("📱 App", [
+                ("⬇️", "Downloads (1º login)", _ap_dl, "fl_data_login"),
+                ("📝", "Cadastros", _ap_cad, "fl_plano_usuario.dt_criacao"),
+                ("🌱", "└ dos cadastros: entraram como freemium", _ap_fre if _ap_dl is not None else None, "subconjunto: cadastro sem filiação anterior"),
+                ("🛒", "└ dos cadastros: compra junto à venda", _ap_com, "subconjunto: cadastro até 1 dia após a venda"),
+                ("✅", "Vendas APP DO FILIADO (CTN)", _v10('s3_nominal', 'vendas', _sel10, 'APP DO FILIADO'), "tipo_venda"),
+            ], subtitle=_lbl10)
+        st.caption(f"📞 As vendas **TELEVENDAS (CTN)** da janela — {format_br(_v10('s3_nominal', 'vendas', _sel10, 'TELEVENDAS'))} — "
+                   "fecham as duas esteiras juntas: o `tipo_venda` do CTN não separa ligação ativa de receptiva. Os dois funis de "
+                   "televendas usam a **mesma régua do relatório** (bloco acima e aba 📞 → nota 🧲): filiou no mês, por qualquer porta; "
+                   "a *venda tabulada* e a *confirmada na janela do contato* ficam na aba 📞 (visão da operação). 📱 No app, **freemium** e "
+                   "**compra junto à venda** são dois **subconjuntos de Cadastros** — fatias irmãs, não etapas em sequência: leia a % de "
+                   "cada um sempre sobre Cadastros.")
+        _tv_note(
+            "<b>Por que não somamos as três superfícies.</b> Cada uma conta uma coisa: o site conta <i>contato criado</i>, "
+            "o televendas conta <i>telefone trabalhado no mês</i> e o app conta <i>cadastro</i>. A mesma pessoa aparece em "
+            "duas ou três — somar os topos infla a base. O único denominador comum é a <b>venda no CTN</b>, e é por isso "
+            "que os três funis terminam na mesma régua (NOMINAL_VENDAS por tipo_venda). Para o total do período, use o "
+            "quadro abaixo.", bg="#f8fafc", icon="ℹ️")
+
+        _tv_titulo("Vendas por tipo (CTN) — o denominador comum", f"janela {_lbl10}", "A")
+        _nom10 = _aq10[(_aq10['secao'] == 's3_nominal') & (_aq10['metrica'] == 'vendas') & (_aq10['mes'].isin(_sel10))]
+        if not _nom10.empty:
+            _g10 = _nom10.groupby('dim', as_index=False)['valor'].sum().sort_values('valor', ascending=True)
+            _tot10 = float(_g10['valor'].sum())
+            _g10 = _g10[_g10['valor'] / _tot10 >= 0.002]
+            _g10['rotulo'] = _g10['valor'].map(lambda v: f"{_tv_fmt_k(v)}  ({v / _tot10 * 100:.1f}%)".replace('.', ','))
+            fig = px.bar(_g10, x='valor', y='dim', orientation='h', text='rotulo',
+                         color_discrete_sequence=['#166534'], template='cdt_a' if _CDT_THEME else 'plotly_white')
+            fig.update_traces(textposition='outside', textfont_size=10.5, cliponaxis=False)
+            fig.update_layout(height=max(300, 28 * len(_g10) + 70), xaxis_title='', yaxis_title='', showlegend=False,
+                              margin=dict(l=8, r=110, t=8, b=28),
+                              yaxis=dict(automargin=True, side='left', showgrid=False, tickfont=dict(size=11)))
+            st.plotly_chart(fig, use_container_width=True)
+            _tv_fonte(f"NOMINAL_VENDAS · dedupe COUNT(DISTINCT CPF, DT_FILIACAO) · total {format_br(_tot10)} vendas na janela")
+
+        st.markdown("---")
+        # ---------- 3 · canais de origem ----------
+        _tv_titulo("Leads Únicos por canal de origem — e o que aconteceu com eles",
+                   "primeiro_canal_de_origem do contato; % sobre os leads do próprio canal", "A")
+        _can = _aq10[(_aq10['secao'] == 's1_canal') & (_aq10['mes'].isin(_sel10))]
+        if _can.empty:
+            st.caption("sem abertura por canal (rode `gt7 run aquisicao_dash --arg only=s1`).")
+        else:
+            _pc = _can.pivot_table(index='dim', columns='metrica', values='valor', aggfunc='sum').fillna(0)
+            _pc = _pc.sort_values('leads_unicos', ascending=False)
+            _pc = _pc[_pc['leads_unicos'] >= 200]
+            _t10 = []
+            for canal, r in _pc.iterrows():
+                lu = float(r['leads_unicos'])
+                _t10.append({'Canal de origem': canal, 'Leads Únicos': format_br(lu),
+                             '% do total': _tv_pct(lu, float(_pc['leads_unicos'].sum())),
+                             'Com CPF': _tv_pct(r.get('com_cpf'), lu),
+                             'Engajamento': _tv_pct(r.get('enviados_engajamento'), lu),
+                             'Franquias': _tv_pct(r.get('transbordados_franquias'), lu)})
+            st.dataframe(pd.DataFrame(_t10), use_container_width=True, hide_index=True)
+            _tv_fonte("HS - Leads Únicos mês · canais com menos de 200 leads na janela ficam fora da tabela")
+            st.caption("Leitura: canais com **% Engajamento** alto e **% Franquias** baixo estão parando na régua do "
+                       "engajamento; o inverso (Franquias alto, Engajamento ~0) é o Grupo B da Jornada, que vai direto "
+                       "para a distribuição. A aba 📞 Televendas → 🔀 Grupos A–D detalha esse roteamento.")
+
+        st.markdown("---")
+        # ---------- 4 · qualidade do canal: o membro fica? ----------
+        _tv_titulo("Qualidade do canal — o membro fica?",
+                   "cada venda atribuída ao canal é seguida no painel do CTN 3 e 6 meses depois da filiação", "A")
+        # A retenção só existe para coortes que já completaram 3 meses de painel. Se a janela escolhida for recente
+        # demais, a seção alarga sozinha para os últimos 12 meses e avisa — em vez de mostrar um quadro vazio.
+        _sel7, _amp7 = _sel10, False
+        _b3t = _aq10[(_aq10['secao'] == 's7_canal') & (_aq10['metrica'] == 'base_m3') & (_aq10['dim'] != 'painel')]
+        if float(_b3t[_b3t['mes'].isin(_sel7)]['valor'].sum()) < 500:
+            _sel7 = [m for m in _m10 if pd.Timestamp(m) > pd.Timestamp(_m10[-1]) - pd.DateOffset(months=12)]
+            _amp7 = True
+        _q7 = _aq10[(_aq10['secao'] == 's7_canal') & (_aq10['mes'].isin(_sel7)) & (_aq10['dim'] != 'painel')]
+        _lbl7 = (f"{_ap_mes_lbl(_sel7[0])}–{_ap_mes_lbl(_sel7[-1])}" if len(_sel7) > 1 else _ap_mes_lbl(_sel7[0]))
+        if _amp7 and not _q7.empty:
+            st.caption(f"↔️ A janela **{_lbl10}** ainda não tem coortes com 3 meses de painel, então esta seção usa "
+                       f"**{_lbl7}**. O relógio da retenção começa na filiação: uma venda de junho só entra no m3 "
+                       "quando a referência de setembro fechar.")
+        if _q7.empty:
+            st.caption("sem dados de retenção por canal na janela (rode `gt7 run aquisicao_dash --arg only=s7`).")
+        else:
+            _p7 = _q7.pivot_table(index='dim', columns='metrica', values='valor', aggfunc='sum').fillna(0.0)
+            for _c in ('vendas', 'base_m3', 'ret_m3_A', 'ret_m3_C', 'base_m6', 'ret_m6_A', 'ret_m6_C'):
+                if _c not in _p7.columns:
+                    _p7[_c] = 0.0
+            _lu7 = (_aq10[(_aq10['secao'] == 's1_canal') & (_aq10['metrica'] == 'leads_unicos_rma')
+                          & (_aq10['mes'].isin(_sel7))].groupby('dim')['valor'].sum())
+            _p7['leads'] = _p7.index.map(lambda d: float(_lu7.get(d, 0.0)))
+            _p7 = _p7.sort_values('vendas', ascending=False)
+
+            _tv7 = float(_p7['vendas'].sum())
+            _b3, _r3c, _r3a = float(_p7['base_m3'].sum()), float(_p7['ret_m3_C'].sum()), float(_p7['ret_m3_A'].sum())
+            _b6, _r6c = float(_p7['base_m6'].sum()), float(_p7['ret_m6_C'].sum())
+            _inv7 = _v10('s7_midia', 'investimento', _sel7, 'midia')
+            _cac = (_inv7 / _r3c) if _r3c > 0 else None
+
+            k1, k2, k3, k4 = st.columns(4)
+            _tv_kpi(k1, "🤝", "Vendas atribuídas a canais", f"{_tv_n(_tv7)}",
+                    f"{_tv_pct(_tv7, float(_p7['leads'].sum()))} dos leads únicos do período viraram venda de franquia")
+            _tv_kpi(k2, "📌", "Ainda pagando aos 3 meses", f"{_tv_pct(_r3c, _b3)}",
+                    f"{_tv_n(_r3c)} de {_tv_n(_b3)} mensuráveis · def. C (até 1 mês de atraso)", color="#2e8a4f")
+            _tv_kpi(k3, "🗓️", "Ainda pagando aos 6 meses", f"{_tv_pct(_r6c, _b6)}" if _b6 > 0 else "—",
+                    (f"{_tv_n(_r6c)} de {_tv_n(_b6)} mensuráveis" if _b6 > 0 else "nenhuma coorte completou 6 meses"),
+                    color="#0f172a")
+            _tv_kpi(k4, "💸", "Custo por membro retido (m3)", (f"R$ {format_br(round(_cac))}" if _cac else "—"),
+                    f"= R$ {format_br(round(_inv7))} de mídia (site) ÷ {_tv_n(_r3c)} ainda pagando no 3º mês", color="#b45309")
+
+            st.caption("💸 **Custo por membro retido (m3)** — fórmula: `investimento de mídia do site no período ÷ membros ainda pagando 3 meses após a filiação` (definição C do painel `fl_nominal_qca_qcd`: contrato ativo com até 1 mês de atraso, `vam_inadimplente ≤ 34`). É quanto a mídia paga por **cliente que fica**, não por venda — e é do agregado de mídia do site, porque o investimento não tem rateio por canal do HubSpot (detalhes no expansor no fim da seção).")
+            _g7 = _p7[_p7['base_m3'] >= 100].copy()
+            if not _g7.empty:
+                _g7['ret3'] = _g7['ret_m3_C'] / _g7['base_m3'] * 100
+                _g7['ret3a'] = _g7['ret_m3_A'] / _g7['base_m3'] * 100
+                _g7 = _g7.sort_values('ret3', ascending=True)
+                _g7['rot'] = _g7.apply(lambda r: f"{r['ret3']:.1f}%  (n={_tv_fmt_k(r['base_m3'])})".replace('.', ','), axis=1)
+                _med3 = (_r3c / _b3 * 100) if _b3 > 0 else 0
+                fig = px.bar(_g7.reset_index(), x='ret3', y='dim', orientation='h', text='rot',
+                             color_discrete_sequence=['#166534'], template='cdt_a' if _CDT_THEME else 'plotly_white')
+                fig.update_traces(textposition='outside', textfont_size=10.5, cliponaxis=False)
+                fig.add_vline(x=_med3, line_dash='dot', line_color='#b45309',
+                              annotation_text=f"média {_med3:.1f}%".replace('.', ','),
+                              annotation_position='top', annotation_font_size=10)
+                fig.update_layout(height=max(300, 28 * len(_g7) + 80), xaxis_title='', yaxis_title='', showlegend=False,
+                                  margin=dict(l=8, r=130, t=30, b=28),
+                                  xaxis=dict(range=[0, max(100.0, float(_g7['ret3'].max()) * 1.18)], ticksuffix='%'),
+                                  yaxis=dict(automargin=True, side='left', showgrid=False, tickfont=dict(size=11)))
+                st.plotly_chart(fig, use_container_width=True)
+                _tv_fonte("painel fl_nominal_qca_qcd (Athena) · definição C: contrato ativo e até 1 mês de atraso · "
+                          "canais com menos de 100 vendas mensuráveis ficam fora")
+
+                _tv_titulo("Escala × qualidade", "cada bolha é um canal; o tamanho é o volume de leads únicos", "A")
+                _q = _g7.reset_index().copy()
+                _q['conv'] = _q.apply(lambda r: (r['vendas'] / r['leads'] * 1000) if r['leads'] > 0 else 0, axis=1)
+                _q = _q[_q['conv'] > 0]
+                if not _q.empty:
+                    _mx, _my = float(_q['conv'].median()), float(_q['ret3'].median())
+                    fig = px.scatter(_q, x='conv', y='ret3', size='leads', text='dim', size_max=46,
+                                     color_discrete_sequence=['#166534'],
+                                     template='cdt_a' if _CDT_THEME else 'plotly_white')
+                    fig.update_traces(textposition='top center', textfont_size=9.5,
+                                      hovertemplate='%{text}<br>%{x:.1f} vendas/1.000 leads<br>%{y:.1f}% retidos<extra></extra>')
+                    fig.add_vline(x=_mx, line_dash='dot', line_color='#94a3b8')
+                    fig.add_hline(y=_my, line_dash='dot', line_color='#94a3b8')
+                    fig.update_layout(height=430, showlegend=False, margin=dict(l=8, r=20, t=30, b=40),
+                                      xaxis_title='vendas por 1.000 leads únicos', yaxis_title='% ainda pagando aos 3 meses',
+                                      yaxis=dict(ticksuffix='%'))
+                    st.plotly_chart(fig, use_container_width=True)
+                    _tv_fonte("quadrante superior direito = converte e retém (escalar); inferior direito = converte e "
+                              "não retém (rever oferta/qualificação); superior esquerdo = retém pouco volume (testar verba)")
+
+                _tb7 = []
+                for canal, r in _p7[_p7['vendas'] >= 20].iterrows():
+                    _tb7.append({
+                        'Canal de origem': canal,
+                        'Leads Únicos': format_br(r['leads']),
+                        'Vendas': format_br(r['vendas']),
+                        'Conv.': _tv_pct(r['vendas'], r['leads']),
+                        'Mensuráveis m3': format_br(r['base_m3']),
+                        'Ativos m3 (A)': _tv_pct(r['ret_m3_A'], r['base_m3']),
+                        'Pagando m3 (C)': _tv_pct(r['ret_m3_C'], r['base_m3']),
+                        'Pagando m6 (C)': _tv_pct(r['ret_m6_C'], r['base_m6']) if r['base_m6'] > 0 else '—',
+                        'Retidos / 1.000 leads': (f"{r['ret_m3_C'] / r['leads'] * 1000:.1f}".replace('.', ',')
+                                                  if r['leads'] > 0 else '—')})
+                st.dataframe(pd.DataFrame(_tb7), use_container_width=True, hide_index=True)
+                _tv_fonte(f"janela {_lbl7} · canais com menos de 20 vendas no período ficam fora da tabela")
+            else:
+                st.caption("Nenhum canal tem 100 vendas com 3 meses de painel nesta janela — sem base para ranquear. "
+                           "Abra a janela para 12 meses ou espere o painel do CTN fechar o mês seguinte.")
+
+            with st.expander("Como isso é calculado — e o que o custo por membro retido pode e não pode dizer"):
+                st.markdown(
+                    "**Fórmula.** `custo por membro retido (m3) = investimento de mídia do site (RESUMO_INVESTIMENTO_DIARIO) ÷ retidos m3 (def. C)`. Exemplo: R$ 1,5 mi ÷ 5.000 retidos = R$ 300 por membro que continua pagando no 3º mês.\n\n"
+                    "**A venda é do canal do primeiro lead.** Um CPF que aparece como lead em dois canais conta uma vez "
+                    "só, no lead mais antigo. A atribuição é a mesma do RMA: CPF do lead único × `NOMINAL_VENDAS`, "
+                    "`tipo_venda` de franquia (porta a porta, link do vendedor, app do vendedor), filiação em qualquer "
+                    "data a partir do lead.\n\n"
+                    "**Retido = ainda pagando N meses depois da filiação**, lido no painel mensal do CTN "
+                    "(`fl_nominal_qca_qcd`) — as mesmas definições do LTV da aba 📱 App: **A** = contrato ativo "
+                    "(`qca = 1`); **C** = ativo e com até um mês de atraso (`vam_inadimplente ≤ 34`). O relógio começa "
+                    "na **filiação**, não no lead.\n\n"
+                    "**Mensuráveis.** Uma venda de junho só entra no m3 quando a referência de setembro existir no "
+                    "painel. Por isso a coluna *Mensuráveis m3* é menor que *Vendas* nos meses recentes — o "
+                    "denominador é sempre a base mensurável, nunca o total.\n\n"
+                    "**O custo é de mídia, não do canal.** `RESUMO_INVESTIMENTO_DIARIO` só abre o investimento em "
+                    "canal (Website, App do Filiado) × plataforma (Google, Meta, Kwai, TikTok, Actionpay); não há "
+                    "rateio para os canais do HubSpot. Então o **custo por membro retido é do agregado de mídia do "
+                    "site** — serve para acompanhar a tendência do conjunto, não para comparar canais entre si. "
+                    "Para comparar canais, use **retidos por 1.000 leads**, que é a mesma pergunta sem depender do "
+                    "rateio de verba.\n\n"
+                    "**Ressalva de abril/2026:** o `vam_inadimplente` veio quebrado na origem nesse mês; nele "
+                    "a definição C é a média do estado do mesmo CPF em março e maio (mesmo tratamento do LTV).")
+
+# =====================================================================================
+# --- 11. 🧭 FUNIL PONTA A PONTA (R17, 08/09/2026) -----------------------------------
+# Lê alex_funil_journey (pipelines/funil_journey.py no claude-toolkit): 1 linha por
+# Contato criado no mês, com as datas de cada marco da jornada. Definições da reunião
+# com o especialista de HubSpot (31/08–04/09) — doc: claude/plano_03-09 no projeto
+# Televendas Funnel. Objetos do HubSpot sempre com maiúscula: Contato, Lead, Negócio.
+# =====================================================================================
+with tab11:
+    st.markdown("## Funil Ponta a Ponta — do lead criado à venda")
+    st.caption("Cada mês é uma **coorte**: todo mundo que virou lead naquele mês, acompanhado pelos marcos "
+               "seguintes (mesmo que aconteçam meses depois). É reconstrução da jornada, não foto do estágio atual.")
+    st.caption("📌 **Diferença para a aba Aquisição:** lá é a foto do PERÍODO por superfície (cada fonte mede a sua "
+               "régua); aqui é o FILME da coorte numa fonte única (`alex_funil_journey`), com todos os encaminhamentos "
+               "do Lead — esteira de televendas, transbordo para engajamento, rota de franquias — e os tempos entre "
+               "etapas. Taxas de conversão e transbordos: use esta aba. Acompanhar o mês corrente canal a canal: "
+               "use a Aquisição.")
+
+    _FJ_LBL = {
+        'core': 'Núcleo (site, checkout, WhatsApp, mídia)', 'tim': 'Parceria B2B2C - TIM',
+        'franquia_promotor': 'Franquia — ID Promotor', 'franquia_facebook': 'Franquia — Facebook (captação)',
+        'franquia_cms': 'Franquia — formulário CMS', 'regional': 'Formulários regionais',
+        'ruptura': 'Projeto Ruptura', 'importacao': 'Importação de base',
+        'desfiliados': 'Desfiliados em massa', 'engajamento': 'Instância de Engajamento',
+        'sem_canal': 'Sem canal registrado',
+    }
+    _FJ_DEFS = {
+        'Abrangente (tudo menos Engajamento)': ['core', 'importacao', 'desfiliados', 'tim', 'franquia_cms',
+                                                'franquia_promotor', 'franquia_facebook', 'ruptura', 'regional', 'sem_canal'],
+        'HubSpot — relatório "Leads Únicos" (347496241)': ['core', 'franquia_cms', 'franquia_promotor',
+                                                           'franquia_facebook', 'ruptura', 'regional', 'sem_canal'],
+        'RMA antiga (só núcleo)': ['core'],
+        'Personalizada': None,
+    }
+
+    @st.cache_data(ttl=43200)
+    def load_fj_buckets():
+        return cquery(
+            "SELECT mes, bucket, COUNT(*) criados, SUM(n_negocios>0) com_negocio, "
+            "SUM(dt_lead_tv IS NOT NULL) tv_lead, "
+            "SUM(dt_lead_tv IS NOT NULL AND COALESCE(dt_negociacao,dt_css,dt_perdido,dt_ganho) IS NOT NULL) tv_trab, "
+            "SUM(dt_negociacao IS NOT NULL) negociacao, SUM(dt_ganho IS NOT NULL) ganho, "
+            "SUM(dt_perdido IS NOT NULL) perdido, "
+            "SUM(COALESCE(dt_distrib,dt_semcep,dt_validador) IS NOT NULL) pipe_distrib, "
+            "SUM(dt_validador IS NOT NULL) enviado_franquia, SUM(dt_distrib IS NOT NULL) encaminhado_conf, "
+            "SUM(dt_venda_franquia IS NOT NULL) venda_franquia, SUM(dt_venda_app IS NOT NULL) venda_app "
+            "FROM alex_funil_journey GROUP BY 1,2")
+
+    @st.cache_data(ttl=43200)
+    def load_fj_tempos(meses_key):
+        """Medianas exatas, calculadas no banco (window functions). meses_key: tupla de 'YYYY-MM-DD'."""
+        _in = ",".join(f"'{m}'" for m in meses_key)
+        out = {}
+        specs = {
+            'h_criado_tv': ("TIMESTAMPDIFF(MINUTE, createdate, dt_lead_tv)/60.0", "dt_lead_tv IS NOT NULL"),
+            'h_tv_trab': ("TIMESTAMPDIFF(MINUTE, dt_lead_tv, COALESCE(dt_negociacao,dt_css,dt_perdido,dt_ganho))/60.0",
+                          "dt_lead_tv IS NOT NULL AND COALESCE(dt_negociacao,dt_css,dt_perdido,dt_ganho) IS NOT NULL"),
+            'h_criado_valid': ("TIMESTAMPDIFF(MINUTE, createdate, dt_validador)/60.0", "dt_validador IS NOT NULL"),
+            'd_criado_venda': ("TIMESTAMPDIFF(HOUR, createdate, dt_venda_franquia)/24.0", "dt_venda_franquia IS NOT NULL"),
+        }
+        for k, (expr, cond) in specs.items():
+            df = cquery(
+                f"SELECT AVG(v) med FROM (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () c "
+                f"FROM (SELECT {expr} v FROM alex_funil_journey WHERE mes IN ({_in}) AND {cond}) t) t2 "
+                f"WHERE rn IN (FLOOR((c+1)/2), CEIL((c+1)/2))")
+            out[k] = None if df.empty or pd.isna(df['med'].iloc[0]) else float(df['med'].iloc[0])
+        return out
+
+    _fjb = load_fj_buckets()
+    if _fjb.empty:
+        st.warning("`alex_funil_journey` vazia — rode `gt7 run funil_journey` no claude-toolkit.")
+        st.stop()
+    _fjb['mes'] = pd.to_datetime(_fjb['mes'])
+    _num = ['criados', 'com_negocio', 'tv_lead', 'tv_trab', 'negociacao', 'ganho', 'perdido',
+            'pipe_distrib', 'enviado_franquia', 'encaminhado_conf', 'venda_franquia', 'venda_app']
+    for _c in _num:
+        _fjb[_c] = pd.to_numeric(_fjb[_c])
+    _fj_disp = [pd.Timestamp(x) for x in sorted(_fjb['mes'].unique())]
+
+    # período: interseção dos Controles Globais com as coortes disponíveis
+    _fj_meses = [m for m in _tv_meses if m in set(_fj_disp)]
+    if not _fj_meses:
+        _fj_meses = [_fj_disp[-1]]
+        st.info(f"O período dos Controles Globais não toca as coortes disponíveis "
+                f"({_fj_disp[0]:%m/%Y}–{_fj_disp[-1]:%m/%Y}); mostrando {_fj_meses[0]:%m/%Y}.")
+    _fj_lbl_per = (f"coorte de {_fj_meses[0]:%m/%Y}" if len(_fj_meses) == 1
+                   else f"coortes de {_fj_meses[0]:%m/%Y} a {_fj_meses[-1]:%m/%Y}")
+
+    # ---- a decisão de negócio fica visível: qual definição de "lead elegível"? ----
+    _c_def, _c_bk = st.columns([1.1, 2])
+    _fj_def_nome = _c_def.radio("Definição de **lead elegível** (D3 — seleção de buckets):",
+                                list(_FJ_DEFS.keys()), index=0, key="fj_def")
+    _todos_bk = [b for b in _FJ_LBL if b in set(_fjb['bucket'])]
+    if _FJ_DEFS[_fj_def_nome] is None:
+        _fj_sel = _c_bk.multiselect("Buckets que contam como elegíveis:", _todos_bk,
+                                    default=[b for b in _todos_bk if b != 'engajamento'],
+                                    format_func=lambda b: _FJ_LBL.get(b, b), key="fj_sel")
+    else:
+        _fj_sel = [b for b in _FJ_DEFS[_fj_def_nome] if b in _todos_bk]
+        _c_bk.caption("Buckets desta definição: " + " · ".join(_FJ_LBL.get(b, b) for b in _fj_sel)
+                      + ". Regional e Ruptura ainda **sem definição oficial** — por isso tudo aqui é seleção, não filtro fixo.")
+
+    _cur = _fjb[_fjb['mes'].isin(_fj_meses)]
+    _sel = _cur[_cur['bucket'].isin(_fj_sel)]
+    _tot, _els = _cur[_num].sum(), _sel[_num].sum()
+
+    # período anterior de mesmo tamanho (para os deltas dos KPIs)
+    _prev_meses = [m - pd.DateOffset(months=len(_fj_meses)) for m in _fj_meses]
+    _prv = _fjb[_fjb['mes'].isin(_prev_meses) & _fjb['bucket'].isin(_fj_sel)][_num].sum() \
+        if set(_prev_meses) & set(_fj_disp) else None
+
+    def _fj_d(campo):
+        return _tv_delta(int(_els[campo]), int(_prv[campo])) if _prv is not None else ""
+
+    st.markdown(f"#### Visão macro — {_fj_lbl_per}")
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    _tv_kpi(k1, "🌱", "Leads criados (tudo)", f"{_tv_n(int(_tot['criados']))}",
+            "Contatos novos na instância de Aquisição")
+    _tv_kpi(k2, "✅", "Elegíveis (definição acima)", f"{_tv_n(int(_els['criados']))} {_fj_d('criados')}",
+            f"{_els['criados'] / _tot['criados'] * 100:.0f}% do total" if _tot['criados'] else "—")
+    _tv_kpi(k3, "🤝", "Viraram Negócio", f"{_tv_n(int(_els['com_negocio']))} {_fj_d('com_negocio')}",
+            "elegíveis com ao menos 1 Negócio no CRM")
+    _tv_kpi(k4, "📞", "Chegaram ao Televendas", f"{_tv_n(int(_els['tv_lead']))} {_fj_d('tv_lead')}",
+            "entraram na etapa LEAD da esteira")
+    _tv_kpi(k5, "🏪", "Enviados a franquias", f"{_tv_n(int(_els['enviado_franquia']))} {_fj_d('enviado_franquia')}",
+            "passaram pelo Validador de Distribuição")
+    _tv_kpi(k6, "💰", "Vendas (porta a porta + link)", f"{_tv_n(int(_els['venda_franquia']))} {_fj_d('venda_franquia')}",
+            f"+ {format_br(int(_els['venda_app']))} via app do vendedor (conta separada)")
+
+    st.markdown("")
+
+    # ---- as duas rotas, lado a lado ----
+    _cA, _cB = st.columns(2)
+    with _cA:
+        _tv_funil("📞 Rota Televendas", [
+            ("🌱", "Leads criados", int(_tot['criados']), "todos os Contatos novos do período"),
+            ("✅", "Elegíveis", int(_els['criados']), "definição selecionada acima"),
+            ("📞", "Entraram na esteira", int(_els['tv_lead']), "etapa LEAD (CDT - Lead Televendas)"),
+            ("🛠️", "Trabalhados", int(_els['tv_trab']), "saíram de LEAD para qualquer etapa"),
+            ("🤝", "Em negociação", int(_els['negociacao']), "etapa EM NEGOCIAÇÃO"),
+            ("🏆", "GANHO", int(_els['ganho']), f"PERDIDO: {format_br(int(_els['perdido']))}"),
+        ], subtitle=_fj_lbl_per)
+    with _cB:
+        _tv_funil("🏪 Rota Franquias", [
+            ("🌱", "Leads criados", int(_tot['criados']), "todos os Contatos novos do período"),
+            ("✅", "Elegíveis", int(_els['criados']), "definição selecionada acima"),
+            ("🔀", "No pipeline Distribuição", int(_els['pipe_distrib']), "CDT - Distribuição de Leads"),
+            ("📮", "Enviados à franquia", int(_els['enviado_franquia']), "Validador = válido e enviado (definição do especialista)"),
+            ("💰", "Venda na franquia", int(_els['venda_franquia']), "CPF × NOMINAL: porta a porta + link do vendedor"),
+        ], subtitle=_fj_lbl_per)
+    _tv_note(
+        "<b>Por que a Rota Franquias não bate com o 'Funil Franquias' da aba 🧲.</b> Aqui é o <b>filme da coorte</b>: os Contatos "
+        "criados no período (espelho vivo, canal <i>na criação</i>, buckets à sua escolha) seguidos até hoje — Distribuição, Validador "
+        "e venda na franquia em <b>qualquer data</b> posterior. Na 🧲 é a <b>foto do mês</b>, do jeito que o Relatório Mensal conta: "
+        "Leads Únicos da lista <code>HS - Leads Únicos mês</code> (regra do deck, sem os promotores), Negócios com 1ª entrada em "
+        "Distribuição/Validador <b>no mês</b> (de qualquer coorte, inclusive leads dos promotores) e vendas <b>no mês do lead</b>. "
+        "Três diferenças de uma vez — população, evento contado e janela — e por isso ago/26 dá 259k → 83k → 63k → 32,7k aqui "
+        "(todos os buckets) contra 178k → 101k → 29,7k lá. <b>Quando usar:</b> 🧭 para rota, perdas por etapa, tempos e a decisão de "
+        "elegibilidade; 🧲 para bater com o relatório e comparar meses fechados. Esta aba não segue o Período de Análise no grão de "
+        "dias/semanas: o eixo é sempre a coorte do mês de criação do Contato.",
+        bg="#f8fafc", icon="🧲")
+
+    # ---- etapa a etapa: entrada, avançou, taxa, perda, tempo ----
+    _tmp = load_fj_tempos(tuple(m.strftime('%Y-%m-%d') for m in _fj_meses))
+
+    def _fj_t(v, unidade):
+        if v is None:
+            return "—"
+        if unidade == 'h':
+            return f"{v:.0f} h" if v >= 2 else f"{v * 60:.0f} min"
+        return f"{v:.0f} dias" if v >= 2 else f"{v * 24:.0f} h"
+
+    _etapas = [
+        ("Criados → Elegíveis", int(_tot['criados']), int(_els['criados']), "—",
+         "buckets excluídos pela definição (detalhe abaixo)"),
+        ("Elegíveis → viraram Negócio", int(_els['criados']), int(_els['com_negocio']), "—",
+         "sem Negócio: parte por desenho (TIM, franquias operam fora do CRM), parte perda real"),
+        ("Elegíveis → esteira Televendas", int(_els['criados']), int(_els['tv_lead']), _fj_t(_tmp['h_criado_tv'], 'h'),
+         "roteamento: grupos A–D (ver aba 📞 → Grupos)"),
+        ("Esteira → trabalhado", int(_els['tv_lead']), int(_els['tv_trab']), _fj_t(_tmp['h_tv_trab'], 'h'),
+         "parados em LEAD = fila não tocada"),
+        ("Trabalhado → em negociação", int(_els['tv_trab']), int(_els['negociacao']), "—", ""),
+        ("Em negociação → GANHO", int(_els['negociacao']), int(_els['ganho']), "—",
+         f"PERDIDO no caminho: {format_br(int(_els['perdido']))}"),
+        ("Elegíveis → enviado à franquia", int(_els['criados']), int(_els['enviado_franquia']),
+         _fj_t(_tmp['h_criado_valid'], 'h'), "marcador: entrada no Validador de Distribuição"),
+        ("Enviado → venda na franquia", int(_els['enviado_franquia']), int(_els['venda_franquia']),
+         _fj_t(_tmp['d_criado_venda'], 'd'), "tempo mostrado = criação do lead → filiação"),
+    ]
+    _rows_html = []
+    for nome, ent, av, tempo, nota in _etapas:
+        taxa = f"{av / ent * 100:.1f}%" if ent else "—"
+        perda = format_br(ent - av) if ent >= av else "—"
+        _rows_html.append(
+            "<tr>"
+            f"<td style='padding:7px 10px;font-weight:600;color:#0f172a;'>{nome}"
+            f"<div style='font-size:10.5px;color:#94a3b8;font-weight:400;'>{nota}</div></td>"
+            f"<td style='padding:7px 10px;text-align:right;'>{format_br(ent)}</td>"
+            f"<td style='padding:7px 10px;text-align:right;font-weight:700;'>{format_br(av)}</td>"
+            f"<td style='padding:7px 10px;text-align:right;color:#166534;font-weight:700;'>{taxa}</td>"
+            f"<td style='padding:7px 10px;text-align:right;color:#b91c1c;'>{perda}</td>"
+            f"<td style='padding:7px 10px;text-align:right;color:#475569;'>{tempo}</td>"
+            "</tr>")
+    st.markdown(
+        "<div style='border:1px solid #e2e8f0;border-radius:12px;background:#fff;overflow-x:auto;margin-top:14px;'>"
+        "<table style='border-collapse:collapse;width:100%;font-size:12.5px;'>"
+        "<thead><tr style='color:#64748b;font-size:11px;text-transform:uppercase;letter-spacing:.04em;'>"
+        "<th style='padding:8px 10px;text-align:left;'>Etapa</th><th style='padding:8px 10px;text-align:right;'>Entrada</th>"
+        "<th style='padding:8px 10px;text-align:right;'>Avançou</th><th style='padding:8px 10px;text-align:right;'>Taxa</th>"
+        "<th style='padding:8px 10px;text-align:right;'>Ficou/perdeu</th><th style='padding:8px 10px;text-align:right;'>Tempo mediano</th>"
+        "</tr></thead><tbody>" + "".join(_rows_html) + "</tbody></table></div>", unsafe_allow_html=True)
+    st.caption("Tempo mediano = metade avança mais rápido, metade mais devagar (mediana exata, calculada no banco). "
+               "\"Ficou/perdeu\" mistura quem parou e quem ainda vai avançar — em coortes recentes, parte é só tempo.")
+
+    # ---- onde os leads entram: buckets do período ----
+    st.markdown("#### Onde os leads entram — e o que a definição exclui")
+    _bk = _cur.groupby('bucket', as_index=False)[_num].sum().sort_values('criados', ascending=True)
+    _bk['rotulo'] = _bk['bucket'].map(lambda b: _FJ_LBL.get(b, b))
+    _bk['status'] = _bk['bucket'].map(lambda b: 'Conta como elegível' if b in _fj_sel else 'Fora da definição')
+    _bk['pct'] = _bk['criados'] / max(int(_tot['criados']), 1) * 100
+    _figb = px.bar(_bk, x='criados', y='rotulo', orientation='h', color='status',
+                   color_discrete_map={'Conta como elegível': '#166534', 'Fora da definição': '#cbd5e1'},
+                   text=_bk.apply(lambda r: f"{_tv_fmt_k(r['criados'])} · {r['pct']:.0f}%", axis=1))
+    _figb.update_traces(textposition='outside', cliponaxis=False)
+    _figb.update_layout(height=max(300, 34 * len(_bk)), margin=dict(l=0, r=10, t=10, b=0),
+                        plot_bgcolor='white', paper_bgcolor='rgba(0,0,0,0)',
+                        xaxis=dict(title=None, showgrid=True, gridcolor='#f1f5f9'),
+                        yaxis=dict(title=None), legend=dict(title=None, orientation='h', y=1.08),
+                        font=dict(size=12))
+    st.plotly_chart(_figb, use_container_width=True)
+
+    # ---- evolução por coorte ----
+    st.markdown("#### Evolução por coorte")
+    _ev = _fjb[_fjb['bucket'].isin(_fj_sel)].groupby('mes', as_index=False)[_num].sum()
+    _ev['Vendas (franquia + GANHO TV)'] = _ev['venda_franquia'] + _ev['ganho']
+    _ev_m = _ev.melt(id_vars='mes',
+                     value_vars=['criados', 'tv_lead', 'enviado_franquia', 'Vendas (franquia + GANHO TV)'],
+                     var_name='serie', value_name='valor')
+    _ev_m['serie'] = _ev_m['serie'].map({'criados': 'Elegíveis criados', 'tv_lead': 'Chegaram ao Televendas',
+                                         'enviado_franquia': 'Enviados a franquias'}).fillna(_ev_m['serie'])
+    _fige = px.line(_ev_m, x='mes', y='valor', color='serie', markers=True,
+                    color_discrete_sequence=['#14532d', '#2e8a4f', '#8cc79e', '#b45309'])
+    _fige.update_layout(height=320, margin=dict(l=0, r=10, t=10, b=0), plot_bgcolor='white',
+                        paper_bgcolor='rgba(0,0,0,0)', xaxis=dict(title=None, tickformat='%m/%Y'),
+                        yaxis=dict(title=None, showgrid=True, gridcolor='#f1f5f9'),
+                        legend=dict(title=None, orientation='h', y=1.12), font=dict(size=12))
+    st.plotly_chart(_fige, use_container_width=True)
+
+    # ---- notas de leitura (para quem não vive dentro do HubSpot) ----
+    _tv_note(
+        "<b>Como ler esta aba.</b> <b>Contato</b> é a pessoa no CRM; <b>Negócio</b> é a oportunidade que o sistema "
+        "abre para ela. Cada pessoa entra na <b>coorte</b> do mês em que virou lead e carrega as datas do que "
+        "aconteceu depois: entrar na esteira do Televendas, ser enviada a uma franquia (o <b>Validador</b> é a "
+        "confirmação de que ela foi validada e enviada — definição do especialista de HubSpot), e a <b>venda real</b> "
+        "(filiação no NOMINAL, casada por CPF; 'porta a porta' + 'link do vendedor' contam como venda de franquia; "
+        "'app do vendedor' fica em contagem separada). O canal usado nas quebras é o <b>canal da criação</b> — o que "
+        "trouxe a pessoa — e não o último canal que a tocou.")
+    _tv_note(
+        "<b>Ressalvas que mudam número.</b> (1) Coortes até <b>abr/2026</b> têm as etapas de Negócio como "
+        "<b>piso</b> (o espelho de Negócios cobre bem desde 13/05); em <b>maio</b> a etapa 'trabalhado' está em "
+        "validação. (2) O pipeline novo <b>924101912</b> (carga em massa de 06/08, sem Contatos associados) fica "
+        "fora desta jornada por construção. (3) ~20% dos cadastros de um mês são <b>mesclados</b> depois — a "
+        "jornada resolve a pessoa por CPF (tabela alex_contato_resolucao). (4) 'Regional' e 'Ruptura' ainda não "
+        "têm definição oficial de elegibilidade — por isso a definição aqui é uma <b>seleção explícita</b>, e a "
+        "barra cinza mostra sempre o que ficou de fora.", bg="#fefce8", icon="⚠️")
