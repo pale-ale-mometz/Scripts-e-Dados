@@ -671,6 +671,15 @@ def load_campaign_costs():
             parts.append(part)
         except Exception:
             pass
+    # R26: Jampp (DSP de app; alex_jampp_campaigns, GAS jampp.gs). Custo em BRL (spend_brl = USD × câmbio do mês:
+    # fechamento Jampp > PTAX fim de mês > último fechamento); somado por campanha (a tabela é por grupo).
+    try:
+        part = cquery("SELECT `date`, `campaign_name`, SUM(COALESCE(`spend_brl`, 0)) AS `cost` FROM alex_jampp_campaigns "
+                      f"WHERE `date` >= '{start_history}' GROUP BY 1, 2")
+        part['plataforma'] = 'Jampp'
+        parts.append(part)
+    except Exception:
+        pass
     if not parts:
         return pd.DataFrame(columns=['date', 'campaign_name', 'cost', 'plataforma'])
     out = pd.concat(parts, ignore_index=True)
@@ -875,6 +884,13 @@ def load_platform_daily():
             parts.append(p)
         except Exception:
             pass
+    try:  # R26: Jampp (BRL via spend_brl; por campanha)
+        p = cquery("SELECT `date`, `campaign_name`, SUM(COALESCE(`spend_brl`, 0)) AS `cost`, SUM(`impressions`) AS `impressions`, "
+                   f"SUM(`clicks`) AS clicks FROM alex_jampp_campaigns WHERE `date` >= '{start_history}' GROUP BY 1, 2")
+        p['plataforma'] = 'Jampp'
+        parts.append(p)
+    except Exception:
+        pass
     if not parts:
         return pd.DataFrame(columns=['date', 'campaign_name', 'cost', 'impressions', 'clicks', 'plataforma'])
     d = pd.concat(parts, ignore_index=True)
@@ -1273,6 +1289,45 @@ def load_crm_cpa():
         return _load_crm_cpa_raw(), None
     except Exception as e:
         return pd.DataFrame(columns=['dia', 'gasto', 'vendas', 'leads', 'gasto_bd', 'gasto_zenvia', 'vendas_ga', 'vendas_bd']), f"{type(e).__name__}: {str(e)[:300]}"
+
+
+_FUNIL_COLS = ['dia', 'canal', 'gt7', 'enviadas', 'entregues', 'lidas', 'nao_disparadas', 'custo']
+
+
+@st.cache_data(ttl=43200)
+def _load_crm_funil_raw():
+    """Funil de entrega dos disparos (R28, 15/09): dia × canal × escopo a partir de alex_zenvia_template_status.
+    Cada mensagem aparece UMA vez, no status final — por isso o funil é cumulativo:
+      enviadas  = Enviada(2) + Entregue(3) + Lida(4) + Não Entregue(6)   (saíram da plataforma)
+      entregues = Entregue(3) + Lida(4)                                  (Lida implica entrega)
+      lidas     = Lida(4)                                                (só WhatsApp tem leitura)
+      nao_disparadas = Pendente(1) + Erro(5) + Descadastrados(8)         (não saíram; custo zero)
+    canal pelo NOME do template: 'SMS' no nome → SMS, o resto → WhatsApp. No sender_name o SMS só aparece em rótulos
+    compostos ('SMS | CDT Relacionamento - 9713' — sender_id compartilhado), e todo template SMS tem zero Lida,
+    o que valida a regra. gt7 = 1 quando o nome contém 'GT7' (Instância Aquisição — mesmo recorte do CPA acima)."""
+    d = cquery("""SELECT report_date AS dia,
+                         CASE WHEN template_name LIKE '%%SMS%%' THEN 'SMS' ELSE 'WhatsApp' END AS canal,
+                         CASE WHEN UPPER(template_name) LIKE '%%GT7%%' THEN 1 ELSE 0 END AS gt7,
+                         SUM(CASE WHEN status_code IN (2, 3, 4, 6) THEN total_messages ELSE 0 END) AS enviadas,
+                         SUM(CASE WHEN status_code IN (3, 4) THEN total_messages ELSE 0 END) AS entregues,
+                         SUM(CASE WHEN status_code = 4 THEN total_messages ELSE 0 END) AS lidas,
+                         SUM(CASE WHEN status_code IN (1, 5, 8) THEN total_messages ELSE 0 END) AS nao_disparadas,
+                         SUM(total_cost) AS custo
+                  FROM alex_zenvia_template_status
+                  GROUP BY 1, 2, 3""", ttl=0)
+    for c in ['enviadas', 'entregues', 'lidas', 'nao_disparadas', 'custo']:
+        d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0).astype(float)
+    d['gt7'] = pd.to_numeric(d['gt7'], errors='coerce').fillna(0).astype(int)
+    d['canal'] = d['canal'].astype(str)
+    d['dia'] = pd.to_datetime(d['dia'])
+    return d.sort_values('dia')
+
+
+def load_crm_funil():
+    try:
+        return _load_crm_funil_raw(), None
+    except Exception as e:
+        return pd.DataFrame(columns=_FUNIL_COLS), f"{type(e).__name__}: {str(e)[:300]}"
 
 
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab10, tab11 = st.tabs(["📈 Desempenho de Vendas", "🗺️ Mapa Regional (UF)", "💰 Investimento", "📣 Campanhas", "🌐 Site", "📞 Televendas", "📱 App", "📨 CRM", "🧲 Aquisição", "🧭 Funil Ponta a Ponta"])
@@ -2238,7 +2293,7 @@ with tab3:
     canais_invest = col_filt1.multiselect("Canal:", options=opcoes_canais_inv, default=_default_canais_inv, key='t3_can_inv')
     categorias_invest = col_filt2.multiselect("Categoria:", ["Branding", "Leads", "Venda"], default=["Branding", "Leads", "Venda"], key='t3_cat_inv')
     
-    todas_plataformas = ["Google", "Meta", "TikTok", "Kwai", "Adsplay", "Actionpay", "CRM"]
+    todas_plataformas = ["Google", "Meta", "TikTok", "Kwai", "Jampp", "Adsplay", "Actionpay", "CRM"]  # R26: Jampp (App; USD→BRL)
     plataformas_invest = col_filt3.multiselect("Plataforma:", todas_plataformas, default=todas_plataformas, key='t3_plat_inv')
     if 'CRM' in opcoes_canais_inv:
         _crm_on = ('CRM' in canais_invest) and ('CRM' in plataformas_invest)
@@ -3608,21 +3663,31 @@ with tab6:
 
     _TV_RAMP = ['#1e6b3c', '#2e8a4f', '#57a86f', '#8cc79e', '#c8e3cf', '#e5f0e8']
 
-    def _tv_funil(title, stages, subtitle=""):
-        """stages: lista de (icone, rotulo, valor, nota). Barra proporcional ao topo,
-        conversão sequencial (vs etapa anterior) e acumulada (vs topo)."""
-        vals = [v for _i, _l, v, _n in stages if v is not None]
+    def _tv_funil(title, stages, subtitle="", chips=None):
+        """stages: lista de (icone, rotulo, valor, nota[, base]). Barra proporcional ao topo,
+        chips (R31, opcional): lista com um item por etapa — lista de chaves de _TV_CHIPS (objeto contado e régua),
+        renderizadas ao lado do rótulo; None/[] = sem chip.
+        conversão sequencial (vs etapa anterior) e acumulada (vs topo).
+        base (R30, opcional): índice da etapa que serve de denominador da % sequencial — use para FATIAS de uma
+        etapa (subconjuntos irmãos, ex.: 'dos cadastros: freemium'). Uma fatia não vira o `prev` da etapa seguinte,
+        então a próxima etapa em sequência continua sendo lida sobre a etapa-base."""
+        stages = [tuple(s) + (None,) * (5 - len(s)) for s in stages]
+        chips = list(chips or []) + [None] * (len(stages) - len(chips or []))
+        vidx = [s[2] for s in stages]
+        vals = [v for v in vidx if v is not None]
         top = vals[0] if vals else 0
         rows = [(f"<div style='display:flex;gap:14px;align-items:baseline;margin-bottom:8px;'>"
                  f"<div style='font-size:15px;font-weight:800;color:#0f172a;'>{title}</div>"
                  f"<div style='font-size:11px;color:#64748b;'>{subtitle}</div>"
                  f"<div style='margin-left:auto;font-size:10.5px;font-weight:700;color:#166534;'>seq. | do topo</div></div>")]
         prev = None
-        for i, (ic, lbl, v, note) in enumerate(stages):
+        for i, (ic, lbl, v, note, base) in enumerate(stages):
+            den = (vidx[base] if base is not None and 0 <= base < len(vidx) else prev)
+            _ch = "".join(_tv_chip(k) for k in (chips[i] or [])) if i < len(chips) else ""
             label = (f"<div style='flex:0 0 250px;display:flex;align-items:center;gap:8px;'>"
                      f"<div style='width:30px;height:30px;border-radius:8px;background:#14532d;display:flex;"
                      f"align-items:center;justify-content:center;font-size:14px;flex:0 0 30px;'>{ic}</div>"
-                     f"<div><div style='font-size:12.5px;font-weight:700;color:#0f172a;'>{lbl}</div>"
+                     f"<div><div style='font-size:12.5px;font-weight:700;color:#0f172a;'>{lbl}{_ch}</div>"
                      f"<div style='font-size:10.5px;color:#64748b;'>{note}</div></div></div>")
             if v is None:
                 bar = ("<div style='flex:1;display:flex;justify-content:center;'><div style='width:60%;border:2px dashed #cbd5e1;"
@@ -3637,10 +3702,11 @@ with tab6:
                        f"<div style='width:{wid:.1f}%;background:{bg};border-radius:8px;padding:6px 12px;min-width:120px;"
                        f"text-align:center;font-size:15px;font-weight:800;color:{fg};'>{format_br(v)}</div></div>")
                 conv = (f"<div style='flex:0 0 58px;text-align:right;font-size:12.5px;font-weight:700;color:#0f172a;'>"
-                        f"{_tv_pct(v, prev) if prev else '—'}</div>"
+                        f"{_tv_pct(v, den) if den else '—'}</div>"
                         f"<div style='flex:0 0 58px;text-align:right;font-size:12.5px;color:#64748b;'>"
                         f"{_tv_pct(v, top) if i > 0 else '100%'}</div>")
-                prev = v
+                if base is None:
+                    prev = v
             rows.append(f"<div style='display:flex;align-items:center;gap:10px;padding:5px 0;border-top:1px solid #f1f5f9;'>"
                         f"{label}{bar}{conv}</div>")
         st.markdown("<div style='border:1px solid #e2e8f0;border-radius:12px;padding:14px 16px;background:#fff;'>"
@@ -5902,6 +5968,114 @@ with tab8:
             "de custo é recarregada da planilha Ad Sources & Events pela pipeline <code>gt7 run zenvia_sheet_load</code> "
             "(o import automático quebrou em ago/26 — rodar após atualizar a planilha).", bg="#fff7ed", icon="⚠️")
 
+        # ---- R28 (15/09): funil de entrega — enviadas → entregues → lidas, por canal (WhatsApp/SMS) e escopo ----
+        st.markdown("---")
+        _tv_titulo("Funil de entrega dos disparos — enviadas → entregues → lidas",
+                   f"mesmo mês, comparação e recorte de dias 1–{_dlim} escolhidos acima · canal pelo nome do template "
+                   "('SMS' no nome = SMS; o resto = WhatsApp)", "A")
+        _f8, _f8_err = load_crm_funil()
+        if _f8_err:
+            st.error(f"⚠️ Falha ao ler o funil de disparos: `{_f8_err}`")
+        elif _f8.empty:
+            st.warning("⚠️ Sem dados em alex_zenvia_template_status para o funil.")
+        else:
+            _ESC_GT7 = "Instância Aquisição (templates GT7)"
+            _ESC_ALL = "Todos os templates (empresa inteira)"
+            _fc1, _fc2 = st.columns([1, 1.5])
+            with _fc1:
+                _can8 = st.radio("Canal:", ["WhatsApp", "SMS", "Total"], index=0, horizontal=True, key='t8_fun_canal',
+                                 help="WhatsApp e SMS são separados pelo nome do template. O SMS não tem confirmação de "
+                                      "leitura, então o funil dele termina em 'entregues'; em 'Total' a taxa de leitura "
+                                      "é calculada só sobre as entregues do WhatsApp.")
+            with _fc2:
+                _esc8 = st.radio("Escopo:", [_ESC_GT7, _ESC_ALL], index=0, horizontal=True, key='t8_fun_esc',
+                                 help="GT7 = templates com 'GT7' no nome (Instância Aquisição, mesmo recorte do custo/CPA "
+                                      "acima). Todos = mensageria da empresa inteira (relacionamento, engajamento, outras "
+                                      "unidades). No recorte GT7 só houve SMS em jan–abr/2026.")
+            _fb = _f8 if _esc8 == _ESC_ALL else _f8[_f8['gt7'] == 1]
+            if _can8 != "Total":
+                _fb = _fb[_fb['canal'] == _can8]
+            _FMET = ['enviadas', 'entregues', 'lidas', 'nao_disparadas', 'custo']
+
+            def _fjan(m):
+                return _fb[(_fb['dia'] >= m) & (_fb['dia'] < m + pd.DateOffset(months=1)) & (_fb['dia'].dt.day <= _dlim)]
+
+            def _fsum(f):
+                s = {c: float(f[c].sum()) for c in _FMET}
+                s['ent_wpp'] = float(f[f['canal'] == 'WhatsApp']['entregues'].sum())   # base da leitura
+                return s
+
+            _sa, _sp = _fsum(_fjan(_m_atu)), _fsum(_fjan(_m_ant))
+            _sem_leitura = (_can8 == "SMS")
+            k1, k2, k3, k4 = st.columns(4)
+            _tv_kpi(k1, "📤", f"Enviadas — {_lbl_a} 1–{_dlim}", f"{format_br(_sa['enviadas'])} {_tv_delta(_sa['enviadas'], _sp['enviadas'])}",
+                    f"{_lbl_p} 1–{_dlim}: {format_br(_sp['enviadas'])} · + {format_br(_sa['nao_disparadas'])} não disparadas "
+                    "(erro / descadastro / pendente)")
+            _tv_kpi(k2, "📬", f"Taxa de entrega — {_lbl_a}", f"{_tv_pct(_sa['entregues'], _sa['enviadas'])}",
+                    f"{_lbl_p}: {_tv_pct(_sp['entregues'], _sp['enviadas'])} · {format_br(_sa['entregues'])} entregues "
+                    "(Entregue + Lida)", color="#2e8a4f")
+            if _sem_leitura:
+                _tv_kpi(k3, "👀", f"Taxa de leitura — {_lbl_a}", "—", "SMS não tem confirmação de leitura", color="#94a3b8")
+            else:
+                _tv_kpi(k3, "👀", f"Taxa de leitura — {_lbl_a}", f"{_tv_pct(_sa['lidas'], _sa['ent_wpp'])}",
+                        f"{_lbl_p}: {_tv_pct(_sp['lidas'], _sp['ent_wpp'])} · {format_br(_sa['lidas'])} lidas ÷ entregues"
+                        + (" do WhatsApp" if _can8 == "Total" else ""), color="#0f172a")
+            _tv_kpi(k4, "💸", f"Custo Zenvia — {_lbl_a} 1–{_dlim}", f"{format_money(_sa['custo'])} {_tv_delta(_sa['custo'], _sp['custo'])}",
+                    f"{_lbl_p}: {format_money(_sp['custo'])} · "
+                    + (f"{format_money(_sa['custo'] / _sa['entregues'])} por entregue" if _sa['entregues'] else "—")
+                    + " · custo cobrado (total_cost), não a régua BD_CRM", color="#b45309")
+
+            def _fstages(s):
+                return [("📤", "Enviadas", s['enviadas'] or None, "Enviada + Entregue + Lida + Não Entregue (saíram da plataforma)"),
+                        ("📬", "Entregues", s['entregues'] or None, "Entregue + Lida (Lida implica entrega)"),
+                        ("👀", "Lidas", None if _sem_leitura else (s['lidas'] or None),
+                         "SMS não tem confirmação de leitura" if _sem_leitura else
+                         ("Lida · seq. sobre TODAS as entregues (inclui SMS); a taxa correta está no KPI" if _can8 == "Total" else "Lida"))]
+
+            _fa1, _fa2 = st.columns(2)
+            with _fa1:
+                _tv_funil(f"{_can8} · {_lbl_a} 1–{_dlim}", _fstages(_sa), subtitle=_esc8)
+            with _fa2:
+                _tv_funil(f"{_can8} · {_lbl_p} 1–{_dlim}", _fstages(_sp), subtitle="mês de comparação")
+
+            # ---- série mensal (meses completos): taxas e volume por canal ----
+            _fm0 = (_m_atu - pd.DateOffset(months=11)).to_period('M').to_timestamp()
+            _fmm = _fb[(_fb['dia'] >= _fm0) & (_fb['dia'] < _m_atu + pd.DateOffset(months=1))].copy()
+            _fmm['mes'] = _fmm['dia'].dt.to_period('M').dt.to_timestamp()
+            if not _fmm.empty:
+                _fg = _fmm.groupby('mes')[['enviadas', 'entregues', 'lidas']].sum()
+                _fgw = _fmm[_fmm['canal'] == 'WhatsApp'].groupby('mes')['entregues'].sum().reindex(_fg.index).fillna(0)
+                _rows_f = []
+                for m, r in _fg.iterrows():
+                    _rows_f.append({'mes': m, 'serie': 'Taxa de entrega (% das enviadas)',
+                                    'valor': (r['entregues'] / r['enviadas'] * 100) if r['enviadas'] else None})
+                    if not _sem_leitura:
+                        _rows_f.append({'mes': m, 'serie': 'Taxa de leitura (% das entregues WhatsApp)',
+                                        'valor': (r['lidas'] / _fgw[m] * 100) if _fgw[m] else None})
+                _dfr = pd.DataFrame(_rows_f).dropna(subset=['valor'])
+                _fl1, _fl2 = st.columns(2)
+                with _fl1:
+                    _tv_linhas_mensal(_dfr, "Taxas mês a mês", pct=True, rotulos=True,
+                                      subtitle=f"meses completos, {_can8} · {_esc8}")
+                with _fl2:
+                    _dfv = _fmm.groupby(['mes', 'canal'], as_index=False)['enviadas'].sum().rename(columns={'canal': 'serie', 'enviadas': 'valor'})
+                    _tv_chart_mensal(_dfv, "Enviadas mês a mês", stacked=True, rotulos=True,
+                                     subtitle="volume que saiu da plataforma, por canal" if _can8 == "Total" else f"volume que saiu da plataforma · {_can8}")
+            _tv_fonte("alex_zenvia_template_status (status final × template × dia; recarga: gt7 run zenvia_sheet_load) · "
+                      "canal pelo nome do template · escopo GT7 = nome contém 'GT7'")
+            _tv_note(
+                "<b>Como ler.</b> Cada mensagem entra uma vez, no seu <b>status final</b> — por isso o funil é cumulativo: "
+                "<b>enviadas</b> = Enviada + Entregue + Lida + Não Entregue (tudo que saiu da plataforma); <b>entregues</b> = "
+                "Entregue + Lida; <b>lidas</b> = Lida. Erro, Descadastrados e Pendente não saíram (custo zero) e ficam fora "
+                "do funil — aparecem como 'não disparadas' no 1º cartão. <b>SMS</b> não tem confirmação de leitura: o funil "
+                "dele termina em entregues e, na visão Total, a taxa de leitura usa só as entregues do WhatsApp. "
+                "<b>Canal</b> é identificado pelo nome do template (todo template SMS tem zero Lida, o que valida a regra); "
+                "no <code>sender_name</code> o SMS só aparece em rótulos compostos ('SMS | CDT Relacionamento - 9713'), "
+                "porque divide o sender_id com números de WhatsApp. <b>Custo</b> aqui é o cobrado pela Zenvia "
+                "(<code>total_cost</code>: ~R$ 0,32 por WhatsApp, ~R$ 0,06 por SMS) — diferente da régua BD_CRM do topo da "
+                "aba, que precifica tudo a R$ 0,32. No recorte GT7 só houve SMS em jan–abr/2026; o SMS corrente "
+                "(QualificadoCEP_*_SMS) não tem 'GT7' no nome e só aparece em 'Todos os templates'.", bg="#f8fafc", icon="ℹ️")
+
 # =====================================================================
 # TAB 9: SITE — comparação entre períodos (investimento · leads · vendas · CPA · CPL) e mídia × mkt direto
 # ---------------------------------------------------------------------
@@ -6182,6 +6356,175 @@ _LU_DEFS = {
 }
 
 
+_TV_CHIPS = {
+    'contato':   ('🧑 Contato', '#dbeafe', '#1e3a8a', 'a pessoa no CRM (HubSpot)'),
+    'negocio':   ('🤝 Negócio', '#fef3c7', '#92400e', 'a oportunidade aberta num pipeline (HubSpot)'),
+    'ctn':       ('🪪 CPF × CTN', '#dcfce7', '#14532d', 'filiação no NOMINAL casada por CPF (venda real)'),
+    'tel':       ('☎️ telefone', '#e2e8f0', '#334155', 'registro do discador (Escallo)'),
+    'tel_ctn':   ('☎️ tel-8 × CTN', '#dcfce7', '#14532d', 'filiação no NOMINAL casada pelo telefone'),
+    'ga':        ('👣 GA4', '#e2e8f0', '#334155', 'usuário do site (Google Analytics)'),
+    'app':       ('📱 app', '#e2e8f0', '#334155', 'usuário / cadastro no lake do app'),
+    'foto':      ('📷 no mês', '#f1f5f9', '#475569', 'evento dentro do mês, de qualquer coorte'),
+    'foto_lead': ('📷 desde o lead', '#f1f5f9', '#475569', 'evento em qualquer data a partir do lead'),
+    'filme':     ('🎬 coorte', '#ede9fe', '#4c1d95', 'quem virou lead no mês, seguido até hoje'),
+}
+
+
+def _tv_chip(key):
+    """Um chip HTML (R31). Chave desconhecida → nada."""
+    c = _TV_CHIPS.get(key)
+    if not c:
+        return ""
+    brd = ";border:1px solid #cbd5e1" if key.startswith('foto') else (";border:1px solid #c4b5fd" if key == 'filme' else "")
+    return (f"<span title='{c[3]}' style='display:inline-block;font-size:9.5px;font-weight:700;padding:1px 7px;border-radius:9px;"
+            f"margin-left:4px;vertical-align:middle;white-space:nowrap;background:{c[1]};color:{c[2]}{brd};'>{c[0]}</span>")
+
+
+def _tv_chips_legenda(keys):
+    """Legenda de uma linha para os chips usados na aba (R31)."""
+    parts = [f"{_tv_chip(k)} <span style='color:#475569;'>{_TV_CHIPS[k][3]}</span>" for k in keys if k in _TV_CHIPS]
+    st.markdown("<div style='font-size:11px;color:#64748b;margin:2px 0 10px 0;line-height:2;'><b>Legenda dos funis</b> — "
+                "o chip diz que OBJETO cada etapa conta e em que RÉGUA: " + " &nbsp;·&nbsp; ".join(parts) + "</div>",
+                unsafe_allow_html=True)
+
+
+def _tv_raias(modo, nums, title, subtitle=""):
+    """Diagrama em raias (R31, opção B): onde cada número nasce — raias Contato / Negócio / CTN, tempo da esquerda para a
+    direita — e as duas lentes: o corte vertical do mês (📷 fotografia, aba 🧲) e a linha horizontal da coorte (🎬 filme,
+    aba 🧭). modo = 'foto' | 'filme' — a lente ativa fica em destaque, a outra esmaecida. nums = valores da janela."""
+    n = lambda k: format_br(nums[k]) if nums.get(k) is not None else "—"
+    foto = (modo == 'foto')
+    band_fill, band_stroke = ("#e2e8f0", "#94a3b8") if foto else ("#f8fafc", "#e2e8f0")
+    arr_col, arr_op = ("#7c3aed", "1") if not foto else ("#c4b5fd", "0.7")
+    band_txt, arr_txt = ("#334155", "#4c1d95") if foto else ("#94a3b8", "#4c1d95")
+    if not foto:
+        band_txt = "#94a3b8"
+    else:
+        arr_txt = "#a78bfa"
+    mes_lbl = subtitle or "mês"
+    hdr = (f"<div style='display:flex;gap:14px;align-items:baseline;margin-bottom:4px;'>"
+           f"<div style='font-size:15px;font-weight:800;color:#0f172a;'>{title}</div>"
+           f"<div style='font-size:11px;color:#64748b;'>{subtitle}</div>"
+           f"<div style='margin-left:auto;font-size:10.5px;font-weight:700;color:#166534;'>diagrama em raias · {'📷 fotografia' if foto else '🎬 filme'}</div></div>")
+    svg = [f"<svg viewBox='0 0 1040 430' width='100%' style='max-width:1100px;display:block;' font-family=\"Source Sans 3, Segoe UI, Arial, sans-serif\">"
+           "<defs><marker id='tvra' markerWidth='10' markerHeight='10' refX='8' refY='5' orient='auto'><path d='M0 0 L10 5 L0 10 z' fill='" + arr_col + "'/></marker></defs>",
+           "<line x1='150' y1='40' x2='1010' y2='40' stroke='#cbd5e1' stroke-width='1.5'/>",
+           "<text x='290' y='30' font-size='12' fill='#94a3b8' text-anchor='middle'>antes</text>",
+           f"<text x='565' y='30' font-size='12' fill='#0f172a' text-anchor='middle' font-weight='700'>{mes_lbl}</text>",
+           f"<text x='855' y='30' font-size='12' fill='#94a3b8' text-anchor='middle'>{'depois' if foto else 'depois (seguido até hoje)'}</text>",
+           "<line x1='430' y1='34' x2='430' y2='46' stroke='#94a3b8'/><line x1='700' y1='34' x2='700' y2='46' stroke='#94a3b8'/>",
+           f"<rect x='430' y='52' width='270' height='300' fill='{band_fill}' stroke='{band_stroke}' stroke-dasharray='4 3'/>",
+           # raias
+           "<rect x='10' y='62' width='130' height='60' rx='8' fill='#dbeafe'/><text x='75' y='88' font-size='12.5' font-weight='700' fill='#1e3a8a' text-anchor='middle'>🧑 Contato</text><text x='75' y='106' font-size='10' fill='#1e3a8a' text-anchor='middle'>a pessoa no CRM</text>",
+           "<rect x='10' y='152' width='130' height='60' rx='8' fill='#fef3c7'/><text x='75' y='178' font-size='12.5' font-weight='700' fill='#92400e' text-anchor='middle'>🤝 Negócio</text><text x='75' y='196' font-size='10' fill='#92400e' text-anchor='middle'>oportunidade no pipeline</text>",
+           "<rect x='10' y='242' width='130' height='60' rx='8' fill='#dcfce7'/><text x='75' y='268' font-size='12.5' font-weight='700' fill='#14532d' text-anchor='middle'>🪪 CTN · NOMINAL</text><text x='75' y='286' font-size='10' fill='#14532d' text-anchor='middle'>a filiação (venda real)</text>",
+           "<line x1='150' y1='92' x2='1010' y2='92' stroke='#e2e8f0'/><line x1='150' y1='182' x2='1010' y2='182' stroke='#e2e8f0'/><line x1='150' y1='272' x2='1010' y2='272' stroke='#e2e8f0'/>"]
+
+    def mk(x, y, col, lbl, val, note, above=True, anchor='middle', r=9):
+        return (f"<circle cx='{x}' cy='{y}' r='{r}' fill='{col}'/>"
+                f"<text x='{x}' y='{y - 18}' font-size='11' fill='{col}' text-anchor='{anchor}' font-weight='700'>{lbl}</text>"
+                f"<text x='{x}' y='{y + 25}' font-size='13' fill='#0f172a' font-weight='800' text-anchor='{anchor}'>{val}</text>"
+                f"<text x='{x}' y='{y + 38}' font-size='9.5' fill='#64748b' text-anchor='{anchor}'>{note}</text>")
+
+    if foto:
+        svg += [
+            mk(470, 92, '#1e3a8a', 'Leads Únicos', n('lu'), 'Contatos criados no mês'),
+            "<path d='M470 101 L470 263' stroke='#94a3b8' stroke-width='1.5' stroke-dasharray='3 3'/>",
+            "<path d='M470 140 L520 140 L520 173' stroke='#94a3b8' stroke-width='1.5' stroke-dasharray='3 3' fill='none'/>",
+            mk(520, 182, '#b45309', 'Encaminhados', n('eng'), 'Negócios criados no pipeline'),
+            "<line x1='529' y1='182' x2='671' y2='182' stroke='#b45309' stroke-width='2'/>",
+            mk(680, 182, '#b45309', 'Transbordados', n('fra'), 'entrou em Distribuição/Validador'),
+            mk(470, 272, '#166534', 'Vendas nas franquias', n('vf'), 'CPF do lead × NOMINAL, qualquer data ≥ lead'),
+            "<line x1='700' y1='272' x2='985' y2='272' stroke='#166534' stroke-width='2' stroke-dasharray='6 4' opacity='0.5'/>",
+            "<text x='985' y='262' font-size='9.5' fill='#166534' text-anchor='end' opacity='0.8'>a venda pode cair depois do mês → entra aqui</text>",
+        ]
+    else:
+        svg += [
+            mk(470, 92, '#1e3a8a', 'Leads criados', n('criados'), 'Contatos novos na coorte'),
+            mk(600, 92, '#1e3a8a', 'Elegíveis', n('eleg'), 'definição de buckets', above=False),
+            "<path d='M470 101 L470 182' stroke='#94a3b8' stroke-width='1.5' stroke-dasharray='3 3'/>",
+            mk(470, 182, '#b45309', 'Esteira Televendas', n('tv'), 'entraram em LEAD', above=False),
+            mk(600, 182, '#b45309', 'No pipeline Distribuição', n('pipe'), 'Distribuição / Sem CEP / Validador'),
+            "<line x1='609' y1='182' x2='751' y2='182' stroke='#b45309' stroke-width='2'/>",
+            mk(760, 182, '#b45309', 'Enviados à franquia', n('valid'), 'Validador — em qualquer data'),
+            "<path d='M760 191 L760 230 L880 230 L880 263' stroke='#94a3b8' stroke-width='1.5' stroke-dasharray='3 3' fill='none'/>",
+            mk(880, 272, '#166534', 'Venda na franquia', n('venda'), 'CPF × NOMINAL, porta a porta + link'),
+        ]
+    # lentes
+    svg += [
+        f"<path d='M455 322 L990 322' stroke='{arr_col}' stroke-width='2.5' opacity='{arr_op}' marker-end='url(#tvra)'/>",
+        f"<text x='460' y='340' font-size='12' fill='{arr_txt}' font-weight='700'>🎬 FILME (aba 🧭): quem virou lead no mês, seguido até hoje — {'lente desta aba' if not foto else 'a outra lente'}</text>",
+        f"<text x='565' y='372' font-size='12' fill='{band_txt}' text-anchor='middle' font-weight='700'>📷 FOTOGRAFIA (aba 🧲): tudo que aconteceu dentro do mês, de quem quer que seja — {'lente desta aba' if foto else 'a outra lente'}</text>",
+        "<text x='565' y='388' font-size='10' fill='#94a3b8' text-anchor='middle'>é a régua do Relatório Mensal: fecha com o mês e não muda depois</text>",
+        # chamada
+        "<rect x='745' y='58' width='262' height='84' rx='8' fill='#fffbeb' stroke='#fcd34d'/>",
+        "<text x='757' y='77' font-size='11' fill='#92400e' font-weight='700'>Uma venda em outubro de um lead de setembro:</text>",
+        "<text x='757' y='95' font-size='10.5' fill='#78350f'>📷 fotografia de setembro: só na linha Vendas (≥ lead)</text>",
+        "<text x='757' y='111' font-size='10.5' fill='#78350f'>📷 fotografia de outubro: NÃO (o lead não é de outubro)</text>",
+        "<text x='757' y='127' font-size='10.5' fill='#78350f'>🎬 filme da coorte de setembro: SIM, sempre</text>",
+        "</svg>",
+    ]
+    cap = ("Cada linha do RMA nasce numa raia: Leads Únicos na de Contato (data de criação), Encaminhados e Transbordados na de Negócio "
+           "(criação / entrada em Distribuição–Validador), Vendas na do CTN (filiação casada por CPF). A fotografia é o corte vertical (o mês); "
+           "o filme é a linha horizontal de uma coorte. Os números são os da janela selecionada — os mesmos do funil."
+           if foto else
+           "Cada etapa da rota nasce numa raia: Leads criados e Elegíveis na de Contato (canal na criação), esteira Televendas e pipeline "
+           "Distribuição/Validador na de Negócio, venda na do CTN (filiação casada por CPF). A coorte é seguida até a última carga — por isso "
+           "os marcadores avançam para a direita do mês. Os números são os da coorte selecionada — os mesmos dos funis.")
+    st.markdown("<div style='border:1px solid #e2e8f0;border-radius:12px;padding:12px 16px 8px 16px;background:#fff;'>" + hdr + "".join(svg)
+                + f"<div style='font-size:10.5px;color:#64748b;margin-top:4px;'>{cap}</div></div>", unsafe_allow_html=True)
+
+
+def _tv_foto_filme_exemplo(key):
+    """R29: exemplo didático fotografia (🧲, régua do relatório mensal) × filme (🧭, coorte seguida até hoje).
+    Números inventados e pequenos de propósito — o ponto é a mecânica, não a escala. `key` só diferencia o
+    expander entre as abas."""
+    with st.expander("📖 Fotografia × filme — um exemplo com 18 leads", expanded=False):
+        st.markdown(
+            "Imagine **10 pessoas que viraram Lead em agosto**. Ainda em agosto, 6 delas foram enviadas a uma franquia e 2 "
+            "compraram. Em **setembro**, mais 3 das 10 foram enviadas e mais 2 compraram. Em setembro também entraram "
+            "**8 Leads novos**: 5 foram enviados e 1 comprou dentro do mês.\n\n"
+            "A mesma história contada pelas duas réguas:")
+        _th = "padding:6px 10px;text-align:right;color:#64748b;font-size:11px;text-transform:uppercase;letter-spacing:.04em;"
+        _td = "padding:6px 10px;text-align:right;"
+        _tl = "padding:6px 10px;text-align:left;font-weight:600;color:#0f172a;"
+        st.markdown(
+            "<div style='border:1px solid #e2e8f0;border-radius:12px;background:#fff;overflow-x:auto;'>"
+            "<table style='border-collapse:collapse;width:100%;font-size:12.5px;'>"
+            f"<thead><tr><th style='{_th}text-align:left;'>Régua</th><th style='{_th}'>Leads</th>"
+            f"<th style='{_th}'>Enviados à franquia</th><th style='{_th}'>Taxa</th><th style='{_th}'>Vendas</th><th style='{_th}'>Taxa</th></tr></thead>"
+            "<tbody>"
+            f"<tr style='border-top:1px solid #f1f5f9;'><td style='{_tl}'>📷 Fotografia de <b>agosto</b> (🧲)"
+            "<div style='font-size:10.5px;color:#94a3b8;font-weight:400;'>o que aconteceu em agosto, de quem quer que seja</div></td>"
+            f"<td style='{_td}'>10</td><td style='{_td}'>6</td><td style='{_td}color:#166534;font-weight:700;'>60%</td>"
+            f"<td style='{_td}'>2</td><td style='{_td}color:#166534;font-weight:700;'>20%</td></tr>"
+            f"<tr style='border-top:1px solid #f1f5f9;'><td style='{_tl}'>📷 Fotografia de <b>setembro</b> (🧲)"
+            "<div style='font-size:10.5px;color:#94a3b8;font-weight:400;'>enviados = 3 da coorte de agosto + 5 da de setembro; venda = só leads de setembro que compraram em setembro</div></td>"
+            f"<td style='{_td}'>8</td><td style='{_td}'>8</td><td style='{_td}color:#b45309;font-weight:700;'>100%</td>"
+            f"<td style='{_td}'>1</td><td style='{_td}color:#166534;font-weight:700;'>12,5%</td></tr>"
+            f"<tr style='border-top:1px solid #f1f5f9;'><td style='{_tl}'>🎬 Filme da coorte de <b>agosto</b> (🧭), visto em setembro"
+            "<div style='font-size:10.5px;color:#94a3b8;font-weight:400;'>as 10 pessoas de agosto seguidas até hoje, em qualquer data</div></td>"
+            f"<td style='{_td}'>10</td><td style='{_td}'>9</td><td style='{_td}color:#166534;font-weight:700;'>90%</td>"
+            f"<td style='{_td}'>4</td><td style='{_td}color:#166534;font-weight:700;'>40%</td></tr>"
+            f"<tr style='border-top:1px solid #f1f5f9;'><td style='{_tl}'>🎬 Filme da coorte de <b>setembro</b> (🧭), visto em setembro"
+            "<div style='font-size:10.5px;color:#94a3b8;font-weight:400;'>ainda maturando — vai crescer nos próximos meses</div></td>"
+            f"<td style='{_td}'>8</td><td style='{_td}'>5</td><td style='{_td}color:#166534;font-weight:700;'>62,5%</td>"
+            f"<td style='{_td}'>1</td><td style='{_td}color:#166534;font-weight:700;'>12,5%</td></tr>"
+            "</tbody></table></div>", unsafe_allow_html=True)
+        st.markdown(
+            "**O que o exemplo mostra.** (1) Na **fotografia**, o numerador mistura coortes: os 8 enviados de setembro incluem 3 "
+            "pessoas que viraram Lead em agosto — por isso a taxa de transbordo pode passar de 100% (e, no dashboard real, de 50%: "
+            "os Negócios contados vêm de qualquer origem, inclusive dos promotores, que a regra de Leads Únicos exclui). "
+            "(2) No **filme**, a coorte de agosto \"cresce\" com o tempo: 6 → 9 enviados e 2 → 4 vendas conforme os meses passam; "
+            "coortes recentes sempre parecem piores porque ainda não maturaram. (3) A fotografia de agosto **não muda** depois de "
+            "fechado o mês (é a régua do Relatório Mensal); o filme de agosto muda a cada recarga. (4) As 2 vendas de setembro de "
+            "leads de agosto **não aparecem em nenhuma fotografia** com a régua 'venda no mês do lead' — só no filme (ou na linha "
+            "*Vendas nas franquias* da Apropriação, que aceita qualquer data ≥ lead).\n\n"
+            "**Regra de bolso.** Fotografia (🧲) responde *quanto a operação fez no mês* e bate com o Relatório Mensal; filme (🧭) "
+            "responde *o que aconteceu com quem entrou no mês* — taxas de conversão, perdas por etapa e tempos. Os dois estão "
+            "certos e nunca vão bater.")
+
+
 @st.cache_data(ttl=43200)
 def load_lu_buckets():
     d = cquery("SELECT mes, bucket, COUNT(*) criados FROM alex_funil_journey GROUP BY 1,2")
@@ -6197,6 +6540,7 @@ with tab10:
                "(GA4, CTN, Escallo, HubSpot). Para seguir o CAMINHO de cada Lead — esteira de televendas, "
                "transbordo para engajamento, rota de franquias — use a aba 🧭 Funil Ponta a Ponta: lá o grão é a "
                "coorte do mês de criação do Lead, por isso os números não batem 1:1 com os daqui.")
+    _tv_chips_legenda(['contato', 'negocio', 'ctn', 'tel', 'tel_ctn', 'ga', 'app', 'foto', 'foto_lead'])
     _aq10, _aq10_err = load_aq()
     if _aq10_err:
         st.error(f"⚠️ Falha ao ler `alex_aq_dash_mes`: `{_aq10_err}`")
@@ -6243,16 +6587,27 @@ with tab10:
 
         # ---- frescor: cada seção do agregado tem a própria data de cálculo; o mês corrente é parcial até a última carga ----
         _fr10 = _aq10[_aq10['mes'].isin(list(_sel10))].groupby('secao')['atualizado_em'].max()
-        _fr_lbl = {'s1_rma': 'Leads/RMA (s1)', 's2_super': 'Escallo (s2)', 's3_nominal': 'CTN (s3)', 's4_ga': 'GA checkout (s4)',
-                   's5_invest': 'Investimento (s5)', 's6_crm': 'CRM (s6)', 's7_canal': 'Qualidade (s7)', 's8_mesa': 'Funis do relatório (s8)'}
+        _fr_lbl = {'s1_rma': 'Leads/RMA (s1)', 's1_canal': 'Leads por canal (s1)', 's2_super': 'Escallo (s2)', 's3_nominal': 'CTN (s3)',
+                   's4_ga': 'GA checkout (s4)', 's5_invest': 'Investimento (s5)', 's6_crm': 'CRM (s6)', 's7_canal': 'Qualidade por canal (s7)',
+                   's7_midia': 'Mídia × retenção (s7)', 's8_mesa': 'Funis do relatório (s8)', 's9_pagos': 'Leads pagos (s9)'}
+        # Seções MENSAIS: ficam fora da recarga diária (recarga_agregados.ps1 roda only=s1..s6,s8) por custo — s7 consulta o painel
+        # do Athena (~5 min) e s9 faz COUNT DISTINCT em 3,6 M Contatos (~4 min). São recalculadas no fechamento do mês
+        # (`gt7 run aquisicao_dash --arg only=s7,s9`); por isso não entram no aviso ⏳ de frescor diário, e sim no aviso mensal abaixo.
+        _fr_mensal = ('s7_canal', 's7_midia', 's9_pagos')
         if not _fr10.empty:
             _fr_txt = " · ".join(f"{_fr_lbl.get(k, k)} {pd.Timestamp(v):%d/%m %H:%M}" for k, v in _fr10.sort_index().items())
-            _fr_old = [(_fr_lbl.get(k, k)) for k, v in _fr10.items() if pd.Timestamp(v).date() < reference_date and k != 's7_canal']
+            _fr_old = [(_fr_lbl.get(k, k)) for k, v in _fr10.items() if pd.Timestamp(v).date() < reference_date and k not in _fr_mensal]
+            _fr_mes_ini = pd.Timestamp(reference_date).to_period('M').to_timestamp()
+            _fr_m_old = sorted({_fr_lbl.get(k, k) for k, v in _fr10.items() if k in _fr_mensal and pd.Timestamp(v) < _fr_mes_ini})
             st.caption(f"🗓️ Agregado `alex_aq_dash_mes` calculado em — {_fr_txt}.")
             if _fr_old and pd.Timestamp(_sel10[-1]) >= pd.Timestamp(reference_date).to_period('M').to_timestamp() - pd.DateOffset(months=1):
                 st.warning("⏳ Seções calculadas antes do último dia completo da base (" + ", ".join(_fr_old) + "): o mês corrente — e o "
                            "anterior, se a carga foi antes do fechamento — estão **parciais** nelas. Rode `gt7 run aquisicao_dash` "
                            "(ou `--arg only=s1,s2,s3,s4,s5,s6,s8`) e ♻️ Recarregar dados.")
+            if _fr_m_old:
+                st.caption("ℹ️ Seções mensais calculadas antes do início do mês corrente (" + ", ".join(_fr_m_old) + "): o mês corrente "
+                           "ainda não existe nelas e o anterior pode ter sido calculado antes do fechamento. Recalcular no fechamento do mês: "
+                           "`gt7 run aquisicao_dash --arg only=s7,s9` e ♻️ Recarregar dados.")
 
         with st.expander("📖 Qual visão usar? — os funis desta aba × abas 📞 Televendas, 🧭 Funil Ponta a Ponta e 🌐 Site"):
             st.markdown(
@@ -6273,6 +6628,7 @@ with tab10:
                 "mudar de valor: **população** (lista `HS - Leads Únicos mês` × Contatos vivos por bucket × telefones discados), "
                 "**janela** (no mês-calendário × janela do contato + 14 d × qualquer data até hoje) e **frescor** (cada agregado tem a "
                 "própria data de cálculo — veja a linha 🗓️ acima e o quadro da aba 📞).")
+        _tv_foto_filme_exemplo('t10')
 
         # --- definição de Leads Únicos = seleção de buckets (mesmo seletor da aba 🧭) ---
         _lu_tab_b = None
@@ -6313,7 +6669,9 @@ with tab10:
 
         # ---------- 1 · as três linhas do RMA ----------
         _lu = _v10('s1_rma', 'leads_unicos', _sel10, 'rma')
+        _lu_rma = _lu  # regra RMA (s1) — base do % com CPF, mesmo quando _lu vem dos buckets
         _cpf = _v10('s1_rma', 'com_cpf', _sel10, 'rma')
+        _eng_cpf = _v10('s1_rma', 'enviados_com_cpf', _sel10, 'rma')
         _eng = _v10('s1_rma', 'enviados_engajamento', _sel10, 'rma')
         _fra = _v10('s1_rma', 'transbordados_franquias', _sel10, 'rma')
         _vf = _v10('s1_rma', 'vendas', _sel10, 'venda_franquia')
@@ -6332,7 +6690,7 @@ with tab10:
         _vf_p = _v10('s1_rma', 'vendas', _prev10, 'venda_franquia')
         k1, k2, k3, k4 = st.columns(4)
         _tv_kpi(k1, "🧲", "Leads Únicos", f"{_tv_n(_lu)} {_tv_delta(_lu, _lu_p)}",
-                ((f"{_tv_pct(_cpf, _lu)} com CPF · " if not _lu_bucket_ok else "") + "instância de Aquisição (site, checkout, mídia, WhatsApp)"))
+                "instância de Aquisição (site, checkout, mídia, WhatsApp)")
         _tv_kpi(k2, "📨", "Encaminhados para engajamento", f"{_tv_n(_eng)} {_tv_delta(_eng, _eng_p)}",
                 f"{_tv_pct(_eng, _lu)} dos leads únicos", color="#2e8a4f")
         _tv_kpi(k3, "🏪", "Transbordados para franquias", f"{_tv_n(_fra)} {_tv_delta(_fra, _fra_p)}",
@@ -6350,13 +6708,29 @@ with tab10:
                        "(canais Facebook, formulários de LP, Great Pages, WhatsApp Nacional Mídias — `rules.LEADS_PAGOS_CANAIS`).",
                        unsafe_allow_html=True)
         _lu_tab = _v10('s1_rma', 'leads_tabela', _sel10, 'rma')
-        _tv_funil("Apropriação de Leads — coluna Site do RMA", [
-            ("🧲", "Leads Únicos", _lu, "contatos criados no mês na instância de Aquisição"),
-            ("🆔", "Com CPF", _cpf, "os únicos que cruzam com venda no CTN"),
-            ("📨", "Encaminhados para engajamento", _eng, "1º envio para a instância de Engajamento"),
-            ("🏪", "Transbordados para franquias", _fra, "entraram em Distribuição de Leads / Validador"),
-            ("🛒", "Vendas nas franquias", _vf, "CPF do lead filiou por porta a porta / link / app do vendedor"),
-        ], subtitle=f"janela {_lbl10}")
+        # R29: "Com CPF" saiu da sequência — qualificava a ÚLTIMA etapa (venda = CPF × NOMINAL), não os encaminhados,
+        #      que vêm dos Negócios do pipeline Distribuição sem filtro de CPF (a % sequencial passava de 100%).
+        # R31: visualização alternativa — diagrama em raias com os mesmos números (toggle desligado = funil com chips)
+        _t10_raias = st.toggle("🗺️ Ver como diagrama de raias — onde cada número nasce", value=False, key='t10_raias',
+                               help="Alternativa ao funil: as mesmas quatro linhas do RMA desenhadas nas raias Contato / Negócio / CTN, "
+                                    "com a lente da fotografia (o mês) em destaque e a do filme (coorte, aba 🧭) esmaecida.")
+        if _t10_raias:
+            _tv_raias('foto', {'lu': _lu, 'eng': _eng, 'fra': _fra, 'vf': _vf},
+                      "Apropriação de Leads — coluna Site do RMA", f"janela {_lbl10}")
+        else:
+            _tv_funil("Apropriação de Leads — coluna Site do RMA", [
+                ("🧲", "Leads Únicos", _lu, "Contatos criados no mês na instância de Aquisição"),
+                ("📨", "Encaminhados para engajamento", _eng, "Negócios criados no pipeline CDT - Distribuição (com ou sem CPF)"),
+                ("🏪", "Transbordados para franquias", _fra, "entraram em Distribuição de Leads / Validador"),
+                ("🛒", "Vendas nas franquias", _vf, "CPF do lead × NOMINAL: porta a porta / link / app do vendedor — só leads com CPF cruzam"),
+            ], subtitle=f"janela {_lbl10}",
+                chips=[['contato', 'foto'], ['negocio', 'foto'], ['negocio', 'foto'], ['ctn', 'foto_lead']])
+        if _lu_rma and _cpf:
+            st.caption(f"🆔 **CPF:** {_tv_pct(_cpf, _lu_rma)} dos Leads Únicos (regra RMA, {_tv_n(_cpf)} de {_tv_n(_lu_rma)}) têm `cpf_chave` — "
+                       "só esses podem aparecer em *Vendas nas franquias*, porque a venda é casada por CPF com o NOMINAL. "
+                       "*Encaminhados* e *Transbordados* contam Negócios e não dependem do CPF"
+                       + (f" ({_tv_pct(_eng - _eng_cpf, _eng)} dos encaminhados estão sem CPF e nunca cruzam com venda)" if _eng and _eng_cpf else "")
+                       + ".")
         _bruto_cap = _lu_tab_b if _lu_tab_b else _lu_tab
         if _bruto_cap and _lu:
             st.caption(f"Contatos criados na janela: {format_br(_bruto_cap)} — a definição selecionada mantém "
@@ -6450,7 +6824,7 @@ with tab10:
                     ("🗣️", "Ligações qualificadas (≥ 10 s)", _a8, "alô humano em alguma ligação do mês"),
                     ("🛒", "Vendas — discados que aparecem no NOMINAL no mês", _v8, "inner join por tel-8, 1 lead = 1, mesmo mês-calendário"),
                     ("📞", "└ com tipo_venda = TELEVENDAS", _t8, "seq. = % das filiações dos discados"),
-                ], subtitle=_lbl10)
+                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto']])
                 st.caption(f"Indicadores laterais (HubSpot, pipeline CDT - Lead Televendas): **{_tv_n(_n8)}** Negócios entraram em "
                            f"EM NEGOCIAÇÃO {_tv_delta(_n8, _n8p)} · **{_tv_n(_g8)}** entraram em GANHO. "
                            f"Filiações após o 1º contato do mês: **{_tv_n(_ap8)}** de {_tv_n(_v8)}. "
@@ -6461,7 +6835,7 @@ with tab10:
                     ("🧲", "Leads Únicos (regra do relatório)", _lu8, "`HS - Leads Únicos mês`, createdate no mês"),
                     ("🏪", "Leads transbordados", _tr8, "Negócios com 1ª entrada em Distribuição / Validador no mês"),
                     ("✅", "Vendas nas franquias", _vf8, "CPF do lead × NOMINAL campo, filiação no mês do lead"),
-                ], subtitle=_lbl10)
+                ], subtitle=_lbl10, chips=[['contato', 'foto'], ['negocio', 'foto'], ['ctn', 'foto']])
                 st.caption(f"Entradas no **Validador** (entrega confirmada à franquia): **{_tv_n(_va8)}**. "
                            f"Vendas das franquias no CTN no período: **{_tv_n(_fr_tot)}** — os leads nacionais respondem por "
                            f"**{_tv_pct(_vf8, _fr_tot)}**" + (f" (período anterior: {_tv_pct(_vf8p, _fr_tot_p)})" if _vf8p and _fr_tot_p else "") + ".",
@@ -6532,7 +6906,9 @@ with tab10:
         _tv_titulo("Funis de aquisição por superfície",
                    "cada superfície tem a sua própria definição de 'lead' — os números NÃO são deduplicados entre elas "
                    "(a mesma pessoa pode ser lead no site, no app e no televendas)", "A")
-        _cs1, _cs2, _cs3, _cs4 = st.columns(4)
+        # R29: um funil por linha — o _tv_funil (rótulo 250 px + barra ≥ 120 px + 2 × 58 px) não cabe em 1/4 da largura
+        #      e os quatro se sobrepunham; containers criados em sequência renderizam na ordem Site → Ativo → Receptivo → App.
+        _cs1, _cs2, _cs3, _cs4 = st.container(), st.container(), st.container(), st.container()
         # helper: métrica do s8_mesa (régua do relatório) para a janela — None se a seção não cobre a janela
         def _v8s(metrica, dim, meses=None):
             meses = _sel10 if meses is None else meses
@@ -6548,7 +6924,7 @@ with tab10:
                     ("💳", "Etapa 3 · Dados de pagamento", _v10('s4_ga', 'add_payment_info_users', _sel10, 'ga'), "add_payment_info (usuários)"),
                     ("🛒", "Etapa 4 · Compra (purchase)", _v10('s4_ga', 'purchase_users', _sel10, 'ga'), "purchase (usuários)"),
                     ("✅", "Vendas WEBSITE (CTN)", _v10('s3_nominal', 'vendas', _sel10, 'WEBSITE'), "tipo_venda WEBSITE no NOMINAL"),
-                ], subtitle=_lbl10)
+                ], subtitle=_lbl10, chips=[['ga', 'foto'], ['ga', 'foto'], ['ga', 'foto'], ['ga', 'foto'], ['ga', 'foto'], ['ctn', 'foto']])
             else:
                 _tv_funil("🌐 Site — checkout (eventos)", [
                     ("👣", "Usuários ativos (GA)", _v10('s4_ga', 'active_users', _sel10, 'ga'), "usuários ativos no checkout"),
@@ -6556,7 +6932,7 @@ with tab10:
                     ("💳", "Pagamento iniciado (eventos)", _v10('s4_ga', 'add_payment_info', _sel10, 'ga'), "add_payment_info"),
                     ("🛒", "Compras (eventos)", _v10('s4_ga', 'purchase', _sel10, 'ga'), "purchase no checkout"),
                     ("✅", "Vendas WEBSITE (CTN)", _v10('s3_nominal', 'vendas', _sel10, 'WEBSITE'), "tipo_venda WEBSITE no NOMINAL"),
-                ], subtitle=_lbl10)
+                ], subtitle=_lbl10, chips=[['ga', 'foto'], ['ga', 'foto'], ['ga', 'foto'], ['ga', 'foto'], ['ctn', 'foto']])
                 st.caption("ℹ️ Colunas de usuários ainda não carregadas — rode `gt7 run aquisicao_dash --arg only=s4` para ver a mesma régua da aba 🌐.")
             st.caption(f"🧲 Leads Únicos (HubSpot) na janela: **{_tv_n(_lu)}** — ficam fora do funil porque contam Contatos criados por "
                        "todas as portas (formulários, WhatsApp, parcerias), não só o checkout; a comparação certa é com a Etapa 1.")
@@ -6567,13 +6943,13 @@ with tab10:
                     ("🗣️", "Falaram ≥ 10 s", _v8s('alo10', 'televendas'), "alô humano"),
                     ("🛒", "Filiaram no mês (NOMINAL)", _v8s('vendas_mes', 'televendas'), "tel-8 × NOMINAL no mesmo mês — régua do relatório"),
                     ("📞", "└ com tipo_venda TELEVENDAS", _v8s('vendas_mes_tv', 'televendas'), "seq. = % das filiações dos discados"),
-                ], subtitle=_lbl10)
+                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto']])
             else:
                 _tv_funil("📵 Televendas — Ativo (discador)", [
                     ("📵", "Leads discados", _v10('s2_super', 'leads', _sel10, 'ativo'), "ESCALLO_LEADS_MES, tipo ATIVO"),
                     ("🗣️", "Falaram ≥ 10 s", _v10('s2_super', 'alo10', _sel10, 'ativo'), "alô humano"),
                     ("✅", "Vendas confirmadas no CTN", _v10('s2_super', 'venda_confirmada', _sel10, 'ativo'), "tel-8 × NOMINAL na janela do contato"),
-                ], subtitle=_lbl10)
+                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto']])
         with _cs3:
             if _v8s('discados', 'receptivo') is not None:
                 _tv_funil("📲 Televendas — Receptivo", [
@@ -6581,13 +6957,13 @@ with tab10:
                     ("🗣️", "Falaram ≥ 10 s", _v8s('alo10', 'receptivo'), "alô humano"),
                     ("🛒", "Filiaram no mês (NOMINAL)", _v8s('vendas_mes', 'receptivo'), "tel-8 × NOMINAL no mesmo mês — régua do relatório"),
                     ("📞", "└ com tipo_venda TELEVENDAS", _v8s('vendas_mes_tv', 'receptivo'), "seq. = % das filiações"),
-                ], subtitle=_lbl10)
+                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto']])
             else:
                 _tv_funil("📲 Televendas — Receptivo", [
                     ("📲", "Ligações recebidas", _v10('s2_super', 'leads', _sel10, 'receptivo'), "ESCALLO_LEADS_MES, tipo RECEPTIVO"),
                     ("🗣️", "Falaram ≥ 10 s", _v10('s2_super', 'alo10', _sel10, 'receptivo'), "alô humano"),
                     ("✅", "Vendas confirmadas no CTN", _v10('s2_super', 'venda_confirmada', _sel10, 'receptivo'), "tel-8 × NOMINAL na janela do contato"),
-                ], subtitle=_lbl10)
+                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto']])
         with _cs4:
             _ap_dl = _ap_dr = _ap_cad = _ap_com = None
             if not _apd.empty:
@@ -6600,16 +6976,19 @@ with tab10:
             _tv_funil("📱 App", [
                 ("⬇️", "Downloads (1º login)", _ap_dl, "fl_data_login"),
                 ("📝", "Cadastros", _ap_cad, "fl_plano_usuario.dt_criacao"),
-                ("🌱", "└ dos cadastros: entraram como freemium", _ap_fre if _ap_dl is not None else None, "subconjunto: cadastro sem filiação anterior"),
-                ("🛒", "└ dos cadastros: compra junto à venda", _ap_com, "subconjunto: cadastro até 1 dia após a venda"),
-                ("✅", "Vendas APP DO FILIADO (CTN)", _v10('s3_nominal', 'vendas', _sel10, 'APP DO FILIADO'), "tipo_venda"),
-            ], subtitle=_lbl10)
+                ("🌱", "└ dos cadastros: entraram como freemium", _ap_fre if _ap_dl is not None else None, "fatia de Cadastros: sem filiação anterior · seq. = % dos cadastros", 1),
+                ("🛒", "└ dos cadastros: compra junto à venda", _ap_com, "fatia de Cadastros: cadastro até 1 dia após a venda · seq. = % dos cadastros", 1),
+                ("✅", "Vendas APP DO FILIADO (CTN)", _v10('s3_nominal', 'vendas', _sel10, 'APP DO FILIADO'), "tipo_venda · seq. = % dos cadastros"),
+            ], subtitle=_lbl10, chips=[['app', 'foto'], ['app', 'foto'], ['app', 'foto'], ['app', 'foto'], ['ctn', 'foto']])
         st.caption(f"📞 As vendas **TELEVENDAS (CTN)** da janela — {format_br(_v10('s3_nominal', 'vendas', _sel10, 'TELEVENDAS'))} — "
                    "fecham as duas esteiras juntas: o `tipo_venda` do CTN não separa ligação ativa de receptiva. Os dois funis de "
                    "televendas usam a **mesma régua do relatório** (bloco acima e aba 📞 → nota 🧲): filiou no mês, por qualquer porta; "
                    "a *venda tabulada* e a *confirmada na janela do contato* ficam na aba 📞 (visão da operação). 📱 No app, **freemium** e "
-                   "**compra junto à venda** são dois **subconjuntos de Cadastros** — fatias irmãs, não etapas em sequência: leia a % de "
-                   "cada um sempre sobre Cadastros.")
+                   "**compra junto à venda** são dois **subconjuntos de Cadastros** — fatias irmãs, não etapas em sequência: a % seq. "
+                   "delas (e a de Vendas APP DO FILIADO) é calculada **sobre Cadastros**. ⏳ **Downloads no mês corrente ficam abaixo dos "
+                   "Cadastros até a base alcançar:** o 1º login (`fl_data_login`) chega ao lake com dias de atraso, enquanto o cadastro "
+                   "(`fl_plano_usuario`) é quase imediato — e ~3/4 dos cadastros nascem no ato da venda, antes do primeiro login. Nos "
+                   "meses fechados Downloads > Cadastros.")
         _tv_note(
             "<b>Por que não somamos as três superfícies.</b> Cada uma conta uma coisa: o site conta <i>contato criado</i>, "
             "o televendas conta <i>telefone trabalhado no mês</i> e o app conta <i>cadastro</i>. A mesma pessoa aparece em "
@@ -6804,6 +7183,7 @@ with tab11:
                "do Lead — esteira de televendas, transbordo para engajamento, rota de franquias — e os tempos entre "
                "etapas. Taxas de conversão e transbordos: use esta aba. Acompanhar o mês corrente canal a canal: "
                "use a Aquisição.")
+    _tv_chips_legenda(['contato', 'negocio', 'ctn', 'filme'])
 
     _FJ_LBL = {
         'core': 'Núcleo (site, checkout, WhatsApp, mídia)', 'tim': 'Parceria B2B2C - TIM',
@@ -6866,12 +7246,37 @@ with tab11:
         _fjb[_c] = pd.to_numeric(_fjb[_c])
     _fj_disp = [pd.Timestamp(x) for x in sorted(_fjb['mes'].unique())]
 
-    # período: interseção dos Controles Globais com as coortes disponíveis
-    _fj_meses = [m for m in _tv_meses if m in set(_fj_disp)]
-    if not _fj_meses:
-        _fj_meses = [_fj_disp[-1]]
-        st.info(f"O período dos Controles Globais não toca as coortes disponíveis "
-                f"({_fj_disp[0]:%m/%Y}–{_fj_disp[-1]:%m/%Y}); mostrando {_fj_meses[0]:%m/%Y}.")
+    # período (R29): toggle igual ao da aba 🧲 — ligado = coortes tocadas pelo Período de Análise dos Controles Globais
+    #   (interseção com as coortes disponíveis); desligado = as últimas N coortes carregadas em alex_funil_journey.
+    _c11a, _c11b = st.columns([1, 2])
+    with _c11a:
+        _t11_glob = st.toggle("Seguir o período dos Controles Globais", value=True, key='t11_global',
+                              help="Ligado: coortes (mês de criação do Contato) tocadas pelo 'Período de Análise' da barra lateral. "
+                                   "Desligado: janela fixa de N coortes até a mais recente carregada.")
+        if not _t11_glob:
+            _j11 = st.selectbox("Janela:", ["Coorte mais recente", "Últimas 3 coortes", "Últimas 6 coortes", "Últimas 12 coortes"],
+                                index=1, key='t11_jan')
+    if _t11_glob:
+        _fj_meses = [m for m in _tv_meses if m in set(_fj_disp)]
+        _t11_fora = not _fj_meses
+        if _t11_fora:
+            _fj_meses = [_fj_disp[-1]]
+    else:
+        _t11_fora = False
+        _n11 = {"Coorte mais recente": 1, "Últimas 3 coortes": 3, "Últimas 6 coortes": 6, "Últimas 12 coortes": 12}[_j11]
+        _fj_meses = list(_fj_disp[-_n11:])
+    with _c11b:
+        _lbl11 = (f"{_fj_meses[0]:%m/%Y}" if len(_fj_meses) == 1 else f"{_fj_meses[0]:%m/%Y}–{_fj_meses[-1]:%m/%Y}")
+        if _t11_glob:
+            st.caption(f"Coortes: **{_lbl11}** — meses de criação do Contato tocados pelo período dos Controles Globais. "
+                       "Semanas e dias não se aplicam: o eixo é sempre a coorte do mês; cada coorte é seguida até a última carga. "
+                       f"Coortes disponíveis: {_fj_disp[0]:%m/%Y}–{_fj_disp[-1]:%m/%Y}.")
+            if _t11_fora:
+                st.info(f"O período dos Controles Globais não toca as coortes disponíveis "
+                        f"({_fj_disp[0]:%m/%Y}–{_fj_disp[-1]:%m/%Y}); mostrando {_fj_meses[0]:%m/%Y}.")
+        else:
+            st.caption(f"Janela fixa: coortes **{_lbl11}** (as {len(_fj_meses)} mais recentes carregadas). "
+                       "Ligue o toggle para seguir o período dos Controles Globais.")
     _fj_lbl_per = (f"coorte de {_fj_meses[0]:%m/%Y}" if len(_fj_meses) == 1
                    else f"coortes de {_fj_meses[0]:%m/%Y} a {_fj_meses[-1]:%m/%Y}")
 
@@ -6918,25 +7323,37 @@ with tab11:
 
     st.markdown("")
 
-    # ---- as duas rotas, lado a lado ----
-    _cA, _cB = st.columns(2)
-    with _cA:
-        _tv_funil("📞 Rota Televendas", [
-            ("🌱", "Leads criados", int(_tot['criados']), "todos os Contatos novos do período"),
-            ("✅", "Elegíveis", int(_els['criados']), "definição selecionada acima"),
-            ("📞", "Entraram na esteira", int(_els['tv_lead']), "etapa LEAD (CDT - Lead Televendas)"),
-            ("🛠️", "Trabalhados", int(_els['tv_trab']), "saíram de LEAD para qualquer etapa"),
-            ("🤝", "Em negociação", int(_els['negociacao']), "etapa EM NEGOCIAÇÃO"),
-            ("🏆", "GANHO", int(_els['ganho']), f"PERDIDO: {format_br(int(_els['perdido']))}"),
-        ], subtitle=_fj_lbl_per)
-    with _cB:
-        _tv_funil("🏪 Rota Franquias", [
-            ("🌱", "Leads criados", int(_tot['criados']), "todos os Contatos novos do período"),
-            ("✅", "Elegíveis", int(_els['criados']), "definição selecionada acima"),
-            ("🔀", "No pipeline Distribuição", int(_els['pipe_distrib']), "CDT - Distribuição de Leads"),
-            ("📮", "Enviados à franquia", int(_els['enviado_franquia']), "Validador = válido e enviado (definição do especialista)"),
-            ("💰", "Venda na franquia", int(_els['venda_franquia']), "CPF × NOMINAL: porta a porta + link do vendedor"),
-        ], subtitle=_fj_lbl_per)
+    # ---- as duas rotas, lado a lado — ou o diagrama em raias (R31, toggle) ----
+    _t11_raias = st.toggle("🗺️ Ver como diagrama de raias — onde cada número nasce", value=False, key='t11_raias',
+                           help="Alternativa aos dois funis: as etapas das rotas desenhadas nas raias Contato / Negócio / CTN, "
+                                "com a lente do filme (coorte seguida até hoje) em destaque e a da fotografia (aba 🧲) esmaecida.")
+    if _t11_raias:
+        _tv_raias('filme', {'criados': int(_tot['criados']), 'eleg': int(_els['criados']), 'tv': int(_els['tv_lead']),
+                            'pipe': int(_els['pipe_distrib']), 'valid': int(_els['enviado_franquia']),
+                            'venda': int(_els['venda_franquia'])},
+                  "Rotas Televendas e Franquias — a coorte nas raias", _fj_lbl_per)
+    else:
+        _cA, _cB = st.columns(2)
+        with _cA:
+            _tv_funil("📞 Rota Televendas", [
+                ("🌱", "Leads criados", int(_tot['criados']), "todos os Contatos novos do período"),
+                ("✅", "Elegíveis", int(_els['criados']), "definição selecionada acima"),
+                ("📞", "Entraram na esteira", int(_els['tv_lead']), "etapa LEAD (CDT - Lead Televendas)"),
+                ("🛠️", "Trabalhados", int(_els['tv_trab']), "saíram de LEAD para qualquer etapa"),
+                ("🤝", "Em negociação", int(_els['negociacao']), "etapa EM NEGOCIAÇÃO"),
+                ("🏆", "GANHO", int(_els['ganho']), f"PERDIDO: {format_br(int(_els['perdido']))}"),
+            ], subtitle=_fj_lbl_per,
+                chips=[['contato', 'filme'], ['contato', 'filme'], ['negocio', 'filme'], ['negocio', 'filme'],
+                       ['negocio', 'filme'], ['negocio', 'filme']])
+        with _cB:
+            _tv_funil("🏪 Rota Franquias", [
+                ("🌱", "Leads criados", int(_tot['criados']), "todos os Contatos novos do período"),
+                ("✅", "Elegíveis", int(_els['criados']), "definição selecionada acima"),
+                ("🔀", "No pipeline Distribuição", int(_els['pipe_distrib']), "CDT - Distribuição de Leads"),
+                ("📮", "Enviados à franquia", int(_els['enviado_franquia']), "Validador = válido e enviado (definição do especialista)"),
+                ("💰", "Venda na franquia", int(_els['venda_franquia']), "CPF × NOMINAL: porta a porta + link do vendedor"),
+            ], subtitle=_fj_lbl_per,
+                chips=[['contato', 'filme'], ['contato', 'filme'], ['negocio', 'filme'], ['negocio', 'filme'], ['ctn', 'filme']])
     _tv_note(
         "<b>Por que a Rota Franquias não bate com o 'Funil Franquias' da aba 🧲.</b> Aqui é o <b>filme da coorte</b>: os Contatos "
         "criados no período (espelho vivo, canal <i>na criação</i>, buckets à sua escolha) seguidos até hoje — Distribuição, Validador "
@@ -6948,6 +7365,7 @@ with tab11:
         "elegibilidade; 🧲 para bater com o relatório e comparar meses fechados. Esta aba não segue o Período de Análise no grão de "
         "dias/semanas: o eixo é sempre a coorte do mês de criação do Contato.",
         bg="#f8fafc", icon="🧲")
+    _tv_foto_filme_exemplo('t11')
 
     # ---- etapa a etapa: entrada, avançou, taxa, perda, tempo ----
     _tmp = load_fj_tempos(tuple(m.strftime('%Y-%m-%d') for m in _fj_meses))
