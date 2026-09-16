@@ -4316,54 +4316,287 @@ with tab6:
                 st.dataframe(_d6, use_container_width=True, hide_index=True)
 
     # =================================================================
-    # 7 · TALKERCHAT
+    # 7 · TALKERCHAT (fonte: API pública — alex_talkerchat_api, desde 16/09/2026)
+    # -----------------------------------------------------------------
+    # Seções do pipeline (televendas_dash.py, s7): s7_talkerchat (funil + CRM + NOMINAL) · s7_tempos (mediana/p90/média
+    # em minutos: espera até humano, duração humano, duração bot) · s7_atendente (dim = atendente) · s7_hora (dim = 'D-HH')
+    # · s7_motivo (dim = 'id · motivo') · s7_estoque (retrato dos tickets abertos, por status, gravado no período corrente).
+    # Grão: segue _tvd (semana quando o período é curto). Frescor D-1 (tkcDaily 06h + tkcWorker 10 min; recarga 11:00).
     # =================================================================
     with _tv_tabs[3]:
         S = 's7_talkerchat'
-        tk = _tv_val(S, 'tickets'); tl = _tv_val(S, 'leads'); tcpf = _tv_val(S, 'com_cpf')
-        th = _tv_val(S, 'leads_humano'); tcomp = _tv_val(S, 'compras'); tlia = _tv_val(S, 'compras_lia'); thum = _tv_val(S, 'compras_humano')
+        tk = _tv_val(S, 'tickets'); tl = _tv_val(S, 'leads'); tlc_id = _tv_val(S, 'leads_contato'); tcpf = _tv_val(S, 'com_cpf')
+        th = _tv_val(S, 'leads_humano'); tk_h = _tv_val(S, 'tickets_humano'); tk_b = _tv_val(S, 'tickets_bot')
+        tcomp = _tv_val(S, 'compras'); tlia = _tv_val(S, 'compras_lia'); thum = _tv_val(S, 'compras_humano')
         tlc = _tv_val(S, 'leads_compra'); tpar = _tv_val(S, 'pares_compra_cpf'); tconf = _tv_val(S, 'compras_confirmadas')
+        tab_per = _tv_val(S, 'abertos')
         tcrm_l = _tv_val(S, 'leads_cpf'); tcrm_c = _tv_val(S, 'com_contato_hs'); tcrm_d = _tv_val(S, 'com_deal_criado_no_mes'); tcrm_dq = _tv_val(S, 'com_deal_qualquer_epoca')
-        tl_p = _tv_val(S, 'leads', meses=_tv_per_p); tcomp_p = _tv_val(S, 'compras', meses=_tv_per_p)
+        tl_p = _tv_val(S, 'leads', meses=_tv_per_p); tk_p = _tv_val(S, 'tickets', meses=_tv_per_p); tcomp_p = _tv_val(S, 'compras', meses=_tv_per_p)
         tbot = (tl - th) if (tl is not None and th is not None) else None
+        _tk_api = tk_b is not None  # seções novas presentes? (senão o agregado ainda é o do export antigo)
 
+        def _tv_min(v):
+            """Minutos → texto curto: 45 s · 12 min · 1h05 · 2,3 d."""
+            if v is None or pd.isna(v):
+                return "—"
+            v = float(v)
+            if v < 1:
+                return f"{v * 60:.0f} s"
+            if v < 60:
+                return f"{v:.0f} min"
+            if v < 60 * 24:
+                return f"{int(v // 60)}h{int(v % 60):02d}"
+            return f"{v / 1440:.1f} d".replace('.', ',')
+
+        def _tv_tempo(name, stat='med', meses=None):
+            """Estatística de tempo (minutos) do período: exata em um período; em vários, média das
+            estatísticas ponderada pelo nº de tickets (n) de cada período."""
+            meses = _tv_per if meses is None else meses
+            d = _tvd[(_tvd['secao'] == 's7_tempos') & (_tvd['mes'].isin(list(meses)))]
+            v = d[d['metrica'] == f'{name}_{stat}_min'][['mes', 'valor']]
+            n = d[d['metrica'] == f'{name}_n'][['mes', 'valor']].rename(columns={'valor': 'n'})
+            m = v.merge(n, on='mes')
+            m = m[m['valor'].notna() & (m['n'] > 0)]
+            if m.empty:
+                return None
+            return float((m['valor'] * m['n']).sum() / m['n'].sum())
+
+        def _tv_pivot7(secao, meses=None):
+            meses = _tv_per if meses is None else meses
+            d = _tvd[(_tvd['secao'] == secao) & (_tvd['mes'].isin(list(meses)))]
+            if d.empty:
+                return pd.DataFrame()
+            return d.pivot_table(index='dim', columns='metrica', values='valor', aggfunc='sum').fillna(0).reset_index()
+
+        if not _tk_api:
+            st.warning("⚠️ O agregado ainda não tem as seções da API do Talkerchat (s7_tempos, s7_atendente, s7_hora, s7_motivo, "
+                       "s7_estoque). Rode `gt7 run televendas_dash --arg only=s7 --arg nv=skip` (claude-toolkit) e recarregue os dados.")
+
+        # ---- KPIs linha 1: volume e conversão ----
         k1, k2, k3, k4 = st.columns(4)
         _tv_kpi(k1, "💬", "Usuários únicos (tel-8) no período", f"{_tv_n(tl)} {_tv_delta(tl, tl_p)}",
-                (f"{_tv_n(tk)} tickets · " + f"{tk / tl:.2f}".replace('.', ',') + " por usuário") if tk and tl else "")
-        _tv_kpi(k2, "🪪", "Qualificados (com CPF)", f"{_tv_pct(tcpf, tl)}", f"{_tv_n(tcpf)} usuários com CPF capturado")
-        _tv_kpi(k3, "🤖", "Só bot (Lia) × humano", f"{_tv_pct(tbot, tl)} · {_tv_pct(th, tl)}",
-                f"{_tv_n(tbot)} sem atendente humano · {_tv_n(th)} com atendente", color="#2e8a4f")
+                (f"{_tv_n(tk)} tickets {_tv_delta(tk, tk_p)} · " + f"{tk / tl:.2f}".replace('.', ',') + " por usuário"
+                 + (f" · {_tv_n(tlc_id)} contatos (contact_id)" if tlc_id is not None else "")) if tk and tl else "")
+        _tv_kpi(k2, "🪪", "Qualificados (com CPF)", f"{_tv_pct(tcpf, tl)}", f"{_tv_n(tcpf)} usuários com CPF capturado nas mensagens")
+        _tv_kpi(k3, "🤖", "Só bot (Lia) × humano — tickets", f"{_tv_pct(tk_b, tk)} · {_tv_pct(tk_h, tk)}",
+                f"{_tv_n(tk_b)} só Lia · {_tv_n(tk_h)} com atendente · usuários: {_tv_pct(tbot, tl)} só Lia", color="#2e8a4f")
         _tv_kpi(k4, "🛒", "Compras reportadas → confirmadas", f"{_tv_n(tcomp)} {_tv_delta(tcomp, tcomp_p)}",
                 f"Lia {_tv_pct(tlia, tcomp)} · humano {_tv_pct(thum, tcomp)} · {_tv_pct(tconf, tpar)} confirmadas no NOMINAL (CPF ±3 d)")
 
+        # ---- KPIs linha 2: tempos e estoque ----
+        _esp = _tv_tempo('espera'); _esp90 = _tv_tempo('espera', 'p90')
+        _dur_h = _tv_tempo('duracao_humano'); _dur_h90 = _tv_tempo('duracao_humano', 'p90')
+        _dur_b = _tv_tempo('duracao_bot'); _dur_b90 = _tv_tempo('duracao_bot', 'p90')
+        _est = _tvd[_tvd['secao'] == 's7_estoque']
+        _est_dt = None
+        if not _est.empty:
+            _est_dt = _est['atualizado_em'].max() if 'atualizado_em' in _est.columns else None
+            _est = _est[_est['mes'] == _est['mes'].max()].pivot_table(index='dim', columns='metrica', values='valor',
+                                                                       aggfunc='sum').fillna(0).reset_index()
+        _est_tot = float(_est['abertos'].sum()) if (not _est.empty and 'abertos' in _est.columns) else None
+        _est_ant = float(_est['de_dias_anteriores'].sum()) if (not _est.empty and 'de_dias_anteriores' in _est.columns) else None
+        _est_att = float(_est['com_atendente'].sum()) if (not _est.empty and 'com_atendente' in _est.columns) else None
+        k5, k6, k7, k8 = st.columns(4)
+        _tv_kpi(k5, "⏱️", "Espera até um humano assumir (mediana)", _tv_min(_esp),
+                f"p90 {_tv_min(_esp90)} · criado → opened_at, só tickets com atendente", color="#b45309")
+        _tv_kpi(k6, "🧑‍💼", "Duração do atendimento humano (mediana)", _tv_min(_dur_h),
+                f"p90 {_tv_min(_dur_h90)} · opened_at → closed_at", color="#b45309")
+        _tv_kpi(k7, "🤖", "Duração da conversa só com a Lia (mediana)", _tv_min(_dur_b),
+                f"p90 {_tv_min(_dur_b90)} · criado → closed_at, attended_by_bot", color="#2e8a4f")
+        _tv_kpi(k8, "📥", "Estoque de tickets abertos (hoje)", _tv_n(_est_tot),
+                (f"{_tv_n(_est_ant)} de dias anteriores · {_tv_n(_est_att)} já com atendente · "
+                 f"{_tv_n(tab_per)} criados no período ainda abertos"
+                 + (f" · retrato {pd.Timestamp(_est_dt):%d/%m %H:%M}" if _est_dt is not None else "")), color="#0f172a")
+
+        # ---- funil + série mensal + notas ----
         c1, c2 = st.columns([1.9, 1])
         with c1:
             _tv_funil("Funil Talkerchat (WhatsApp)", [
-                ("💬", "Tickets", tk, "conversas abertas no período (criado_dt)"),
-                ("👤", "Usuários únicos", tl, "telefone_key (tel-8)"),
-                ("🪪", "Qualificados (CPF)", tcpf, "cpf_norm capturado na conversa"),
-                ("🛒", "Compra reportada (usuários)", tlc, f"motivo = 'compra reportada' · {_tv_n(tcomp)} tickets"),
-                ("✅", "Confirmadas no NOMINAL", tconf, "pares CPF × âncora ±3 d"),
+                ("💬", "Tickets", tk, "conversas criadas no período (created_at, fuso BRT)"),
+                ("👤", "Usuários únicos", tl, f"telefone_key (tel-8)" + (f" · {_tv_n(tlc_id)} por contact_id" if tlc_id is not None else "")),
+                ("🧑‍💼", "Chegaram a um humano", th, "usuários com agent_id em algum ticket"),
+                ("🪪", "Qualificados (CPF)", tcpf, "CPF capturado nas mensagens (~75% de acerto)"),
+                ("🛒", "Compra reportada (usuários)", tlc, f"close_reason = 'Compra reportada' · {_tv_n(tcomp)} tickets"),
+                ("✅", "Confirmadas no NOMINAL", tconf, "pares CPF × âncora (fechamento) ±3 d"),
             ], subtitle=_tv_per_lbl)
             _mg7 = _tv_meses_grafico('t6_s7_ano')
-            _tv_chart_mensal(_tv_long(S, ['leads', 'com_cpf', 'leads_humano', 'compras', 'compras_lia'], meses=_mg7,
-                                      labels={'leads': 'Usuários únicos', 'com_cpf': 'Com CPF', 'leads_humano': 'Com atendente humano',
-                                              'compras': 'Compras reportadas', 'compras_lia': 'Compras Lia'}),
-                             "Série mensal — Talkerchat", stacked=False, rotulos=True, fonte="export Talkerchat (v_alex_talkerchat)")
+            _tv_chart_mensal(_tv_long(S, ['tickets_bot', 'tickets_humano'], meses=_mg7,
+                                      labels={'tickets_bot': 'Só Lia (bot)', 'tickets_humano': 'Com atendente humano'}),
+                             "Tickets por mês — bot × humano", subtitle="attended_by_bot / agent_id da API",
+                             stacked=True, rotulos=True, fonte="API Talkerchat (alex_talkerchat_api)")
+            _tv_chart_mensal(_tv_long(S, ['compras_lia', 'compras_humano'], meses=_mg7,
+                                      labels={'compras_lia': 'Compras Lia (bot)', 'compras_humano': 'Compras humano'}),
+                             "Compras reportadas por mês — Lia × humano", subtitle="close_reason = 'Compra reportada'",
+                             stacked=True, rotulos=True, fonte="API Talkerchat (alex_talkerchat_api)")
         with c2:
             _tv_note(
-                f"<b>Bot × humano.</b> {_tv_pct(tbot, tl)} dos usuários só falaram com a Lia (nenhum atendente no mês); "
-                f"{_tv_pct(th, tl)} chegaram a um vendedor humano — a transferência é sempre bot → humano. "
-                f"Nas compras, a Lia responde por {_tv_pct(tlia, tcomp)} (etiqueta 'vendalia' marca a venda, não o atendimento).<br><br>"
+                f"<b>Bot × humano de verdade.</b> {_tv_pct(tk_b, tk)} dos tickets foram atendidos só pela Lia "
+                f"(<code>attended_by_bot</code>, campo da API — a etiqueta 'Venda Lia' do export antigo oscilava e zerou em ago/26); "
+                f"{_tv_pct(tk_h, tk)} tiveram um atendente humano. Por usuário: {_tv_pct(tbot, tl)} só falaram com a Lia no período. "
+                f"Nas compras, a Lia responde por {_tv_pct(tlia, tcomp)}.<br><br>"
                 f"<b>A falha: nenhum Negócio é criado.</b> Dos {_tv_n(tcrm_l)} usuários com CPF, {_tv_pct(tcrm_c, tcrm_l)} existem como "
-                f"Contato no HubSpot, mas só <b>{_tv_pct(tcrm_d, tcrm_l)}</b> tiveram um Negócio criado no mês da conversa "
-                f"({_tv_pct(tcrm_dq, tcrm_l)} têm algum Negócio em qualquer época). O Talkerchat não está integrado ao CRM "
-                f"(L2): a conversa e a venda vivem só no export; os IDPVs de bot não criam Negócio.",
+                f"Contato no HubSpot, mas só <b>{_tv_pct(tcrm_d, tcrm_l)}</b> tiveram um Negócio criado no período da conversa "
+                f"({_tv_pct(tcrm_dq, tcrm_l)} têm algum Negócio em qualquer época). O Talkerchat não está integrado ao CRM (L2).",
                 bg="#fff7ed", icon="⚠️")
             _tv_note(
-                "Fonte: export do Talkerchat (alex_talkerchat via v_alex_talkerchat); compras confirmadas por CPF ±3 dias no NOMINAL. "
-                "Cobertura do export: reimportar o CSV no fechamento do mês (última data carregada aparece no último mês com dados).",
+                "<b>Fonte: API pública do Talkerchat</b> (<code>alex_talkerchat_api</code>, carga GAS: <code>tkcDaily</code> 06h + "
+                "<code>tkcWorker</code> a cada 10 min; frescor D-1, histórico desde 16/04/2026). Horários em America/Sao_Paulo — "
+                "o export CSV antigo gravava UTC como hora local (heatmap deslocado 3 h). "
+                "Perdas em relação ao export: etiquetas, equipe e CEP não vêm pela API; o CPF é lido das mensagens "
+                "(<code>cpf_source = 'messages'</code>, ~75% dos tickets com motivo de compra/cadastro) até a D3 expor o campo. "
+                "Compras confirmadas por CPF ±3 dias no NOMINAL.",
                 bg="#f8fafc", icon="ℹ️")
+
+        if _tk_api:
+            # ---- tempos: série mensal (mediana) + tabela ----
+            st.markdown("---")
+            t1, t2 = st.columns([1.9, 1])
+            with t1:
+                _tv_linhas_mensal(_tv_long('s7_tempos', ['espera_med_min', 'duracao_humano_med_min', 'duracao_bot_med_min'], meses=_mg7,
+                                           labels={'espera_med_min': 'Espera até humano', 'duracao_humano_med_min': 'Duração humano',
+                                                   'duracao_bot_med_min': 'Duração só Lia'}),
+                                  "Tempos por mês — mediana em minutos", y_label="min", rotulos=True,
+                                  subtitle="espera: created_at → opened_at · duração humano: opened_at → closed_at · Lia: created_at → closed_at")
+            with t2:
+                _rows_t = []
+                for _nm, _lbl in [('espera', 'Espera até humano assumir'), ('duracao_humano', 'Duração atendimento humano'),
+                                  ('duracao_bot', 'Duração conversa só Lia')]:
+                    _rows_t.append({'Tempo': _lbl, 'Mediana': _tv_min(_tv_tempo(_nm, 'med')), 'p90': _tv_min(_tv_tempo(_nm, 'p90')),
+                                    'Média': _tv_min(_tv_tempo(_nm, 'avg')),
+                                    'Tickets': _tv_n(_tv_val('s7_tempos', f'{_nm}_n'))})
+                st.markdown(f"**Tempos no período** <span style='color:#64748b;font-size:12px'>({_tv_per_lbl})</span>", unsafe_allow_html=True)
+                st.dataframe(pd.DataFrame(_rows_t), use_container_width=True, hide_index=True)
+                st.caption("Mediana e p90 calculados por período no MySQL (ROW_NUMBER); em vários períodos, ponderados pelo nº de "
+                           "tickets. A média é sensível a tickets esquecidos abertos por dias — use a mediana para comparar meses.")
+
+            # ---- ranking de atendentes ----
+            st.markdown("---")
+            _ag = _tv_pivot7('s7_atendente')
+            if _ag.empty:
+                st.caption("sem tickets com atendente no período.")
+            else:
+                for _c in ['tickets', 'leads', 'compras', 'espera_avg_min', 'duracao_avg_min']:
+                    if _c not in _ag.columns:
+                        _ag[_c] = 0.0
+                # médias por atendente somadas em vários períodos: refaz ponderando por tickets
+                _agl = _tvd[(_tvd['secao'] == 's7_atendente') & (_tvd['mes'].isin(list(_tv_per)))]
+                if not _agl.empty and len(_tv_per) > 1:
+                    _w = _agl.pivot_table(index=['dim', 'mes'], columns='metrica', values='valor', aggfunc='sum').fillna(0).reset_index()
+                    for _c in ['espera_avg_min', 'duracao_avg_min']:
+                        if _c in _w.columns:
+                            _w[_c + '_w'] = _w[_c] * _w['tickets']
+                            _s = _w.groupby('dim')[[_c + '_w', 'tickets']].sum()
+                            _ag = _ag.drop(columns=[_c]).merge((_s[_c + '_w'] / _s['tickets'].where(_s['tickets'] > 0)).rename(_c).reset_index(), on='dim', how='left')
+                _ag['taxa'] = (_ag['compras'] / _ag['tickets'].where(_ag['tickets'] > 0) * 100).astype(float)
+                _ag = _ag.sort_values(['compras', 'tickets'], ascending=False).reset_index(drop=True)
+                _n_ag = len(_ag)
+                r1, r2 = st.columns([1.2, 1])
+                with r1:
+                    _tv_titulo("Ranking de atendentes — compras reportadas", f"{_n_ag} atendentes com ticket no período · {_tv_per_lbl}", "A")
+                    _top = _ag.head(15).copy()
+                    _top['rotulo'] = _top.apply(lambda r: f"{format_br(r['compras'])} · {r['taxa']:.1f}%".replace('.', ',') if pd.notna(r['taxa']) else format_br(r['compras']), axis=1)
+                    fig_ag = px.bar(_top.iloc[::-1], x='compras', y='dim', orientation='h', text='rotulo',
+                                    color_discrete_sequence=[_TV_CORES_A[0]], template='cdt_a' if _CDT_THEME else 'plotly_white')
+                    fig_ag.update_traces(textposition='outside', cliponaxis=False, textfont_size=11)
+                    fig_ag.update_layout(height=max(320, 26 * len(_top) + 80), xaxis_title='compras reportadas', yaxis_title='',
+                                         showlegend=False, margin=dict(r=90))
+                    st.plotly_chart(fig_ag, use_container_width=True)
+                    _tv_fonte("API Talkerchat (alex_talkerchat_api) · rótulo = compras · taxa (compras / tickets)")
+                with r2:
+                    st.markdown("**Tabela completa**")
+                    _tab = _ag[['dim', 'tickets', 'leads', 'compras', 'taxa', 'espera_avg_min', 'duracao_avg_min']].copy()
+                    _tab['taxa'] = _tab['taxa'].round(1)
+                    _tab['espera_avg_min'] = _tab['espera_avg_min'].map(_tv_min)
+                    _tab['duracao_avg_min'] = _tab['duracao_avg_min'].map(_tv_min)
+                    _tab = _tab.rename(columns={'dim': 'Atendente', 'tickets': 'Tickets', 'leads': 'Usuários', 'compras': 'Compras',
+                                                'taxa': 'Taxa %', 'espera_avg_min': 'Espera média', 'duracao_avg_min': 'Duração média'})
+                    st.dataframe(_tab, use_container_width=True, hide_index=True, height=max(320, 26 * len(_top) + 80))
+                    st.caption("Só tickets com atendente (agent_id). Espera = criado → assumido; duração = assumido → fechado; "
+                               "médias por atendente (ponderadas por tickets quando o período tem mais de um mês/semana).")
+
+            # ---- heatmap dia × hora ----
+            st.markdown("---")
+            _hr = _tv_pivot7('s7_hora')
+            h1, h2 = st.columns([3, 1])
+            with h2:
+                _hm_m = st.radio("Métrica do mapa", ["Tickets criados", "Compras reportadas", "% com humano"],
+                                 key='t6_s7_hm', horizontal=False)
+            with h1:
+                _tv_titulo("Mapa de calor — dia da semana × hora de criação do ticket",
+                           f"{_tv_per_lbl} · horário de Brasília (America/Sao_Paulo)", "A")
+                if _hr.empty:
+                    st.caption("sem dados de hora no período.")
+                else:
+                    _hr['d'] = _hr['dim'].str.slice(0, 1).astype(int)
+                    _hr['h'] = _hr['dim'].str.slice(2, 4).astype(int)
+                    for _c in ['tickets', 'compras', 'humano']:
+                        if _c not in _hr.columns:
+                            _hr[_c] = 0.0
+                    if _hm_m == "Tickets criados":
+                        _hr['z'] = _hr['tickets']; _fmt = ".0f"; _cs = ['#f0fdf4', '#166534']
+                    elif _hm_m == "Compras reportadas":
+                        _hr['z'] = _hr['compras']; _fmt = ".0f"; _cs = ['#fffbeb', '#b45309']
+                    else:
+                        _hr['z'] = (_hr['humano'] / _hr['tickets'].where(_hr['tickets'] > 0) * 100).astype(float); _fmt = ".0f"; _cs = ['#f8fafc', '#0f172a']
+                    _z = _hr.pivot_table(index='d', columns='h', values='z', aggfunc='sum').reindex(index=range(7), columns=range(24))
+                    _dias = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
+                    fig_hm = px.imshow(_z.values, x=[f"{h:02d}h" for h in range(24)], y=_dias, aspect='auto',
+                                       color_continuous_scale=_cs, text_auto=_fmt,
+                                       template='cdt_a' if _CDT_THEME else 'plotly_white')
+                    fig_hm.update_layout(height=330, xaxis_title='', yaxis_title='', coloraxis_showscale=False,
+                                         margin=dict(l=10, r=10, t=10, b=10))
+                    fig_hm.update_traces(textfont_size=9)
+                    fig_hm.update_xaxes(side='top', tickfont_size=10)
+                    st.plotly_chart(fig_hm, use_container_width=True)
+                    _tv_fonte("API Talkerchat (alex_talkerchat_api) · created_at em BRT · soma dos períodos selecionados")
+
+            # ---- motivos de fechamento + estoque ----
+            st.markdown("---")
+            m1, m2 = st.columns([1.6, 1])
+            with m1:
+                _mot = _tv_pivot7('s7_motivo')
+                _tv_titulo("Motivos de fechamento (close_reason_id · título)", f"tickets fechados criados em {_tv_per_lbl} · top 12", "A")
+                if _mot.empty:
+                    st.caption("sem motivos no período.")
+                else:
+                    for _c in ['tickets', 'bot', 'humano']:
+                        if _c not in _mot.columns:
+                            _mot[_c] = 0.0
+                    _mot = _mot.sort_values('tickets', ascending=False).head(12)
+                    _ml = _mot.melt(id_vars=['dim', 'tickets'], value_vars=['bot', 'humano'], var_name='serie', value_name='valor')
+                    _ml['serie'] = _ml['serie'].map({'bot': 'Só Lia (bot)', 'humano': 'Com atendente'})
+                    _ml['rotulo'] = _ml['valor'].map(_tv_fmt_k)
+                    fig_mt = px.bar(_ml, x='valor', y='dim', color='serie', orientation='h', text='rotulo', barmode='stack',
+                                    category_orders={'dim': list(_mot['dim'][::-1])},
+                                    color_discrete_sequence=[_TV_CORES_A[1], _TV_CORES_A[0]],
+                                    template='cdt_a' if _CDT_THEME else 'plotly_white')
+                    fig_mt.update_traces(textposition='inside', insidetextanchor='middle', textfont_size=10, textfont_color='#ffffff')
+                    fig_mt.update_layout(height=max(320, 28 * len(_mot) + 80), xaxis_title='tickets', yaxis_title='', legend_title_text='',
+                                         uniformtext_minsize=8, uniformtext_mode='hide')
+                    st.plotly_chart(fig_mt, use_container_width=True)
+                    _tv_fonte("API Talkerchat (alex_talkerchat_api) · status = 'closed' · id do motivo estável, título editável no Talkerchat")
+            with m2:
+                _tv_titulo("Estoque de tickets abertos — retrato de hoje",
+                           f"status ≠ closed em toda a base" + (f" · {pd.Timestamp(_est_dt):%d/%m/%Y %H:%M}" if _est_dt is not None else ""), "A")
+                if _est.empty:
+                    st.caption("sem retrato do estoque (seção s7_estoque ausente).")
+                else:
+                    _et = _est.rename(columns={'dim': 'Status', 'abertos': 'Abertos', 'com_atendente': 'Com atendente',
+                                               'de_dias_anteriores': 'De dias anteriores'})
+                    _et = _et[[c for c in ['Status', 'Abertos', 'Com atendente', 'De dias anteriores'] if c in _et.columns]]
+                    _et = _et.sort_values('Abertos', ascending=False)
+                    _tot = {'Status': 'Total'}
+                    for _c in _et.columns[1:]:
+                        _tot[_c] = _et[_c].sum()
+                    _et = pd.concat([_et, pd.DataFrame([_tot])], ignore_index=True)
+                    st.dataframe(_et, use_container_width=True, hide_index=True)
+                    _tv_note(
+                        f"<b>{_tv_n(_est_tot)} tickets abertos agora</b>, {_tv_n(_est_ant)} deles criados antes de hoje "
+                        f"({_tv_pct(_est_ant, _est_tot)}) — é a fila que envelhece; {_tv_n(_est_att)} já têm atendente "
+                        f"(o resto está na Lia ou sem dono). Tickets do período ainda abertos: {_tv_n(tab_per)}. "
+                        "O retrato é refeito a cada carga do agregado (recarga 11:00); o histórico por dia fica no MySQL "
+                        "(status/closed_at por ticket).",
+                        bg="#f8fafc", icon="📥")
 
     # =================================================================
     # 8 · POR TELEFONE DA EMPRESA (funil pelo lado-empresa: ramal · porta · WhatsApp)
