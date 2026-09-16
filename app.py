@@ -7028,6 +7028,14 @@ with tab10:
             _t8 = _m8('vendas_mes_tv', 'televendas'); _t8p = _m8('vendas_mes_tv', 'televendas', _prev10) if _d8p is not None else None
             _ap8 = _m8('vendas_apos', 'televendas')
             _g8 = _m8('ganho_hs', 'televendas')
+            # R33: fatia dos alôs, visão por Negócio (por lead e por Negócio) — seção s8_mesa (pipeline R33)
+            _va8x = _m8('vendas_alo', 'televendas');     _vt8x = _m8('vendas_alo_tv', 'televendas')
+            _n8_tv = _m8('negociacao_hs_pipe_tv', 'televendas')
+            _r33 = {k: _m8(k, 'televendas') for k in ('com_contato', 'com_negocio', 'com_negocio_tv', 'negociacao_leads', 'ganho_leads',
+                                                      'negociacao_leads_venda', 'ganho_leads_venda', 'venda_sem_negocio', 'venda_sem_contato',
+                                                      'negociacao_deals', 'ganho_de_negociacao', 'ganho_de_negociacao_mes',
+                                                      'negociacao_com_venda', 'negociacao_com_venda_tv', 'ganho_com_venda', 'venda_sem_ganho')}
+            _r33_ok = _r33['com_contato'] is not None
             # --- franquias ---
             _lu8 = _m8('leads_unicos_deck', 'franquias'); _lu8p = _m8('leads_unicos_deck', 'franquias', _prev10) if _m8_ok('franquias', _prev10) else None
             _tr8 = _m8('transbordados', 'franquias');     _tr8p = _m8('transbordados', 'franquias', _prev10) if _lu8p is not None else None
@@ -7052,17 +7060,46 @@ with tab10:
 
             _f8a, _f8b = st.columns(2)
             with _f8a:
-                _tv_funil("📵 Funil Televendas — pipeline de ligações ativas", [
-                    ("📵", "Leads ativos discados", _d8, "ESCALLO_LEADS_MES, tipo ATIVO"),
-                    ("🗣️", "Ligações qualificadas (≥ 10 s)", _a8, "alô humano em alguma ligação do mês"),
-                    ("🛒", "Vendas — discados que aparecem no NOMINAL no mês", _v8, "inner join por tel-8, 1 lead = 1, mesmo mês-calendário"),
-                    ("📞", "└ com tipo_venda = TELEVENDAS", _t8, "seq. = % das filiações dos discados"),
-                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto']])
-                st.caption(f"Indicadores laterais (HubSpot, pipeline CDT - Lead Televendas): **{_tv_n(_n8)}** Negócios entraram em "
-                           f"EM NEGOCIAÇÃO {_tv_delta(_n8, _n8p)} · **{_tv_n(_g8)}** entraram em GANHO. "
-                           f"Filiações após o 1º contato do mês: **{_tv_n(_ap8)}** de {_tv_n(_v8)}. "
-                           "'Negociação' fica fora do funil porque é menor que 'vendas': a maioria das filiações dos discados "
-                           "fecha fora da esteira do CRM (site, MGM, campo).", unsafe_allow_html=True)
+                # R33: duas visões da MESMA população (leads ATIVO discados no mês): por telefone (régua do relatório, com a
+                #      fatia dos alôs) ou por Negócio (Contato → Negócio → EM NEGOCIAÇÃO → GANHO, vendas do CTN ao lado).
+                _t10_neg = st.toggle("🤝 Ver pelo Negócio — Contato → Negócio → negociação → GANHO", value=False, key='t10_neg',
+                                     disabled=not _r33_ok,
+                                     help="Mesmos leads discados, vistos pelo CRM: quantos têm Contato (telefone), Negócio, entraram em EM "
+                                          "NEGOCIAÇÃO e em GANHO no mês; as vendas do CTN ficam como referência ao lado de cada etapa.")
+                if _t10_neg and _r33_ok:
+                    _tv_funil("🤝 Funil Televendas — visto pelo Negócio", [
+                        ("📵", "Leads ativos discados", _d8, "ESCALLO_LEADS_MES, tipo ATIVO"),
+                        ("🧑", "Com Contato no HubSpot", _r33['com_contato'], "tel-8 do lead = telefone/WhatsApp do Contato"),
+                        ("🤝", "Com Negócio associado", _r33['com_negocio'], f"Contatos sem Negócio: {_tv_n((_r33['com_contato'] or 0) - (_r33['com_negocio'] or 0))}"),
+                        ("📞", "└ Negócio que passou pela esteira (LEAD)", _r33['com_negocio_tv'], "hs_v2_date_entered LEAD preenchida", 2),
+                        ("🗣️", "Entraram em EM NEGOCIAÇÃO no mês", _r33['negociacao_leads'], f"com venda no CTN no mês: {_tv_n(_r33['negociacao_leads_venda'])} ({_tv_pct(_r33['negociacao_leads_venda'], _r33['negociacao_leads'])})"),
+                        ("🏆", "Entraram em GANHO no mês", _r33['ganho_leads'], f"seq. = % dos leads com Negócio (GANHO não passa necessariamente por negociação) · com venda no CTN: {_tv_n(_r33['ganho_leads_venda'])} ({_tv_pct(_r33['ganho_leads_venda'], _r33['ganho_leads'])})", 2),
+                    ], subtitle=_lbl10, chips=[['tel', 'foto'], ['contato', 'foto'], ['negocio', 'foto'], ['negocio', 'foto'], ['negocio', 'foto'], ['negocio', 'foto']])
+                    st.caption(f"🪪 **Vendas no CTN da mesma população:** {_tv_n(_v8)} discados filiaram no mês — {_tv_n(_r33['venda_sem_negocio'])} sem "
+                               f"Negócio e {_tv_n(_r33['venda_sem_contato'])} sem Contato. **Pelo lado dos Negócios:** {_tv_n(_r33['negociacao_deals'])} entradas em "
+                               f"EM NEGOCIAÇÃO no mês (qualquer pipeline atual; {_tv_n(_n8_tv)} ainda no pipeline TV) → {_tv_n(_r33['ganho_de_negociacao'])} foram a GANHO "
+                               f"({_tv_n(_r33['ganho_de_negociacao_mes'])} no mês) · {_tv_n(_r33['negociacao_com_venda'])} com venda no CTN no mês "
+                               f"({_tv_pct(_r33['negociacao_com_venda'], _r33['negociacao_deals'])}; tipo TELEVENDAS: {_tv_n(_r33['negociacao_com_venda_tv'])}) · "
+                               f"GANHO com venda {_tv_n(_r33['ganho_com_venda'])} · **venda sem GANHO {_tv_n(_r33['venda_sem_ganho'])}** — o write-back da "
+                               "esteira captura só uma fração das vendas de quem passou por negociação.", unsafe_allow_html=True)
+                else:
+                    _tv_funil("📵 Funil Televendas — pipeline de ligações ativas", [
+                        ("📵", "Leads ativos discados", _d8, "ESCALLO_LEADS_MES, tipo ATIVO"),
+                        ("🗣️", "Ligações qualificadas (≥ 10 s)", _a8, "alô humano em alguma ligação do mês"),
+                        ("🛒", "└ dos alôs: filiaram no mês", _va8x, "fatia dos alôs · tel-8 × NOMINAL, mesmo mês", 1),
+                        ("📞", "└ dos alôs: com tipo TELEVENDAS", _vt8x, "seq. = % das filiações dos alôs", 2),
+                        ("🛒", "Vendas — discados que aparecem no NOMINAL no mês", _v8, "todos os discados · inner join por tel-8, 1 lead = 1, mesmo mês-calendário · seq. = % dos discados", 0),
+                        ("📞", "└ com tipo_venda = TELEVENDAS", _t8, "seq. = % das filiações dos discados", 4),
+                    ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto']])
+                    _sem_alo = ((_v8 or 0) - (_va8x or 0)) if _va8x is not None else None
+                    _sem_alo_b = ((_d8 or 0) - (_a8 or 0)) if _va8x is not None else None
+                    st.caption((f"🗣️ **Filiação com alô × sem alô:** {_tv_pct(_va8x, _a8)} dos alôs filiaram no mês contra {_tv_pct(_sem_alo, _sem_alo_b)} "
+                                f"de quem não teve alô ≥ 10 s — a régua sobre alôs mede a esteira, a sobre discados mede o mailing. "
+                                f"Das {_tv_n(_t8)} filiações com tipo TELEVENDAS, {_tv_n(_vt8x)} são de leads com alô. " if _va8x is not None else "")
+                               + f"Indicadores laterais (HubSpot): **{_tv_n(_n8)}** Negócios entraram em EM NEGOCIAÇÃO {_tv_delta(_n8, _n8p)}"
+                               + (f" (qualquer pipeline atual; {_tv_n(_n8_tv)} ainda no pipeline TV)" if _n8_tv is not None else "")
+                               + f" · **{_tv_n(_g8)}** entraram em GANHO. Filiações após o 1º contato do mês: **{_tv_n(_ap8)}** de {_tv_n(_v8)}. "
+                               "A maioria das filiações dos discados fecha fora da esteira do CRM (site, MGM, campo).", unsafe_allow_html=True)
             with _f8b:
                 _tv_funil("🏪 Funil Franquias — transbordo de leads", [
                     ("🧲", "Leads Únicos (regra do relatório)", _lu8, "`HS - Leads Únicos mês`, createdate no mês"),
@@ -7122,7 +7159,12 @@ with tab10:
                     "chave tel-8 (`RIGHT(CELULAR, 8) = RIGHT(tel_lead, 8)`; o Escallo não tem CPF), 1 lead contado uma vez. Difere do "
                     "`venda_confirmada` da própria tabela (janela 1º contato → último + 14 d) e do GANHO do HubSpot (write-back da esteira). |\n"
                     "| **└ tipo Televendas** | idem | o subconjunto cuja filiação tem `tipo_venda = 'TELEVENDAS'`; a % sequencial é sobre as filiações dos discados. |\n"
-                    "| **Negociação (lateral)** | Negócios | entradas em `EM NEGOCIAÇÃO` (961121695) no pipeline CDT - Lead Televendas no mês. |\n"
+                    "| **└ dos alôs: filiaram no mês** | telefone × CPF | a mesma venda restrita aos leads com `alo_humano = 1` — mede a esteira; a linha de todos os discados mede o mailing (R33). |\n"
+                    "| **Negociação (lateral)** | Negócios | entradas em `EM NEGOCIAÇÃO` (961121695) no mês, **sem filtrar o pipeline atual** (R33): 81% dos Negócios que passam "
+                    "pela esteira já foram movidos ao pipeline Distribuição e o filtro antigo deixava o número 5× menor; o valor 'ainda no pipeline TV' é a régua antiga. |\n"
+                    "| **Visão pelo Negócio (toggle)** | telefone → Contato → Negócio | tel-8 do lead × telefone/WhatsApp do Contato (`alex_tv_contato_tel`) → Negócios associados (`hubspot_assoc_contact_deal`); "
+                    "'passou pela esteira' = `hs_v2_date_entered` LEAD preenchida; negociação/GANHO = entrada no mês; venda = o mesmo cruzamento tel-8/CPF × NOMINAL do mês. "
+                    "Pelo lado dos Negócios, a venda casa pelo CPF do Negócio ou pelo telefone do Contato. Ressalva: `hs_v2_date_entered_*` guarda a ÚLTIMA entrada. |\n"
                     "| **Leads Únicos (relatório)** | Contatos | `HS - Leads Únicos mês`, `createdate` no mês, canal conhecido e fora de Importação / "
                     "Base de Desfiliados / Instância de Engajamento / `Franquia - ID Promotor Lead` (é a regra que reproduz o deck: jul/26 = 184,3k). |\n"
                     "| **Leads transbordados** | Negócios | pipeline CDT - Distribuição (697831824), 1ª entrada em `Distribuição de Leads` (1020141703) ou "
