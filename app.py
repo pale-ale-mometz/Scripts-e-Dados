@@ -3862,6 +3862,8 @@ with tab6:
                         f"<b>Régua do relatório mensal (aba 🧲 Aquisição, mesmos meses):</b> {_tv_n(_d8)} discados · {_tv_n(_a8)} alôs ≥ 10 s · "
                         f"<b>{_tv_n(_v8m)} filiaram no mês</b> ({_tv_pct(_v8m, _d8)} dos discados; qualquer tipo de venda no NOMINAL, "
                         f"cruzamento por tel-8 no mesmo mês-calendário) · <b>{_tv_n(_t8)}</b> com tipo_venda TELEVENDAS ({_tv_pct(_t8, _v8m)}). "
+                        f"Escada de atribuição (R34): após o 1º contato {_tv_n(_v8('vendas_apos'))} · conversaram (alô ≥ 10 s) e filiaram "
+                        f"{_tv_n(_v8('vendas_alo'))} · tipo TELEVENDAS com alô {_tv_n(_v8('vendas_alo_tv'))}. "
                         f"Agregado calculado em {_at8:%d/%m %H:%M}.<br>"
                         "<b>Por que difere do funil acima:</b> o funil Escallo conta o que a <i>operação registrou</i> (tabulação 'venda' do "
                         "operador e a confirmação dessa tabulação no CTN na janela do contato + 14 d); a régua do relatório conta "
@@ -7066,6 +7068,13 @@ with tab10:
                                      disabled=not _r33_ok,
                                      help="Mesmos leads discados, vistos pelo CRM: quantos têm Contato (telefone), Negócio, entraram em EM "
                                           "NEGOCIAÇÃO e em GANHO no mês; as vendas do CTN ficam como referência ao lado de cada etapa.")
+                # R34: escada de atribuição do último degrau (teto → após 1º contato → conversou → piso tipo TELEVENDAS)
+                _t10_esc = st.toggle("🪜 Abrir o último degrau — escada de atribuição (teto → piso)", value=False, key='t10_esc',
+                                     disabled=(_va8x is None),
+                                     help="Abre 'Vendas — discados no NOMINAL' em quatro leituras da mesma população: teto (qualquer "
+                                          "filiação do discado, tel-8 × NOMINAL, sem depender do HubSpot), após o 1º contato do mês, "
+                                          "conversou (alô ≥ 10 s) e filiou, e piso (tipo_venda = TELEVENDAS, com/sem alô). "
+                                          "Teto e piso não se aninham com os alôs: são cortes diferentes da mesma população.")
                 if _t10_neg and _r33_ok:
                     _tv_funil("🤝 Funil Televendas — visto pelo Negócio", [
                         ("📵", "Leads ativos discados", _d8, "ESCALLO_LEADS_MES, tipo ATIVO"),
@@ -7082,6 +7091,21 @@ with tab10:
                                f"({_tv_pct(_r33['negociacao_com_venda'], _r33['negociacao_deals'])}; tipo TELEVENDAS: {_tv_n(_r33['negociacao_com_venda_tv'])}) · "
                                f"GANHO com venda {_tv_n(_r33['ganho_com_venda'])} · **venda sem GANHO {_tv_n(_r33['venda_sem_ganho'])}** — o write-back da "
                                "esteira captura só uma fração das vendas de quem passou por negociação.", unsafe_allow_html=True)
+                elif _t10_esc and _va8x is not None:
+                    _sem_alo_tv = ((_t8 or 0) - (_vt8x or 0)) if (_t8 is not None and _vt8x is not None) else None
+                    _antes8 = ((_v8 or 0) - (_ap8 or 0)) if (_v8 is not None and _ap8 is not None) else None
+                    _tv_funil("🪜 Funil Televendas — último degrau aberto (escada de atribuição)", [
+                        ("📵", "Leads ativos discados", _d8, "ESCALLO_LEADS_MES, tipo ATIVO"),
+                        ("🗣️", "Ligações qualificadas (≥ 10 s)", _a8, "alô humano em alguma ligação do mês"),
+                        ("🛒", "Teto — discados que filiaram no mês (qualquer canal)", _v8, "tel-8 × NOMINAL, mesmo mês-calendário; não depende do HubSpot · seq. = % dos discados", 0),
+                        ("⏱️", "└ após o 1º contato do mês", _ap8, f"{_tv_n(_antes8)} compraram antes de serem discados · seq. = % do teto", 2),
+                        ("🗣️", "└ conversaram (alô ≥ 10 s) e filiaram", _va8x, f"{_tv_pct(_va8x, _a8)} dos alôs · seq. = % do teto", 2),
+                        ("📞", "└ Piso — tipo_venda = TELEVENDAS", _t8, f"{_tv_n(_vt8x)} com alô · {_tv_n(_sem_alo_tv)} sem alô ≥ 10 s no mês · seq. = % do teto", 2),
+                    ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto']])
+                    st.caption(f"🪜 **Escada de atribuição** da mesma população ({_tv_n(_d8)} discados): o **teto** ({_tv_n(_v8)}) é tudo o que o mailing tocou e "
+                               f"filiou; **após o 1º contato** ({_tv_n(_ap8)}) tira quem já tinha comprado; **conversou e filiou** ({_tv_n(_va8x)}) é a leitura "
+                               f"defensável para CPA; o **piso** ({_tv_n(_t8)}) é o que o vendedor registrou — e {_tv_n(_sem_alo_tv)} dessas não têm alô ≥ 10 s no mês. "
+                               "Piso e alôs não se aninham: são dois cortes diferentes do teto.", unsafe_allow_html=True)
                 else:
                     _tv_funil("📵 Funil Televendas — pipeline de ligações ativas", [
                         ("📵", "Leads ativos discados", _d8, "ESCALLO_LEADS_MES, tipo ATIVO"),
@@ -7213,12 +7237,19 @@ with tab10:
                        "todas as portas (formulários, WhatsApp, parcerias), não só o checkout; a comparação certa é com a Etapa 1.")
         with _cs2:
             if _v8s('discados', 'televendas') is not None:
-                _tv_funil("📵 Televendas — Ativo (discador)", [
+                # R34: com o toggle t10_esc (bloco 1b) ligado, o último degrau abre na escada teto → após 1º contato → alô → piso
+                _esc_s = bool(st.session_state.get('t10_esc', False)) and _v8s('vendas_alo', 'televendas') is not None
+                _tv_funil("📵 Televendas — Ativo (discador)" + (" · último degrau aberto" if _esc_s else ""), [
                     ("📵", "Leads discados", _v8s('discados', 'televendas'), "ESCALLO_LEADS_MES, tipo ATIVO"),
                     ("🗣️", "Falaram ≥ 10 s", _v8s('alo10', 'televendas'), "alô humano"),
-                    ("🛒", "Filiaram no mês (NOMINAL)", _v8s('vendas_mes', 'televendas'), "tel-8 × NOMINAL no mesmo mês — régua do relatório"),
-                    ("📞", "└ com tipo_venda TELEVENDAS", _v8s('vendas_mes_tv', 'televendas'), "seq. = % das filiações dos discados"),
-                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto']])
+                    ("🛒", "Filiaram no mês (NOMINAL)" + (" — teto" if _esc_s else ""), _v8s('vendas_mes', 'televendas'), "tel-8 × NOMINAL no mesmo mês — régua do relatório", 0),
+                ] + ([
+                    ("⏱️", "└ após o 1º contato do mês", _v8s('vendas_apos', 'televendas'), "seq. = % do teto", 2),
+                    ("🗣️", "└ conversaram (alô ≥ 10 s) e filiaram", _v8s('vendas_alo', 'televendas'), "seq. = % do teto", 2),
+                ] if _esc_s else []) + [
+                    ("📞", "└ com tipo_venda TELEVENDAS" + (" — piso" if _esc_s else ""), _v8s('vendas_mes_tv', 'televendas'),
+                     (f"{_tv_n(_v8s('vendas_alo_tv', 'televendas'))} com alô · seq. = % do teto" if _esc_s else "seq. = % das filiações dos discados"), 2),
+                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto']] + [['tel_ctn', 'foto']] * (4 if _esc_s else 2))
             else:
                 _tv_funil("📵 Televendas — Ativo (discador)", [
                     ("📵", "Leads discados", _v10('s2_super', 'leads', _sel10, 'ativo'), "ESCALLO_LEADS_MES, tipo ATIVO"),
