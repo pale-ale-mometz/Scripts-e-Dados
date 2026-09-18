@@ -4481,8 +4481,8 @@ with tab6:
             _tv_funil("Funil Talkerchat (WhatsApp)", [
                 ("💬", "Tickets", tk, "conversas criadas no período (created_at, fuso BRT)"),
                 ("👤", "Usuários únicos", tl, f"telefone_key (tel-8)" + (f" · {_tv_n(tlc_id)} por contact_id" if tlc_id is not None else "")),
-                ("🧑‍💼", "Chegaram a um humano", th, "usuários com agent_id em algum ticket"),
-                ("🪪", "Qualificados (CPF)", tcpf, "CPF capturado nas mensagens (~75% de acerto)"),
+                ("🪪", "Qualificados (CPF)", tcpf, "CPF capturado nas mensagens (~75% de acerto) · seq. = % dos usuários únicos"),
+                ("🧑‍💼", "Chegaram a um humano", th, "usuários com agent_id em algum ticket — fatia dos usuários únicos (seq. = % deles)", 1),
                 ("🛒", "Compra reportada (usuários)", tlc, f"close_reason = 'Compra reportada' · {_tv_n(tcomp)} tickets"),
                 ("✅", "Confirmadas no NOMINAL", tconf, "pares CPF × âncora (fechamento) ±3 d"),
             ], subtitle=_tv_per_lbl)
