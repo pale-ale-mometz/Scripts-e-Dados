@@ -4329,6 +4329,7 @@ with tab6:
         S = 's7_talkerchat'
         tk = _tv_val(S, 'tickets'); tl = _tv_val(S, 'leads'); tlc_id = _tv_val(S, 'leads_contato'); tcpf = _tv_val(S, 'com_cpf')
         th = _tv_val(S, 'leads_humano'); tk_h = _tv_val(S, 'tickets_humano'); tk_b = _tv_val(S, 'tickets_bot')
+        tk_sac = _tv_val(S, 'tickets_sac'); tk_lia = _tv_val(S, 'tickets_lia'); tl_sac = _tv_val(S, 'leads_sac')  # 18/09: triagem → SAC × Lia vendas
         tcomp = _tv_val(S, 'compras'); tlia = _tv_val(S, 'compras_lia'); thum = _tv_val(S, 'compras_humano')
         tlc = _tv_val(S, 'leads_compra'); tpar = _tv_val(S, 'pares_compra_cpf'); tconf = _tv_val(S, 'compras_confirmadas')
         tab_per = _tv_val(S, 'abertos')
@@ -4380,8 +4381,14 @@ with tab6:
                 (f"{_tv_n(tk)} tickets {_tv_delta(tk, tk_p)} · " + f"{tk / tl:.2f}".replace('.', ',') + " por usuário"
                  + (f" · {_tv_n(tlc_id)} contatos (contact_id)" if tlc_id is not None else "")) if tk and tl else "")
         _tv_kpi(k2, "🪪", "Qualificados (com CPF)", f"{_tv_pct(tcpf, tl)}", f"{_tv_n(tcpf)} usuários com CPF capturado nas mensagens")
-        _tv_kpi(k3, "🤖", "Só bot (Lia) × humano — tickets", f"{_tv_pct(tk_b, tk)} · {_tv_pct(tk_h, tk)}",
-                f"{_tv_n(tk_b)} só Lia · {_tv_n(tk_h)} com atendente · usuários: {_tv_pct(tbot, tl)} só Lia", color="#2e8a4f")
+        if tk_sac is not None:  # agregado já traz a separação triagem → SAC × Lia vendas (18/09)
+            _tv_kpi(k3, "🤖", "Lia (vendas) × triagem → SAC × humano — tickets",
+                    f"{_tv_pct(tk_lia, tk)} · {_tv_pct(tk_sac, tk)} · {_tv_pct(tk_h, tk)}",
+                    f"{_tv_n(tk_lia)} Lia · {_tv_n(tk_sac)} triagem → SAC · {_tv_n(tk_h)} com atendente · "
+                    f"usuários: {_tv_pct(tl_sac, tl)} barrados na triagem (CPF já cadastrado)", color="#2e8a4f")
+        else:
+            _tv_kpi(k3, "🤖", "Só bot (Lia) × humano — tickets", f"{_tv_pct(tk_b, tk)} · {_tv_pct(tk_h, tk)}",
+                    f"{_tv_n(tk_b)} só Lia · {_tv_n(tk_h)} com atendente · usuários: {_tv_pct(tbot, tl)} só Lia", color="#2e8a4f")
         _tv_kpi(k4, "🛒", "Compras reportadas → confirmadas", f"{_tv_n(tcomp)} {_tv_delta(tcomp, tcomp_p)}",
                 f"Lia {_tv_pct(tlia, tcomp)} · humano {_tv_pct(thum, tcomp)} · {_tv_pct(tconf, tpar)} confirmadas no NOMINAL (CPF ±3 d)")
 
@@ -4422,9 +4429,10 @@ with tab6:
                 ("✅", "Confirmadas no NOMINAL", tconf, "pares CPF × âncora (fechamento) ±3 d"),
             ], subtitle=_tv_per_lbl)
             _mg7 = _tv_meses_grafico('t6_s7_ano')
-            _tv_chart_mensal(_tv_long(S, ['tickets_bot', 'tickets_humano'], meses=_mg7,
-                                      labels={'tickets_bot': 'Só Lia (bot)', 'tickets_humano': 'Com atendente humano'}),
-                             "Tickets por mês — bot × humano", subtitle="attended_by_bot / agent_id da API",
+            _tv_chart_mensal(_tv_long(S, ['tickets_lia', 'tickets_sac', 'tickets_humano'] if tk_sac is not None else ['tickets_bot', 'tickets_humano'], meses=_mg7,
+                                      labels={'tickets_lia': 'Lia (vendas)', 'tickets_sac': 'Triagem → SAC', 'tickets_bot': 'Só Lia (bot)', 'tickets_humano': 'Com atendente humano'}),
+                             "Tickets por mês — Lia × triagem → SAC × humano" if tk_sac is not None else "Tickets por mês — bot × humano",
+                             subtitle="close_reason 4 (Transferido para SAC) = triagem · agent_id = humano · resto = Lia" if tk_sac is not None else "attended_by_bot / agent_id da API",
                              stacked=True, rotulos=True, fonte="API Talkerchat (alex_talkerchat_api)")
             _tv_chart_mensal(_tv_long(S, ['compras_lia', 'compras_humano'], meses=_mg7,
                                       labels={'compras_lia': 'Compras Lia (bot)', 'compras_humano': 'Compras humano'}),
@@ -4432,10 +4440,18 @@ with tab6:
                              stacked=True, rotulos=True, fonte="API Talkerchat (alex_talkerchat_api)")
         with c2:
             _tv_note(
-                f"<b>Bot × humano de verdade.</b> {_tv_pct(tk_b, tk)} dos tickets foram atendidos só pela Lia "
-                f"(<code>attended_by_bot</code>, campo da API — a etiqueta 'Venda Lia' do export antigo oscilava e zerou em ago/26); "
-                f"{_tv_pct(tk_h, tk)} tiveram um atendente humano. Por usuário: {_tv_pct(tbot, tl)} só falaram com a Lia no período. "
-                f"Nas compras, a Lia responde por {_tv_pct(tlia, tcomp)}.<br><br>"
+                (f"<b>Bot × humano de verdade.</b> O <code>attended_by_bot</code> da API marca {_tv_pct(tk_b, tk)} dos tickets como 'só bot', "
+                 f"mas isso mistura duas fases do mesmo número: a <b>triagem</b> (roteiro fixo — apresentação da Lia → pede o CPF → se já está na base, "
+                 f"responde 'CPF já cadastrado' e fecha como <i>Transferido para SAC</i>) e a <b>conversa de vendas</b> da Lia. Separando pelo motivo de "
+                 f"fechamento: <b>{_tv_pct(tk_lia, tk)}</b> Lia vendas · <b>{_tv_pct(tk_sac, tk)}</b> triagem → SAC · <b>{_tv_pct(tk_h, tk)}</b> com atendente "
+                 f"(<code>agent_id</code>). Não há campo de handover na API — a assinatura está só nas mensagens ('Vou conectar você com um consultor "
+                 f"especializado' → humano). Amostra de 520 tickets (18/09): dentro da fatia Lia, ~14 pp são clientes que não responderam após o roteiro; "
+                 f"conversas reais com a Lia ≈ 39% do total. Nas compras, a Lia responde por {_tv_pct(tlia, tcomp)}.<br><br>"
+                 if tk_sac is not None else
+                 f"<b>Bot × humano de verdade.</b> {_tv_pct(tk_b, tk)} dos tickets foram atendidos só pela Lia "
+                 f"(<code>attended_by_bot</code>, campo da API — a etiqueta 'Venda Lia' do export antigo oscilava e zerou em ago/26); "
+                 f"{_tv_pct(tk_h, tk)} tiveram um atendente humano. Por usuário: {_tv_pct(tbot, tl)} só falaram com a Lia no período. "
+                 f"Nas compras, a Lia responde por {_tv_pct(tlia, tcomp)}.<br><br>") +
                 f"<b>A falha: nenhum Negócio é criado.</b> Dos {_tv_n(tcrm_l)} usuários com CPF, {_tv_pct(tcrm_c, tcrm_l)} existem como "
                 f"Contato no HubSpot, mas só <b>{_tv_pct(tcrm_d, tcrm_l)}</b> tiveram um Negócio criado no período da conversa "
                 f"({_tv_pct(tcrm_dq, tcrm_l)} têm algum Negócio em qualquer época). O Talkerchat não está integrado ao CRM (L2).",
@@ -6574,7 +6590,7 @@ with tab5:
 
 # --- Leads Únicos por bucket (compartilhado: 🧲 Aquisição e 🧭 Funil Ponta a Ponta; regra em gt7/rules.py) ---
 _LU_LBL = {
-    'core': 'Núcleo (site, checkout, WhatsApp, mídia)', 'tim': 'Parceria B2B2C - TIM',
+    'core': 'Núcleo (site, checkout, WhatsApp, mídia)', 'tim': 'Parceria B2B2C - TIM (fora das definições)',
     'franquia_promotor': 'Franquia — ID Promotor', 'franquia_facebook': 'Franquia — Facebook (captação)',
     'franquia_cms': 'Franquia — formulário CMS', 'regional': 'Formulários regionais',
     'ruptura': 'Projeto Ruptura', 'importacao': 'Importação de base',
@@ -6582,7 +6598,7 @@ _LU_LBL = {
     'sem_canal': 'Sem canal registrado',
 }
 _LU_DEFS = {
-    'Abrangente (tudo menos Engajamento)': ['core', 'importacao', 'desfiliados', 'tim', 'franquia_cms',
+    'Abrangente (tudo menos Engajamento e TIM)': ['core', 'importacao', 'desfiliados', 'franquia_cms',
                                             'franquia_promotor', 'franquia_facebook', 'ruptura', 'regional', 'sem_canal'],
     'HubSpot — relatório "Leads Únicos" (347496241)': ['core', 'franquia_cms', 'franquia_promotor',
                                                        'franquia_facebook', 'ruptura', 'regional', 'sem_canal'],
@@ -6879,7 +6895,7 @@ with tab10:
                                 list(_LU_DEFS.keys()), index=0, key='t10_def')
             if _LU_DEFS[_def10] is None:
                 _sel_bk10 = _cd2.multiselect("Buckets que contam:", sorted(_lub['bucket'].unique()),
-                                             default=[b for b in sorted(_lub['bucket'].unique()) if b != 'engajamento'],
+                                             default=[b for b in sorted(_lub['bucket'].unique()) if b not in ('engajamento', 'tim')],
                                              format_func=lambda b: _LU_LBL.get(b, b), key='t10_bk')
             else:
                 _sel_bk10 = [b for b in _LU_DEFS[_def10] if b in set(_lub['bucket'])]
@@ -7054,7 +7070,7 @@ with tab10:
             _tv_kpi(_k8[2], "📞", "└ com tipo Televendas", f"{_tv_n(_t8)} {_tv_delta(_t8, _t8p)}",
                     f"{_tv_pct(_t8, _v8)} das filiações dos discados · {_tv_pct(_t8, _tv_ctn)} das vendas TELEVENDAS do CTN", color="#b45309")
             _tv_kpi(_k8[3], "🧲", "Leads Únicos (regra do relatório)", f"{_tv_n(_lu8)} {_tv_delta(_lu8, _lu8p)}",
-                    "canal conhecido, fora de Importação / Desfiliados / Engajamento / promotor", color="#0f172a")
+                    "canal conhecido, fora de Importação / Desfiliados / Engajamento / TIM / promotor", color="#0f172a")
             _tv_kpi(_k8[4], "🏪", "Transbordados para franquias", f"{_tv_n(_tr8)} {_tv_delta(_tr8, _tr8p)}",
                     f"{_tv_pct(_tr8, _lu8)} dos leads únicos (tx. de transbordo)", color="#0f172a")
             _tv_kpi(_k8[5], "✅", "Vendas nas franquias (mês do lead)", f"{_tv_n(_vf8)} {_tv_delta(_vf8, _vf8p)}",
@@ -7190,7 +7206,7 @@ with tab10:
                     "'passou pela esteira' = `hs_v2_date_entered` LEAD preenchida; negociação/GANHO = entrada no mês; venda = o mesmo cruzamento tel-8/CPF × NOMINAL do mês. "
                     "Pelo lado dos Negócios, a venda casa pelo CPF do Negócio ou pelo telefone do Contato. Ressalva: `hs_v2_date_entered_*` guarda a ÚLTIMA entrada. |\n"
                     "| **Leads Únicos (relatório)** | Contatos | `HS - Leads Únicos mês`, `createdate` no mês, canal conhecido e fora de Importação / "
-                    "Base de Desfiliados / Instância de Engajamento / `Franquia - ID Promotor Lead` (é a regra que reproduz o deck: jul/26 = 184,3k). |\n"
+                    "Base de Desfiliados / Instância de Engajamento / `B2B2C - TIM` (fora desde 18/09) / `Franquia - ID Promotor Lead` (regra que reproduzia o deck: jul/26 = 184,3k antes de tirar a TIM). |\n"
                     "| **Leads transbordados** | Negócios | pipeline CDT - Distribuição (697831824), 1ª entrada em `Distribuição de Leads` (1020141703) ou "
                     "`Validador de Distribuição` (1020141709) no mês — `hs_v2_date_entered_*` guarda a ÚLTIMA entrada, então redistribuições reescrevem meses passados. |\n"
                     "| **Vendas nas franquias** | CPF | leads criados no mês (regra de abril, **com** os promotores — são eles que mais viram venda de franquia) × "
@@ -7492,7 +7508,7 @@ with tab11:
     _tv_chips_legenda(['contato', 'negocio', 'ctn', 'filme'])
 
     _FJ_LBL = {
-        'core': 'Núcleo (site, checkout, WhatsApp, mídia)', 'tim': 'Parceria B2B2C - TIM',
+        'core': 'Núcleo (site, checkout, WhatsApp, mídia)', 'tim': 'Parceria B2B2C - TIM (fora das definições)',
         'franquia_promotor': 'Franquia — ID Promotor', 'franquia_facebook': 'Franquia — Facebook (captação)',
         'franquia_cms': 'Franquia — formulário CMS', 'regional': 'Formulários regionais',
         'ruptura': 'Projeto Ruptura', 'importacao': 'Importação de base',
@@ -7500,7 +7516,7 @@ with tab11:
         'sem_canal': 'Sem canal registrado',
     }
     _FJ_DEFS = {
-        'Abrangente (tudo menos Engajamento)': ['core', 'importacao', 'desfiliados', 'tim', 'franquia_cms',
+        'Abrangente (tudo menos Engajamento e TIM)': ['core', 'importacao', 'desfiliados', 'franquia_cms',
                                                 'franquia_promotor', 'franquia_facebook', 'ruptura', 'regional', 'sem_canal'],
         'HubSpot — relatório "Leads Únicos" (347496241)': ['core', 'franquia_cms', 'franquia_promotor',
                                                            'franquia_facebook', 'ruptura', 'regional', 'sem_canal'],
@@ -7593,12 +7609,12 @@ with tab11:
     _todos_bk = [b for b in _FJ_LBL if b in set(_fjb['bucket'])]
     if _FJ_DEFS[_fj_def_nome] is None:
         _fj_sel = _c_bk.multiselect("Buckets que contam como elegíveis:", _todos_bk,
-                                    default=[b for b in _todos_bk if b != 'engajamento'],
+                                    default=[b for b in _todos_bk if b not in ('engajamento', 'tim')],
                                     format_func=lambda b: _FJ_LBL.get(b, b), key="fj_sel")
     else:
         _fj_sel = [b for b in _FJ_DEFS[_fj_def_nome] if b in _todos_bk]
         _c_bk.caption("Buckets desta definição: " + " · ".join(_FJ_LBL.get(b, b) for b in _fj_sel)
-                      + ". Regional e Ruptura ainda **sem definição oficial** — por isso tudo aqui é seleção, não filtro fixo.")
+                      + ". Regional e Ruptura ainda **sem definição oficial** — por isso tudo aqui é seleção, não filtro fixo. TIM fica fora de todas as definições (18/09): não segue os fluxos de televendas/franquias; marque o bucket em Personalizada se quiser vê-la.")
 
     _cur = _fjb[_fjb['mes'].isin(_fj_meses)]
     _sel = _cur[_cur['bucket'].isin(_fj_sel)]
