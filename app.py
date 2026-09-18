@@ -3483,6 +3483,47 @@ def load_tv_dash():
     return d_m, d_w, None
 
 
+
+# R37 — dimensão de ramais do Escallo ativo (pipeline televendas_dash, seção s9): tipo do ramal, agente dominante do mês,
+# IDPV(s) do vendedor em alex_idpvs e o número externo que o cliente vê. O e-mail do agente fica no banco, não na tela.
+_TV_RAMAL_COLS = ['mes', 'ramal', 'tipo', 'cod_agente', 'nome_agente', 'vendedor', 'ligacoes', 'lig_com_agente', 'alo10',
+                  'n_agentes', 'idpvs', 'n_idpv', 'numero_externo']
+_TV_TIPO_RAMAL = {'humano': 'Operador humano', 'sistema': 'Linha de sistema (sem agente)', 'treinamento': 'Treinamento / qualidade',
+                  'sem_login': 'Sem agente logado (baixo volume)', 'externo': 'Número externo (não é ramal)'}
+_TV_TIPO_ORDEM = {'humano': 0, 'sistema': 1, 'treinamento': 2, 'sem_login': 3, 'externo': 4}
+
+
+@st.cache_data(ttl=43200)
+def _load_tv_ramal_dim_raw():
+    d = cquery("SELECT mes, ramal, tipo, cod_agente, nome_agente, vendedor, ligacoes, lig_com_agente, alo10, n_agentes, "
+               "idpvs, n_idpv, numero_externo FROM alex_tv_ramal_dim", ttl=0)
+    d['mes'] = pd.to_datetime(d['mes'])
+    for c in ('ligacoes', 'lig_com_agente', 'alo10', 'n_agentes', 'n_idpv'):
+        d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0)
+    d['ramal'] = d['ramal'].astype(str)
+    return d
+
+
+def _load_tv_ramal_dim():
+    """Sem cache: a tabela pode não existir ainda → DataFrame vazio (a aba cai na heurística antiga)."""
+    try:
+        return _load_tv_ramal_dim_raw()
+    except Exception:
+        return pd.DataFrame(columns=_TV_RAMAL_COLS)
+
+
+def _tv_nome_curto(nome):
+    """'WEDNA LEYDIANNE MARQUES DA SILVA' → 'Wedna L. M. da Silva' (1º e último nomes inteiros; partículas minúsculas)."""
+    if not nome or not isinstance(nome, str):
+        return ""
+    toks = [t for t in nome.strip().split() if t]
+    if len(toks) <= 2:
+        return " ".join(t.capitalize() for t in toks)
+    part = {'DA', 'DE', 'DO', 'DAS', 'DOS', 'E', 'DI', 'DEL'}
+    meio = [(t.lower() if t.upper() in part else t[0].upper() + ".") for t in toks[1:-1]]
+    return " ".join([toks[0].capitalize()] + meio + [toks[-1].capitalize()])
+
+
 # De-para canal de origem (primeiro_canal_de_origem) → grupo de roteamento da Jornada HubSpot.
 # Ajuste aqui; não precisa rodar o pipeline de novo. Ordem importa (primeira regra que casa vence).
 GRUPOS_CANAL = [
@@ -3848,6 +3889,23 @@ with tab6:
             ], subtitle=_tv_per_lbl)
             st.caption("Fonte: ESCALLO_LEADS_MES (REL003 ativo + REL086 classificação; carga diária 8h). "
                        "'Confirmada' usa o telefone (tel-8) porque o Escallo não captura CPF — é teto de influência, não atribuição.")
+            # ---- R37: quem fez o 1º contato do mês — operador humano × linha de sistema (s9_tipo; agente logado no REL003) ----
+            if _tv_grain == 'M':
+                _h_l = _tv_val('s9_tipo', 'leads', dim='humano'); _s_l = _tv_val('s9_tipo', 'leads', dim='sistema')
+                if _h_l is not None or _s_l is not None:
+                    _h_a = _tv_val('s9_tipo', 'alo10', dim='humano'); _s_a = _tv_val('s9_tipo', 'alo10', dim='sistema')
+                    _h_v = _tv_val('s9_tipo', 'venda', dim='humano'); _s_v = _tv_val('s9_tipo', 'venda', dim='sistema')
+                    _o_l = sum(v for v in (_tv_val('s9_tipo', 'leads', dim=d) for d in ('treinamento', 'sem_login', 'externo')) if v)
+                    _t_l = (_h_l or 0) + (_s_l or 0) + _o_l
+                    _tv_note(
+                        f"<b>Quem fez o 1º contato do mês com cada lead</b> (agente logado no ramal, REL003): "
+                        f"<b>operador humano</b> {_tv_n(_h_l)} leads ({_tv_pct(_h_l, _t_l)}) · alô {_tv_pct(_h_a, _h_l)} · "
+                        f"{_tv_n(_h_v)} vendas tabuladas &nbsp;|&nbsp; <b>linha de sistema</b> (ramal sem agente — discador/URA, ex. 9902) "
+                        f"{_tv_n(_s_l)} leads ({_tv_pct(_s_l, _t_l)}) · alô {_tv_pct(_s_a, _s_l)} · {_tv_n(_s_v)} vendas tabuladas"
+                        + (f" &nbsp;|&nbsp; treinamento / sem login / nº externo {_tv_n(_o_l)} leads" if _o_l else "")
+                        + ". O 'alô ≥ 10 s' da linha de sistema é o cliente ouvindo uma gravação ou validação, não uma conversa — "
+                        "por isso a taxa de alô dela costuma ser <i>maior</i> que a dos operadores. Detalhe por ramal e por vendedor "
+                        "na sub-aba 📟 5.", bg="#f8fafc", icon="🎧")
             # ---- ponte com a régua do relatório (aba 🧲 · s8_mesa): mesma população, outra pergunta ----
             if _tv_grain == 'M':
                 _aq6, _aq6_err = load_aq()
@@ -4625,7 +4683,8 @@ with tab6:
     # Seções s8_ramal / s8_porta / s8_wpp (grão mensal; pipeline `gt7 run televendas_dash --arg only=s8`).
     # =================================================================
     with _tv_tabs[4]:
-        _s8 = _tvd_m[_tvd_m['secao'].isin(['s8_ramal', 's8_porta', 's8_wpp'])]
+        _s8 = _tvd_m[_tvd_m['secao'].isin(['s8_ramal', 's8_porta', 's8_wpp', 's9_vendedor'])]   # R37: + s9_vendedor
+        _s9_dim = _load_tv_ramal_dim()   # R37: tipo/agente/IDPV por (mês, ramal); vazio → heurística antiga
         if _s8.empty:
             st.warning("⚠️ As seções `s8_*` ainda não existem em `alex_tv_dash_mes`. Rode "
                        "`gt7 run televendas_dash --arg only=s8 --arg nv=skip` e recarregue os dados.")
@@ -4639,6 +4698,17 @@ with tab6:
                        "(≥10 s) conta em qualquer ligação do lead. Venda registrada = tabulação 'venda' no Escallo; conf = "
                        "confirmação por tel-8 no NOMINAL (teto de influência). Este funil é sempre mensal, mesmo com o "
                        "período em semana.")
+            # R37: o que cada ramal é neste mês (para rótulo, hachura e a tabela explicativa)
+            _rd = _s9_dim[_s9_dim['mes'] == pd.Timestamp(_s8_mes)] if not _s9_dim.empty else pd.DataFrame(columns=_TV_RAMAL_COLS)
+            _s9_info = {}
+            for _, _r in _rd.iterrows():
+                _tp = str(_r['tipo'])
+                if _tp == 'humano':
+                    _sub = _tv_nome_curto(_r['nome_agente']) + (f" · {_r['cod_agente']}" if pd.notna(_r['cod_agente']) and _r['cod_agente'] else "")
+                else:
+                    _sub = _TV_TIPO_RAMAL.get(_tp, _tp)
+                _s9_info[str(_r['ramal'])] = {'tipo': _tp, 'sub': _sub}
+            _s9_hum = {k for k, v in _s9_info.items() if v['tipo'] == 'humano'}
 
             def _s8_piv(secao, mes):
                 d = _s8[(_s8['secao'] == secao) & (_s8['mes'] == mes)]
@@ -4646,7 +4716,7 @@ with tab6:
                     return pd.DataFrame()
                 return d.pivot_table(index='dim', columns='metrica', values='valor', aggfunc='sum').fillna(0)
 
-            def _s8_lista(df, rotulo, col_map, titulo, subtitulo, fonte, flag_sistema=False):
+            def _s8_lista(df, rotulo, col_map, titulo, subtitulo, fonte, flag_sistema=False, dim_info=None):
                 """Lista estilo relatório: label | barra(vol) | nº | barra(%alô) | vendas (conf). col_map define as colunas."""
                 _tv_titulo(titulo, subtitulo, "A")
                 if df.empty:
@@ -4656,10 +4726,11 @@ with tab6:
                 vmax = float(df[col_map['vol']].max()) or 1.0
                 pcts = (df[col_map['alo']] / df[col_map['vol']].replace(0, pd.NA) * 100).fillna(0)
                 pmax = float(pcts.max()) or 1.0
+                _wl = 178 if dim_info else 92   # R37: coluna do rótulo mais larga quando há nome de agente
                 linhas = [(
                     "<div style='display:flex;gap:10px;align-items:center;padding:3px 0;font-size:11px;color:#64748b;"
                     "font-weight:700;text-transform:uppercase;letter-spacing:.03em;'>"
-                    f"<div style='flex:0 0 92px;'>{rotulo}</div><div style='flex:2.4;'>{col_map['vol_lbl']}</div>"
+                    f"<div style='flex:0 0 {_wl}px;'>{rotulo}</div><div style='flex:2.4;'>{col_map['vol_lbl']}</div>"
                     f"<div style='flex:0 0 90px;text-align:right;'>Ligações (tentativas)</div>"
                     f"<div style='flex:1.6;'>{col_map['alo_lbl']} <span style='font-weight:400;text-transform:none;letter-spacing:0;'>· % sobre {col_map['vol_lbl'].lower()}</span></div>"
                     f"<div style='flex:0 0 150px;text-align:right;'>{col_map['venda_lbl']}</div></div>")]
@@ -4667,7 +4738,9 @@ with tab6:
                     vol = float(r[col_map['vol']]); alo = float(r[col_map['alo']])
                     pct = alo / vol * 100 if vol else 0
                     venda = float(r[col_map['venda']]); conf = float(r[col_map['conf']]) if col_map.get('conf') else None
-                    sistema = flag_sistema and venda == 0 and (conf or 0) <= 5 and vol >= 800
+                    _info = dim_info.get(str(dim)) if dim_info else None
+                    # R37: com a dimensão do mês a hachura é o tipo real do ramal; sem ela, a heurística antiga
+                    sistema = (_info['tipo'] != 'humano') if _info else (flag_sistema and venda == 0 and (conf or 0) <= 5 and vol >= 800)
                     _bg = ("repeating-linear-gradient(45deg,#c7cdf5 0 6px,#e4e7fb 6px 12px)" if sistema else "#7c86e8")
                     _fg = '#94a3b8' if sistema else '#0f172a'
                     lig = format_br(r['ligacoes']) if 'ligacoes' in r else ''
@@ -4675,8 +4748,10 @@ with tab6:
                             else f"{format_br(venda)} · {_tv_pct(venda, vol)}")
                     linhas.append(
                         "<div style='display:flex;gap:10px;align-items:center;padding:3px 0;border-top:1px solid #f1f5f9;'>"
-                        f"<div style='flex:0 0 92px;font-size:12.5px;font-weight:700;color:{_fg};'>{dim}"
-                        + ("<div style='font-size:9.5px;color:#94a3b8;'>linha de sistema?</div>" if sistema else "") + "</div>"
+                        f"<div style='flex:0 0 {_wl}px;min-width:0;font-size:12.5px;font-weight:700;color:{_fg};'>{dim}"
+                        + ((f"<div style='font-size:9.5px;font-weight:600;color:{'#94a3b8' if sistema else '#64748b'};white-space:nowrap;"
+                            f"overflow:hidden;text-overflow:ellipsis;'>{_info['sub']}</div>") if _info else
+                           ("<div style='font-size:9.5px;color:#94a3b8;'>linha de sistema?</div>" if sistema else "")) + "</div>"
                         f"<div style='flex:2.4;display:flex;align-items:center;gap:8px;'>"
                         f"<div style='height:14px;border-radius:4px;background:{_bg};width:{max(2, vol / vmax * 100):.1f}%;'></div>"
                         f"<span style='font-size:11.5px;color:#334155;'>{format_br(vol)}</span></div>"
@@ -4699,19 +4774,144 @@ with tab6:
                                      'alo_lbl': 'Conversa ≥10 s', 'venda': 'venda', 'conf': 'conf',
                                      'venda_lbl': 'Venda registrada'},
                       "Escallo ativo — o funil de cada ramal",
-                      "cada telefone discado pertence ao ramal da 1ª ligação do mês; hachura = suspeita de linha de "
-                      "sistema (muitos leads, zero venda) — confirmar no codigoAgenteOrigem do REL003",
-                      f"Televendas_REL003 (ligacao.origem) × ESCALLO_LEADS_MES (ATIVO) · {pd.Timestamp(_s8_mes):%m/%Y}",
-                      flag_sistema=True)
+                      ("cada telefone discado pertence ao ramal da 1ª ligação do mês; sob o ramal, o agente logado (nome · código) — "
+                       "hachura = ramal sem agente (linha de sistema/URA), treinamento ou número externo" if _s9_info else
+                       "cada telefone discado pertence ao ramal da 1ª ligação do mês; hachura = suspeita de linha de "
+                       "sistema (muitos leads, zero venda) — rode o pipeline s9 para a classificação real"),
+                      f"Televendas_REL003 (ligacao.origem + agente logado) × ESCALLO_LEADS_MES (ATIVO) · {pd.Timestamp(_s8_mes):%m/%Y}",
+                      flag_sistema=True, dim_info=_s9_info)
             if not _pr.empty:
                 _alos = (_pr['alo10'] / _pr['leads'].replace(0, pd.NA) * 100).dropna()
-                _re = _pr[(_pr['venda'] > 0) | (_pr['conf'] > 5)]
+                _re = (_pr[pd.Series([str(i) in _s9_hum for i in _pr.index], index=_pr.index) & (_pr['leads'] >= 50)] if _s9_hum else _pr[(_pr['venda'] > 0) | (_pr['conf'] > 5)])  # R37c: humanos pela dimensão (Series), ≥ 50 leads
                 if len(_re) >= 3:
                     _ral = (_re['alo10'] / _re['leads'].replace(0, pd.NA) * 100).dropna()
                     _f = lambda v: f"{v:.1f}".replace('.', ',')
                     st.caption(f"Taxa de conversa entre ramais reais: {_f(_ral.min())}% a {_f(_ral.max())}% "
                                f"(média {_f(_ral.mean())}%) — mesma lista, mesmo mês: a diferença é ritmo, horário e "
                                "insistência de cada posição.")
+
+            # ---- R37: o que é cada ramal (agente, tipo, IDPVs, número que o cliente vê) ----
+            if _rd.empty:
+                st.caption("ℹ️ A dimensão de ramais (`alex_tv_ramal_dim`) ainda não tem este mês — rode "
+                           "`gt7 run televendas_dash --arg only=s9 --arg nv=skip` e recarregue os dados.")
+            else:
+                _n_hum = int((_rd['tipo'] == 'humano').sum()); _n_sis = int((_rd['tipo'] == 'sistema').sum())
+                _num_ext = _rd['numero_externo'].mode().iloc[0] if _rd['numero_externo'].notna().any() else "TIM 11 2250-8917"
+                with st.expander(f"📖 O que é cada ramal — {_n_hum} operadores humanos, {_n_sis} linha(s) de sistema · o número que o cliente vê", expanded=False):
+                    st.markdown(
+                        f"**O ramal não é um número completo.** É a extensão interna de 4 dígitos da posição (9002…9077); toda ligação "
+                        f"ativa sai pelo mesmo tronco externo — o cliente vê sempre **{_num_ext}**, qualquer que seja o ramal. "
+                        "O que identifica a pessoa é o **agente logado** na ligação (REL003: `nomeAgenteOrigem` / `codigoAgenteOrigem`). "
+                        "**Tipos:** *Operador humano* = agente logado na maioria das ligações do mês; *Linha de sistema* = ramal sem agente "
+                        "com grande volume (discador/URA de validação, ex. 9902); *Treinamento / qualidade* = agente de treinamento; "
+                        "*Sem agente logado* = ramal sem login e pouco volume; *Número externo* = telefone completo gravado no campo do ramal. "
+                        "**IDPVs no CTN** = quantos IDPVs de `alex_idpvs` (fonte Televendas) casam com o nome do agente — é por eles que a venda "
+                        "do vendedor aparece no NOMINAL (a variante '… ATENDIMENTO' é a mesma pessoa).")
+                    _tab = _rd.copy()
+                    _tab['_o'] = _tab['tipo'].map(_TV_TIPO_ORDEM).fillna(9)
+                    _tab = _tab.sort_values(['_o', 'ligacoes'], ascending=[True, False])
+                    _tab_show = pd.DataFrame({
+                        'Ramal': _tab['ramal'].values,
+                        'Tipo': _tab['tipo'].map(_TV_TIPO_RAMAL).fillna(_tab['tipo']).values,
+                        'Agente logado': [(_tv_nome_curto(n) if t == 'humano' or pd.notna(n) else "—") for n, t in zip(_tab['nome_agente'], _tab['tipo'])],
+                        'Código': [(str(c) if pd.notna(c) and c else "—") for c in _tab['cod_agente']],
+                        'Ligações no mês': _tab['ligacoes'].astype(int).values,
+                        '% com agente logado': (_tab['lig_com_agente'].astype(float) / _tab['ligacoes'].astype(float).where(_tab['ligacoes'] > 0) * 100).fillna(0).round(0).astype(int).values,   # R37b
+                        'Alô ≥10 s (ligações)': _tab['alo10'].astype(int).values,
+                        'Agentes distintos': _tab['n_agentes'].astype(int).values,
+                        'IDPVs no CTN': _tab['n_idpv'].astype(int).values,
+                        'Número que o cliente vê': _tab['numero_externo'].fillna(_num_ext).values,
+                    })
+                    st.dataframe(_tab_show, hide_index=True, use_container_width=True, height=min(560, 38 + 35 * len(_tab_show)),
+                                 column_config={'% com agente logado': st.column_config.NumberColumn(format="%d%%"),
+                                                'Ligações no mês': st.column_config.NumberColumn(format="%d"),
+                                                'Alô ≥10 s (ligações)': st.column_config.NumberColumn(format="%d")})
+                    _tv_fonte(f"alex_tv_ramal_dim (pipeline televendas_dash s9) · REL003 agente logado · REL100 canalEmpresa (saída) · "
+                              f"alex_idpvs fonte Televendas · {pd.Timestamp(_s8_mes):%m/%Y}")
+
+            # ---- R37: por vendedor — quem discou (ramal) × quem fechou no CTN (IDPV) ----
+            _pv = _s8_piv('s9_vendedor', _s8_mes)
+            if not _pv.empty:
+                for _c in ('leads', 'ligacoes', 'alo10', 'venda', 'conf', 'ramais', 'vendas_idpv', 'vendas_idpv_tel', 'vendas_idpv_wpp',
+                           'vendas_idpv_discado', 'vendas_idpv_proprio', 'vendas_idpv_outro', 'vendas_idpv_sistema', 'vendas_idpv_sem_discagem', 'n_idpv'):
+                    if _c not in _pv.columns:
+                        _pv[_c] = 0.0
+                _hum_v = _pv[~_pv.index.astype(str).str.startswith('(')].copy()
+                _esp_v = _pv[_pv.index.astype(str).str.startswith('(') & (_pv.index.astype(str) != '(total)')].copy()
+                _tot_v = _pv.loc['(total)'] if '(total)' in _pv.index else None
+                st.markdown("---")
+                _tv_titulo("Por vendedor — quem discou (ramal) × quem fechou no CTN (IDPV)",
+                           "duas atribuições da mesma venda: o operador que discou o telefone (Escallo) e o vendedor cujo IDPV consta na "
+                           "filiação com tipo Televendas no NOMINAL (alex_idpvs) — nem sempre é a mesma pessoa", "A")
+                if _tot_v is not None and float(_tot_v['vendas_idpv'] or 0) > 0:
+                    _bots_v = float(_esp_v.loc[[i for i in _esp_v.index if 'bots' in str(i)], 'vendas_idpv'].sum()) if not _esp_v.empty else 0.0
+                    _semag_v = float(_esp_v.loc[[i for i in _esp_v.index if 'sem agente' in str(i)], 'vendas_idpv'].sum()) if not _esp_v.empty else 0.0
+                    _hv, _hp, _ho, _hs, _hn = (float(_hum_v[c].sum()) for c in ('vendas_idpv', 'vendas_idpv_proprio', 'vendas_idpv_outro', 'vendas_idpv_sistema', 'vendas_idpv_sem_discagem')) if not _hum_v.empty else (0.0,) * 5
+                    _hw = float(_hum_v['vendas_idpv_wpp'].sum()) if not _hum_v.empty else 0.0
+                    _tv_note(
+                        f"<b>{_tv_n(_tot_v['vendas_idpv'])} vendas com tipo Televendas no CTN</b> em {pd.Timestamp(_s8_mes):%m/%Y}, por IDPV: "
+                        f"<b>{_tv_n(_bots_v)} ({_tv_pct(_bots_v, _tot_v['vendas_idpv'])}) dos bots Talkerchat</b> (Lia/Cris/Nora — o IDPV deles também tem fonte Televendas), "
+                        f"<b>{_tv_n(_hv)} ({_tv_pct(_hv, _tot_v['vendas_idpv'])}) dos operadores que discaram no mês</b>"
+                        + (f" e {_tv_n(_semag_v)} de IDPVs Televendas de pessoas que não aparecem no Escallo ativo do mês" if _semag_v else "") + ". "
+                        + ((f"Das vendas dos operadores, <b>{_tv_n(_hp)} ({_tv_pct(_hp, _hv)})</b> são de telefones que <i>o próprio vendedor</i> discou no mês; "
+                            f"{_tv_n(_ho)} ({_tv_pct(_ho, _hv)}) de telefones discados só por colegas (ou linhas sem login); {_tv_n(_hs)} ({_tv_pct(_hs, _hv)}) de telefones que "
+                            f"só a linha de sistema tocou; e <b>{_tv_n(_hn)} ({_tv_pct(_hn, _hv)})</b> sem discagem ativa no mês — receptivo, WhatsApp (cada operador tem um IDPV "
+                            f"'… ATENDIMENTO WHATSAPP': {_tv_n(_hw)} vendas, {_tv_pct(_hw, _hv)}), indicação ou telefone divergente entre Escallo e CTN.")
+                           if _hv > 0 else ""),
+                        bg="#f8fafc", icon="🧾")
+                if not _hum_v.empty:
+                    _hum_v = _hum_v.sort_values('vendas_idpv', ascending=False)
+                    _pct_col = lambda a, b: (a.astype(float) / b.astype(float).where(b.astype(float) > 0) * 100).fillna(0).round(1)   # R37b: sem pd.NA
+                    _vend_show = pd.DataFrame({
+                        'Vendedor': [_tv_nome_curto(str(i)) for i in _hum_v.index],
+                        'Ramais': _hum_v['ramais'].astype(int).values,
+                        'Leads discados': _hum_v['leads'].astype(int).values,
+                        'Alô ≥10 s': _hum_v['alo10'].astype(int).values,
+                        '% alô': _pct_col(_hum_v['alo10'], _hum_v['leads']).values,
+                        'Venda tabulada': _hum_v['venda'].astype(int).values,
+                        'Conf. CTN (janela)': _hum_v['conf'].astype(int).values,
+                        'Vendas TV no CTN (IDPV)': _hum_v['vendas_idpv'].astype(int).values,
+                        '└ IDPV telefone': _hum_v['vendas_idpv_tel'].astype(int).values,
+                        '└ IDPV WhatsApp': _hum_v['vendas_idpv_wpp'].astype(int).values,
+                        '└ leads que ele discou': _hum_v['vendas_idpv_proprio'].astype(int).values,
+                        '└ discados por outro operador': _hum_v['vendas_idpv_outro'].astype(int).values,
+                        '└ só linha de sistema': _hum_v['vendas_idpv_sistema'].astype(int).values,
+                        '└ sem discagem ativa': _hum_v['vendas_idpv_sem_discagem'].astype(int).values,
+                        '% carteira própria': _pct_col(_hum_v['vendas_idpv_proprio'], _hum_v['vendas_idpv']).values,
+                        'IDPVs': _hum_v['n_idpv'].astype(int).values,
+                    })
+                    st.dataframe(_vend_show, hide_index=True, use_container_width=True, height=min(640, 38 + 35 * len(_vend_show)),
+                                 column_config={'% alô': st.column_config.NumberColumn(format="%.1f%%"),
+                                                '% carteira própria': st.column_config.NumberColumn(format="%.1f%%"),
+                                                'Vendedor': st.column_config.TextColumn(width="medium")})
+                    st.caption("**Como ler:** as colunas da esquerda (até *Conf. CTN*) são o **lado ramal** — leads cujo 1º contato do mês foi este operador, "
+                               "alô em qualquer ligação, tabulação 'venda' e confirmação por tel-8 na janela do contato + 14 d. As colunas a partir de "
+                               "**Vendas TV no CTN (IDPV)** são o **lado CTN** — filiações do mês-calendário com `tipo_venda = TELEVENDAS` cujo IDPV é "
+                               "do vendedor (dedup CPF × data), somando o IDPV de telefone ('NOME') e o de WhatsApp ('NOME - ATENDIMENTO WHATSAPP'). "
+                               "*Leads que ele discou* = o telefone da venda recebeu ligação deste operador no mês; "
+                               "*discados por outro operador* = só colegas (ou linhas sem login) ligaram; *só linha de sistema* = só o discador/URA tocou; "
+                               "*sem discagem ativa* = o telefone não aparece no REL003 do mês. Um operador que usou dois ramais aparece uma vez.")
+                if not _esp_v.empty:
+                    _esp_show = pd.DataFrame({
+                        'Linha': [str(i).strip('()').capitalize() for i in _esp_v.index],
+                        'Leads discados (1º contato)': _esp_v['leads'].astype(int).values,
+                        'Alô ≥10 s': _esp_v['alo10'].astype(int).values,
+                        'Venda tabulada': _esp_v['venda'].astype(int).values,
+                        'Conf. CTN (janela)': _esp_v['conf'].astype(int).values,
+                        'Vendas TV no CTN (IDPV)': _esp_v['vendas_idpv'].astype(int).values,
+                        '└ IDPV telefone': _esp_v['vendas_idpv_tel'].astype(int).values,
+                        '└ IDPV WhatsApp': _esp_v['vendas_idpv_wpp'].astype(int).values,
+                        '└ discados no mês': _esp_v['vendas_idpv_discado'].astype(int).values,
+                        '└ sem discagem ativa': _esp_v['vendas_idpv_sem_discagem'].astype(int).values,
+                    })
+                    st.caption("Linhas sem operador do Escallo ativo: a linha de sistema não fecha venda (o IDPV é sempre de uma pessoa ou bot); "
+                               "'bots Talkerchat' = IDPVs Lia/Cris/Nora, que o CTN registra com tipo Televendas; 'IDPV Televendas sem agente no "
+                               "Escallo' = vendedores do CTN que não discaram no mês:")
+                    st.dataframe(_esp_show, hide_index=True, use_container_width=True, height=38 + 35 * len(_esp_show))
+                _tv_fonte(f"alex_tv_dash_mes s9_vendedor (pipeline televendas_dash) · REL003 agente logado × ESCALLO_LEADS_MES × alex_nv_tel8 "
+                          f"(NOMINAL tipo Televendas, mês-calendário) × alex_idpvs · {pd.Timestamp(_s8_mes):%m/%Y}")
+            elif not _rd.empty:
+                st.caption("ℹ️ Sem a seção `s9_vendedor` para este mês — rode `gt7 run televendas_dash --arg only=s9 --arg nv=skip`.")
 
             st.markdown("---")
             _pp = _s8_piv('s8_porta', _s8_mes)
