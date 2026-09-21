@@ -3560,6 +3560,156 @@ def _tv_grupo(canal):
     return 'Fora da regra', canal
 
 
+
+# ---- R31 chips + diagrama em raias (movidos para cá em 18/09: a aba Televendas (tab6) usa _tv_raias/_tv_chip e roda
+#      antes das abas 🧲/🧭 no fluxo do módulo; o bloco é o mesmo, só mudou de lugar) ----
+_TV_CHIPS = {
+    'contato':   ('🧑 Contato', '#dbeafe', '#1e3a8a', 'a pessoa no CRM (HubSpot)'),
+    'negocio':   ('🤝 Negócio', '#fef3c7', '#92400e', 'a oportunidade aberta num pipeline (HubSpot)'),
+    'ctn':       ('🪪 CPF × CTN', '#dcfce7', '#14532d', 'filiação no NOMINAL casada por CPF (venda real)'),
+    'tel':       ('☎️ telefone', '#e2e8f0', '#334155', 'registro do discador (Escallo)'),
+    'tel_ctn':   ('☎️ tel-8 × CTN', '#dcfce7', '#14532d', 'filiação no NOMINAL casada pelo telefone'),
+    'ga':        ('👣 GA4', '#e2e8f0', '#334155', 'usuário do site (Google Analytics)'),
+    'app':       ('📱 app', '#e2e8f0', '#334155', 'usuário / cadastro no lake do app'),
+    'foto':      ('📷 no mês', '#f1f5f9', '#475569', 'evento dentro do mês, de qualquer coorte'),
+    'foto_lead': ('📷 desde o lead', '#f1f5f9', '#475569', 'evento em qualquer data a partir do lead'),
+    'filme':     ('🎬 coorte', '#ede9fe', '#4c1d95', 'quem virou lead no mês, seguido até hoje'),
+}
+
+
+def _tv_chip(key):
+    """Um chip HTML (R31). Chave desconhecida → nada."""
+    c = _TV_CHIPS.get(key)
+    if not c:
+        return ""
+    brd = ";border:1px solid #cbd5e1" if key.startswith('foto') else (";border:1px solid #c4b5fd" if key == 'filme' else "")
+    return (f"<span title='{c[3]}' style='display:inline-block;font-size:9.5px;font-weight:700;padding:1px 7px;border-radius:9px;"
+            f"margin-left:4px;vertical-align:middle;white-space:nowrap;background:{c[1]};color:{c[2]}{brd};'>{c[0]}</span>")
+
+
+def _tv_chips_legenda(keys):
+    """Legenda de uma linha para os chips usados na aba (R31)."""
+    parts = [f"{_tv_chip(k)} <span style='color:#475569;'>{_TV_CHIPS[k][3]}</span>" for k in keys if k in _TV_CHIPS]
+    st.markdown("<div style='font-size:11px;color:#64748b;margin:2px 0 10px 0;line-height:2;'><b>Legenda dos funis</b> — "
+                "o chip diz que OBJETO cada etapa conta e em que RÉGUA: " + " &nbsp;·&nbsp; ".join(parts) + "</div>",
+                unsafe_allow_html=True)
+
+
+def _tv_raias(modo, nums, title, subtitle=""):
+    """Diagrama em raias (R31, opção B): onde cada número nasce — raias Contato / Negócio / CTN, tempo da esquerda para a
+    direita — e as duas lentes: o corte vertical do mês (📷 fotografia, aba 🧲) e a linha horizontal da coorte (🎬 filme,
+    aba 🧭). modo = 'foto' | 'filme' — a lente ativa fica em destaque, a outra esmaecida. nums = valores da janela."""
+    n = lambda k: format_br(nums[k]) if nums.get(k) is not None else "—"
+    pipe = (modo == 'pipeline'); foto = (modo in ('foto', 'pipeline'))  # pipeline (aba 3 · Funil HubSpot): entradas no período, lente foto
+    band_fill, band_stroke = ("#e2e8f0", "#94a3b8") if foto else ("#f8fafc", "#e2e8f0")
+    arr_col, arr_op = ("#7c3aed", "1") if not foto else ("#c4b5fd", "0.7")
+    band_txt, arr_txt = ("#334155", "#4c1d95") if foto else ("#94a3b8", "#4c1d95")
+    if not foto:
+        band_txt = "#94a3b8"
+    else:
+        arr_txt = "#a78bfa"
+    mes_lbl = subtitle or "mês"
+    hdr = (f"<div style='display:flex;gap:14px;align-items:baseline;margin-bottom:4px;'>"
+           f"<div style='font-size:15px;font-weight:800;color:#0f172a;'>{title}</div>"
+           f"<div style='font-size:11px;color:#64748b;'>{subtitle}</div>"
+           f"<div style='margin-left:auto;font-size:10.5px;font-weight:700;color:#166534;'>diagrama em raias · {'📷 entradas no período' if pipe else ('📷 fotografia' if foto else '🎬 filme')}</div></div>")
+    svg = [f"<svg viewBox='0 0 1040 430' width='100%' style='max-width:1100px;display:block;' font-family=\"Source Sans 3, Segoe UI, Arial, sans-serif\">"
+           "<defs><marker id='tvra' markerWidth='10' markerHeight='10' refX='8' refY='5' orient='auto'><path d='M0 0 L10 5 L0 10 z' fill='" + arr_col + "'/></marker></defs>",
+           "<line x1='150' y1='40' x2='1010' y2='40' stroke='#cbd5e1' stroke-width='1.5'/>",
+           "<text x='290' y='30' font-size='12' fill='#94a3b8' text-anchor='middle'>antes</text>",
+           f"<text x='565' y='30' font-size='12' fill='#0f172a' text-anchor='middle' font-weight='700'>{mes_lbl}</text>",
+           f"<text x='855' y='30' font-size='12' fill='#94a3b8' text-anchor='middle'>{'depois' if foto else 'depois (seguido até hoje)'}</text>",
+           "<line x1='430' y1='34' x2='430' y2='46' stroke='#94a3b8'/><line x1='700' y1='34' x2='700' y2='46' stroke='#94a3b8'/>",
+           f"<rect x='430' y='52' width='270' height='300' fill='{band_fill}' stroke='{band_stroke}' stroke-dasharray='4 3'/>",
+           # raias
+           "<rect x='10' y='62' width='130' height='60' rx='8' fill='#dbeafe'/><text x='75' y='88' font-size='12.5' font-weight='700' fill='#1e3a8a' text-anchor='middle'>🧑 Contato</text><text x='75' y='106' font-size='10' fill='#1e3a8a' text-anchor='middle'>a pessoa no CRM</text>",
+           "<rect x='10' y='152' width='130' height='60' rx='8' fill='#fef3c7'/><text x='75' y='178' font-size='12.5' font-weight='700' fill='#92400e' text-anchor='middle'>🤝 Negócio</text><text x='75' y='196' font-size='10' fill='#92400e' text-anchor='middle'>oportunidade no pipeline</text>",
+           "<rect x='10' y='242' width='130' height='60' rx='8' fill='#dcfce7'/><text x='75' y='268' font-size='12.5' font-weight='700' fill='#14532d' text-anchor='middle'>🪪 CTN · NOMINAL</text><text x='75' y='286' font-size='10' fill='#14532d' text-anchor='middle'>a filiação (venda real)</text>",
+           "<line x1='150' y1='92' x2='1010' y2='92' stroke='#e2e8f0'/><line x1='150' y1='182' x2='1010' y2='182' stroke='#e2e8f0'/><line x1='150' y1='272' x2='1010' y2='272' stroke='#e2e8f0'/>"]
+
+    def mk(x, y, col, lbl, val, note, above=True, anchor='middle', r=9):
+        return (f"<circle cx='{x}' cy='{y}' r='{r}' fill='{col}'/>"
+                f"<text x='{x}' y='{y - 18}' font-size='11' fill='{col}' text-anchor='{anchor}' font-weight='700'>{lbl}</text>"
+                f"<text x='{x}' y='{y + 25}' font-size='13' fill='#0f172a' font-weight='800' text-anchor='{anchor}'>{val}</text>"
+                f"<text x='{x}' y='{y + 38}' font-size='9.5' fill='#64748b' text-anchor='{anchor}'>{note}</text>")
+
+    if pipe:
+        svg += [
+            mk(450, 92, '#1e3a8a', 'Contatos no fluxo', n('fluxo'), 'data_de_entrada_no_fluxo_do_televendas'),
+            "<path d='M450 101 L450 173' stroke='#94a3b8' stroke-width='1.5' stroke-dasharray='3 3'/>",
+            mk(450, 182, '#b45309', 'LEAD', n('lead'), 'Negócios criados'),
+            "<line x1='459' y1='182' x2='521' y2='182' stroke='#b45309' stroke-width='2'/>",
+            mk(530, 182, '#b45309', 'EM NEGOCIAÇÃO', n('neg'), 'régua 7 d'),
+            "<line x1='539' y1='182' x2='601' y2='182' stroke='#b45309' stroke-width='2'/>",
+            mk(610, 182, '#b45309', 'C. SEM SUCESSO', n('css'), 'régua 1 d 12 h'),
+            "<line x1='619' y1='182' x2='681' y2='182' stroke='#b45309' stroke-width='2'/>",
+            mk(690, 182, '#166534', 'GANHO', n('ganho'), 'tabulação ou checkout'),
+            "<path d='M610 191 L610 236 L681 236' stroke='#991b1b' stroke-width='1.5' stroke-dasharray='3 3' fill='none'/>",
+            mk(690, 236, '#991b1b', 'PERDIDO', n('perdido'), 'auto-redistribui', r=7),
+            "<text x='440' y='292' font-size='10.5' fill='#166534'>GANHO por checkout vira filiação no NOMINAL — conciliação por CPF na aba 7 · Três réguas</text>",
+        ]
+    elif foto:
+        svg += [
+            mk(470, 92, '#1e3a8a', 'Leads Únicos', n('lu'), 'Contatos criados no mês'),
+            "<path d='M470 101 L470 263' stroke='#94a3b8' stroke-width='1.5' stroke-dasharray='3 3'/>",
+            "<path d='M470 140 L520 140 L520 173' stroke='#94a3b8' stroke-width='1.5' stroke-dasharray='3 3' fill='none'/>",
+            mk(520, 182, '#b45309', 'Encaminhados', n('eng'), 'Negócios criados no pipeline'),
+            "<line x1='529' y1='182' x2='671' y2='182' stroke='#b45309' stroke-width='2'/>",
+            mk(680, 182, '#b45309', 'Transbordados', n('fra'), 'entrou em Distribuição/Validador'),
+            mk(470, 272, '#166534', 'Vendas nas franquias', n('vf'), 'CPF do lead × NOMINAL, qualquer data ≥ lead'),
+            "<line x1='700' y1='272' x2='985' y2='272' stroke='#166534' stroke-width='2' stroke-dasharray='6 4' opacity='0.5'/>",
+            "<text x='985' y='262' font-size='9.5' fill='#166534' text-anchor='end' opacity='0.8'>a venda pode cair depois do mês → entra aqui</text>",
+        ]
+    else:
+        svg += [
+            mk(470, 92, '#1e3a8a', 'Leads criados', n('criados'), 'Contatos novos na coorte'),
+            mk(600, 92, '#1e3a8a', 'Elegíveis', n('eleg'), 'definição de buckets', above=False),
+            "<path d='M470 101 L470 182' stroke='#94a3b8' stroke-width='1.5' stroke-dasharray='3 3'/>",
+            mk(470, 182, '#b45309', 'Esteira Televendas', n('tv'), 'entraram em LEAD', above=False),
+            mk(600, 182, '#b45309', 'No pipeline Distribuição', n('pipe'), 'Distribuição / Sem CEP / Validador'),
+            "<line x1='609' y1='182' x2='751' y2='182' stroke='#b45309' stroke-width='2'/>",
+            mk(760, 182, '#b45309', 'Enviados à franquia', n('valid'), 'Validador — em qualquer data'),
+            "<path d='M760 191 L760 230 L880 230 L880 263' stroke='#94a3b8' stroke-width='1.5' stroke-dasharray='3 3' fill='none'/>",
+            mk(880, 272, '#166534', 'Venda na franquia', n('venda'), 'CPF × NOMINAL, porta a porta + link + app do vendedor'),
+        ]
+    # lentes
+    if pipe:
+        svg += [
+            "<text x='565' y='340' font-size='12' fill='#334155' text-anchor='middle' font-weight='700'>📷 ENTRADAS NO PERÍODO: cada marcador conta quantos Negócios entraram no estágio dentro do período</text>",
+            "<text x='565' y='356' font-size='10' fill='#94a3b8' text-anchor='middle'>um Negócio pode entrar em vários estágios; PERDIDO auto-redistribui (exceto 'sem interesse'); os estágios são fatias dos Negócios dos Contatos no fluxo</text>",
+            "<rect x='745' y='58' width='262' height='84' rx='8' fill='#fffbeb' stroke='#fcd34d'/>",
+            "<text x='757' y='77' font-size='11' fill='#92400e' font-weight='700'>Leitura das raias:</text>",
+            "<text x='757' y='95' font-size='10.5' fill='#78350f'>🧑 o Contato entra no fluxo (workflow, 2 h exclusivas)</text>",
+            "<text x='757' y='111' font-size='10.5' fill='#78350f'>🤝 vira Negócio em LEAD e sobe pela régua automática</text>",
+            "<text x='757' y='127' font-size='10.5' fill='#78350f'>🏁 fecha em GANHO (porta 1 ou 2) ou PERDIDO</text>",
+            "</svg>",
+        ]
+    else:
+        svg += [
+        f"<path d='M455 322 L990 322' stroke='{arr_col}' stroke-width='2.5' opacity='{arr_op}' marker-end='url(#tvra)'/>",
+        f"<text x='460' y='340' font-size='12' fill='{arr_txt}' font-weight='700'>🎬 FILME (aba 🧭): quem virou lead no mês, seguido até hoje — {'lente desta aba' if not foto else 'a outra lente'}</text>",
+        f"<text x='565' y='372' font-size='12' fill='{band_txt}' text-anchor='middle' font-weight='700'>📷 FOTOGRAFIA (aba 🧲): tudo que aconteceu dentro do mês, de quem quer que seja — {'lente desta aba' if foto else 'a outra lente'}</text>",
+        "<text x='565' y='388' font-size='10' fill='#94a3b8' text-anchor='middle'>é a régua do Relatório Mensal: fecha com o mês e não muda depois</text>",
+        # chamada
+        "<rect x='745' y='58' width='262' height='84' rx='8' fill='#fffbeb' stroke='#fcd34d'/>",
+        "<text x='757' y='77' font-size='11' fill='#92400e' font-weight='700'>Uma venda em outubro de um lead de setembro:</text>",
+        "<text x='757' y='95' font-size='10.5' fill='#78350f'>📷 fotografia de setembro: só na linha Vendas (≥ lead)</text>",
+        "<text x='757' y='111' font-size='10.5' fill='#78350f'>📷 fotografia de outubro: NÃO (o lead não é de outubro)</text>",
+        "<text x='757' y='127' font-size='10.5' fill='#78350f'>🎬 filme da coorte de setembro: SIM, sempre</text>",
+        "</svg>",
+    ]
+    cap = ("Contatos no fluxo nascem na raia de Contato (data de entrada no fluxo); LEAD, EM NEGOCIAÇÃO, CONTATO SEM SUCESSO, GANHO e "
+           "PERDIDO são entradas de estágio na raia de Negócio, dentro do período — fatias dos Negócios dos Contatos no fluxo; a venda "
+           "confirmada mora na raia do CTN e é conciliada na aba 7. Os números são os mesmos do funil.") if pipe else ("Cada linha do RMA nasce numa raia: Leads Únicos na de Contato (data de criação), Encaminhados e Transbordados na de Negócio "
+           "(criação / entrada em Distribuição–Validador), Vendas na do CTN (filiação casada por CPF). A fotografia é o corte vertical (o mês); "
+           "o filme é a linha horizontal de uma coorte. Os números são os da janela selecionada — os mesmos do funil."
+           if foto else
+           "Cada etapa da rota nasce numa raia: Leads criados e Elegíveis na de Contato (canal na criação), esteira Televendas e pipeline "
+           "Distribuição/Validador na de Negócio, venda na do CTN (filiação casada por CPF). A coorte é seguida até a última carga — por isso "
+           "os marcadores avançam para a direita do mês. Os números são os da coorte selecionada — os mesmos dos funis.")
+    st.markdown("<div style='border:1px solid #e2e8f0;border-radius:12px;padding:12px 16px 8px 16px;background:#fff;'>" + hdr + "".join(svg)
+                + f"<div style='font-size:10.5px;color:#64748b;margin-top:4px;'>{cap}</div></div>", unsafe_allow_html=True)
+
 with tab6:
     st.markdown("## Televendas — Escallo × HubSpot × Talkerchat × NOMINAL")
     _tvd_m, _tvd_w, _tv_err = load_tv_dash()
@@ -4205,13 +4355,23 @@ with tab6:
 
         c1, c2 = st.columns([1.9, 1])
         with c1:
-            _tv_funil("Pipeline CDT - Lead Televendas · entradas por estágio no período", [
-                ("🚪", "Contatos no fluxo do televendas", fluxo, "Contato: data_de_entrada_no_fluxo_do_televendas"),
-                ("🧩", "LEAD", _ent['LEAD'], "Negócio: hs_v2_date_entered_961121694"),
-                ("🤝", "EM NEGOCIAÇÃO", _ent['EM NEGOCIAÇÃO'], "…961121695 (7 d)"),
-                ("📵", "CONTATO SEM SUCESSO", _ent['CONTATO SEM SUCESSO'], "…961121696 (1 d 12 h)"),
-                ("🏁", "GANHO", _ent['GANHO'], "…961121698 — porta 1 (tabulação) ou porta 2 (checkout)"),
-            ], subtitle="cada linha conta ENTRADAS no estágio (um Negócio pode entrar em vários); PERDIDO fora do funil")
+            # 18/09: todos os estágios (PERDIDO incluído) como fatias dos Negócios dos Contatos no fluxo; toggle de raias (R31) como na aba 🧲
+            _t5_raias = st.toggle("🗺️ Ver como diagrama de raias — onde cada número nasce", value=False, key='t5_raias',
+                                  help="Alternativa ao funil: Contatos no fluxo na raia de Contato, entradas por estágio na raia de Negócio, "
+                                       "venda confirmada na raia do CTN — os mesmos números do funil.")
+            if _t5_raias:
+                _tv_raias('pipeline', {'fluxo': fluxo, 'lead': _ent['LEAD'], 'neg': _ent['EM NEGOCIAÇÃO'], 'css': _ent['CONTATO SEM SUCESSO'],
+                                       'ganho': _ent['GANHO'], 'perdido': _ent['PERDIDO']},
+                          "Pipeline CDT - Lead Televendas · entradas por estágio", _tv_per_lbl)
+            else:
+                _tv_funil("Pipeline CDT - Lead Televendas · Negócios dos Contatos no fluxo, por estágio", [
+                    ("🚪", "Contatos no fluxo do televendas", fluxo, "Contato: data_de_entrada_no_fluxo_do_televendas no período"),
+                    ("🤝", "Negócios associados (entraram em LEAD)", _ent['LEAD'], "Negócio criado no pipeline · hs_v2_date_entered_961121694 · seq. = % dos Contatos"),
+                    ("🔁", "↳ estágio EM NEGOCIAÇÃO", _ent['EM NEGOCIAÇÃO'], "…961121695 (régua 7 d) · seq. = % dos Negócios", 1),
+                    ("📵", "↳ estágio CONTATO SEM SUCESSO", _ent['CONTATO SEM SUCESSO'], "…961121696 (régua 1 d 12 h) · seq. = % dos Negócios", 1),
+                    ("🏁", "↳ estágio GANHO", _ent['GANHO'], "…961121698 — porta 1 (tabulação) ou porta 2 (checkout) · seq. = % dos Negócios", 1),
+                    ("❌", "↳ estágio PERDIDO", _ent['PERDIDO'], "…961121697 — auto-redistribui (exceto 'sem interesse') · seq. = % dos Negócios", 1),
+                ], subtitle="os estágios são fatias dos Negócios dos Contatos no fluxo (um Negócio pode entrar em vários no período) · do topo = % dos Contatos")  # sem chips: _tv_chip só é definido mais abaixo no módulo (abas 🧲/🧭)
             _mg5 = _tv_meses_grafico('t6_s5_ano')
             _tv_chart_mensal(pd.concat([_tv_serie(S, 'entradas', dim=s_, meses=_mg5).assign(serie=s_) for s_ in _stages]),
                              "Entradas por estágio, por mês", stacked=False, rotulos=True,
@@ -4522,6 +4682,65 @@ with tab6:
                 "(<code>cpf_source = 'messages'</code>, ~75% dos tickets com motivo de compra/cadastro) até a D3 expor o campo. "
                 "Compras confirmadas por CPF ±3 dias no NOMINAL.",
                 bg="#f8fafc", icon="ℹ️")
+
+        # ---- Fases da conversa (18/09): triagem × Lia vendas × humano — estimativa por AMOSTRA de mensagens (s7_fases,
+        #      pipeline tkc_fases). Só existe no agregado mensal: em grão semanal usa os meses tocados pelo período. ----
+        def _tv_fase(m):
+            _s = _tv_serie('s7_fases', m)
+            return float(_s['valor'].sum()) if not _s.empty else None
+
+        def _tv_fase_max(m):
+            _s = _tv_serie('s7_fases', m)
+            return float(_s['valor'].max()) if not _s.empty else None
+        _f_trg = _tv_fase('fase_bot_triagem'); _f_vnd = _tv_fase('fase_bot_vendas')
+        if _f_trg is not None and _f_vnd is not None:
+            _f_tot = _tv_fase('amostra_tickets'); _f_n = _tv_fase('amostra_n'); _f_bot = _f_trg + _f_vnd
+            _f_hum = (_tv_fase('fase_humano') or 0) + (_tv_fase('fase_handover_humano') or 0)
+            _f_sr = _tv_fase('fase_triagem_sem_resp'); _f_cv = _tv_fase('fase_triagem_conversa'); _f_sac = _tv_fase('fase_triagem_sac')
+            _f_zero = _tv_fase('fase_zero_msgs'); _f_lv = _tv_fase('fase_lia_vendas'); _f_lsr = _tv_fase('fase_lia_sem_roteiro')
+            _f_hnd = _tv_fase('fase_handover_humano')
+            _q_cpf = _tv_fase('qual_cpf'); _q_sr = _tv_fase('qual_sales_ready'); _q_bot = _tv_fase('qual_sr_bot'); _q_hum = _tv_fase('qual_sr_humano')
+            _e_v = _tv_fase_max('erro_bot_vendas_pp'); _e_s = _tv_fase_max('erro_sales_ready_pp')
+            _pp = lambda v: ("±" + f"{v:.1f}".replace('.', ',') + " pp") if v is not None else ""
+            st.markdown("---")
+            _tv_titulo("Bot × humano de verdade — fases da conversa",
+                       f"estimativa por amostra de mensagens da API ({_tv_n(_f_n)} tickets lidos · {_tv_n(_f_tot)} tickets nos meses tocados pelo período) · "
+                       f"bot total = attended_by_bot; triagem = roteiro + CPF; vendas = Lia depois do handover", "A")
+            f1, f2, f3, f4 = st.columns(4)
+            _tv_kpi(f1, "🤖", "Bot — total (attended_by_bot)", f"{_tv_n(_f_bot)} · {_tv_pct(_f_bot, _f_tot)}",
+                    f"= triagem + vendas · agregado exato: {_tv_n(tk_b)} tickets ({_tv_pct(tk_b, tk)})", color="#94a3b8")
+            _tv_kpi(f2, "🛂", "Bot — triagem (conversa preliminar)", f"{_tv_n(_f_trg)} · {_tv_pct(_f_trg, _f_tot)}",
+                    f"sem resposta {_tv_n(_f_sr)} · conversou sem desfecho {_tv_n(_f_cv)} · CPF já cadastrado → SAC {_tv_n(_f_sac)} · vazios {_tv_n(_f_zero)}",
+                    color="#86b58f")
+            _tv_kpi(f3, "💚", "Bot — vendas (Lia após o handover)", f"{_tv_n(_f_vnd)} · {_tv_pct(_f_vnd, _f_tot)} {_pp(_e_v)}",
+                    f"link de adesão após o CPF {_tv_n(_f_lv)} · conversa livre sem roteiro (continuação / fluxo antigo) {_tv_n(_f_lsr)}",
+                    color="#2e8a4f")
+            _tv_kpi(f4, "🧑‍💼", "Humano", f"{_tv_n(_f_hum)} · {_tv_pct(_f_hum, _f_tot)}",
+                    f"com atendente (agent_id) {_tv_n(_f_hum - (_f_hnd or 0))} · handover sem atendente {_tv_n(_f_hnd)} · exato: {_tv_n(tk_h)} ({_tv_pct(tk_h, tk)})",
+                    color="#166534")
+            _tv_chart_mensal(_tv_long('s7_fases', ['fase_triagem_sem_resp', 'fase_zero_msgs', 'fase_triagem_conversa', 'fase_triagem_sac',
+                                                       'fase_lia_vendas', 'fase_lia_sem_roteiro', 'fase_handover_humano', 'fase_humano'], meses=_mg7,
+                                          labels={'fase_triagem_sem_resp': 'Triagem · sem resposta', 'fase_zero_msgs': 'Triagem · vazio',
+                                                  'fase_triagem_conversa': 'Triagem · conversou sem desfecho', 'fase_triagem_sac': 'Triagem · CPF já cadastrado → SAC',
+                                                  'fase_lia_vendas': 'Lia vendas · link após CPF', 'fase_lia_sem_roteiro': 'Lia vendas · sem roteiro',
+                                                  'fase_handover_humano': 'Handover sem atendente', 'fase_humano': 'Humano'}),
+                                 "Fases por mês — estimativa", subtitle="amostra estratificada por motivo de fechamento × agent_id; contagens = proporção da amostra × tamanho do grupo",
+                                 stacked=True, rotulos=True, fonte="API Talkerchat (mensagens) · pipeline tkc_fases")
+            g1, g2 = st.columns([1.9, 1])
+            with g1:
+                _tv_funil("Qualificação → sales-ready → distribuição", [
+                    ("💬", "Tickets", _f_tot, "base da estimativa (meses tocados pelo período)"),
+                    ("🪪", "Informaram o CPF (qualificados)", _q_cpf, "CPF nas mensagens ou desfecho da triagem"),
+                    ("✅", "Sales-ready", _q_sr, f"CPF não cadastrado → segue para venda (Lia ou humano) · erro amostral {_pp(_e_s)}"),
+                    ("🤖", "↳ distribuídos para a Lia", _q_bot, "link de adesão enviado pela Lia · seq. = % dos sales-ready", 2),
+                    ("🧑‍💼", "↳ distribuídos para humano", _q_hum, "'Vou conectar você com um consultor…' ou atendente · seq. = % dos sales-ready", 2),
+                ], subtitle="estimativa por amostra de mensagens · as duas últimas linhas são fatias dos sales-ready (o resto ficou sem desfecho)")
+            with g2:
+                _tv_note(f"<b>Como ler.</b> A API não tem campo de handover; o pipeline <code>tkc_fases</code> lê as mensagens de uma amostra "
+                         f"(40 tickets por motivo de fechamento × mês) e classifica pelo roteiro: apresentação da Lia → pedido de CPF → desfecho "
+                         f"('já está cadastrado' = SAC · 'ainda não é filiado' + link = Lia vendas · 'Vou conectar você com um consultor' = humano). "
+                         f"Erro amostral (95%) da fatia Lia vendas: {_pp(_e_v)} no mês. Atualizar: <code>gt7 run tkc_fases --arg meses=AAAA-MM --arg refresh=1</code>.",
+                         bg="#f8fafc", icon="ℹ️")
 
         if _tk_api:
             # ---- tempos: série mensal (mediana) + tabela ----
@@ -6807,125 +7026,6 @@ _LU_DEFS = {
 }
 
 
-_TV_CHIPS = {
-    'contato':   ('🧑 Contato', '#dbeafe', '#1e3a8a', 'a pessoa no CRM (HubSpot)'),
-    'negocio':   ('🤝 Negócio', '#fef3c7', '#92400e', 'a oportunidade aberta num pipeline (HubSpot)'),
-    'ctn':       ('🪪 CPF × CTN', '#dcfce7', '#14532d', 'filiação no NOMINAL casada por CPF (venda real)'),
-    'tel':       ('☎️ telefone', '#e2e8f0', '#334155', 'registro do discador (Escallo)'),
-    'tel_ctn':   ('☎️ tel-8 × CTN', '#dcfce7', '#14532d', 'filiação no NOMINAL casada pelo telefone'),
-    'ga':        ('👣 GA4', '#e2e8f0', '#334155', 'usuário do site (Google Analytics)'),
-    'app':       ('📱 app', '#e2e8f0', '#334155', 'usuário / cadastro no lake do app'),
-    'foto':      ('📷 no mês', '#f1f5f9', '#475569', 'evento dentro do mês, de qualquer coorte'),
-    'foto_lead': ('📷 desde o lead', '#f1f5f9', '#475569', 'evento em qualquer data a partir do lead'),
-    'filme':     ('🎬 coorte', '#ede9fe', '#4c1d95', 'quem virou lead no mês, seguido até hoje'),
-}
-
-
-def _tv_chip(key):
-    """Um chip HTML (R31). Chave desconhecida → nada."""
-    c = _TV_CHIPS.get(key)
-    if not c:
-        return ""
-    brd = ";border:1px solid #cbd5e1" if key.startswith('foto') else (";border:1px solid #c4b5fd" if key == 'filme' else "")
-    return (f"<span title='{c[3]}' style='display:inline-block;font-size:9.5px;font-weight:700;padding:1px 7px;border-radius:9px;"
-            f"margin-left:4px;vertical-align:middle;white-space:nowrap;background:{c[1]};color:{c[2]}{brd};'>{c[0]}</span>")
-
-
-def _tv_chips_legenda(keys):
-    """Legenda de uma linha para os chips usados na aba (R31)."""
-    parts = [f"{_tv_chip(k)} <span style='color:#475569;'>{_TV_CHIPS[k][3]}</span>" for k in keys if k in _TV_CHIPS]
-    st.markdown("<div style='font-size:11px;color:#64748b;margin:2px 0 10px 0;line-height:2;'><b>Legenda dos funis</b> — "
-                "o chip diz que OBJETO cada etapa conta e em que RÉGUA: " + " &nbsp;·&nbsp; ".join(parts) + "</div>",
-                unsafe_allow_html=True)
-
-
-def _tv_raias(modo, nums, title, subtitle=""):
-    """Diagrama em raias (R31, opção B): onde cada número nasce — raias Contato / Negócio / CTN, tempo da esquerda para a
-    direita — e as duas lentes: o corte vertical do mês (📷 fotografia, aba 🧲) e a linha horizontal da coorte (🎬 filme,
-    aba 🧭). modo = 'foto' | 'filme' — a lente ativa fica em destaque, a outra esmaecida. nums = valores da janela."""
-    n = lambda k: format_br(nums[k]) if nums.get(k) is not None else "—"
-    foto = (modo == 'foto')
-    band_fill, band_stroke = ("#e2e8f0", "#94a3b8") if foto else ("#f8fafc", "#e2e8f0")
-    arr_col, arr_op = ("#7c3aed", "1") if not foto else ("#c4b5fd", "0.7")
-    band_txt, arr_txt = ("#334155", "#4c1d95") if foto else ("#94a3b8", "#4c1d95")
-    if not foto:
-        band_txt = "#94a3b8"
-    else:
-        arr_txt = "#a78bfa"
-    mes_lbl = subtitle or "mês"
-    hdr = (f"<div style='display:flex;gap:14px;align-items:baseline;margin-bottom:4px;'>"
-           f"<div style='font-size:15px;font-weight:800;color:#0f172a;'>{title}</div>"
-           f"<div style='font-size:11px;color:#64748b;'>{subtitle}</div>"
-           f"<div style='margin-left:auto;font-size:10.5px;font-weight:700;color:#166534;'>diagrama em raias · {'📷 fotografia' if foto else '🎬 filme'}</div></div>")
-    svg = [f"<svg viewBox='0 0 1040 430' width='100%' style='max-width:1100px;display:block;' font-family=\"Source Sans 3, Segoe UI, Arial, sans-serif\">"
-           "<defs><marker id='tvra' markerWidth='10' markerHeight='10' refX='8' refY='5' orient='auto'><path d='M0 0 L10 5 L0 10 z' fill='" + arr_col + "'/></marker></defs>",
-           "<line x1='150' y1='40' x2='1010' y2='40' stroke='#cbd5e1' stroke-width='1.5'/>",
-           "<text x='290' y='30' font-size='12' fill='#94a3b8' text-anchor='middle'>antes</text>",
-           f"<text x='565' y='30' font-size='12' fill='#0f172a' text-anchor='middle' font-weight='700'>{mes_lbl}</text>",
-           f"<text x='855' y='30' font-size='12' fill='#94a3b8' text-anchor='middle'>{'depois' if foto else 'depois (seguido até hoje)'}</text>",
-           "<line x1='430' y1='34' x2='430' y2='46' stroke='#94a3b8'/><line x1='700' y1='34' x2='700' y2='46' stroke='#94a3b8'/>",
-           f"<rect x='430' y='52' width='270' height='300' fill='{band_fill}' stroke='{band_stroke}' stroke-dasharray='4 3'/>",
-           # raias
-           "<rect x='10' y='62' width='130' height='60' rx='8' fill='#dbeafe'/><text x='75' y='88' font-size='12.5' font-weight='700' fill='#1e3a8a' text-anchor='middle'>🧑 Contato</text><text x='75' y='106' font-size='10' fill='#1e3a8a' text-anchor='middle'>a pessoa no CRM</text>",
-           "<rect x='10' y='152' width='130' height='60' rx='8' fill='#fef3c7'/><text x='75' y='178' font-size='12.5' font-weight='700' fill='#92400e' text-anchor='middle'>🤝 Negócio</text><text x='75' y='196' font-size='10' fill='#92400e' text-anchor='middle'>oportunidade no pipeline</text>",
-           "<rect x='10' y='242' width='130' height='60' rx='8' fill='#dcfce7'/><text x='75' y='268' font-size='12.5' font-weight='700' fill='#14532d' text-anchor='middle'>🪪 CTN · NOMINAL</text><text x='75' y='286' font-size='10' fill='#14532d' text-anchor='middle'>a filiação (venda real)</text>",
-           "<line x1='150' y1='92' x2='1010' y2='92' stroke='#e2e8f0'/><line x1='150' y1='182' x2='1010' y2='182' stroke='#e2e8f0'/><line x1='150' y1='272' x2='1010' y2='272' stroke='#e2e8f0'/>"]
-
-    def mk(x, y, col, lbl, val, note, above=True, anchor='middle', r=9):
-        return (f"<circle cx='{x}' cy='{y}' r='{r}' fill='{col}'/>"
-                f"<text x='{x}' y='{y - 18}' font-size='11' fill='{col}' text-anchor='{anchor}' font-weight='700'>{lbl}</text>"
-                f"<text x='{x}' y='{y + 25}' font-size='13' fill='#0f172a' font-weight='800' text-anchor='{anchor}'>{val}</text>"
-                f"<text x='{x}' y='{y + 38}' font-size='9.5' fill='#64748b' text-anchor='{anchor}'>{note}</text>")
-
-    if foto:
-        svg += [
-            mk(470, 92, '#1e3a8a', 'Leads Únicos', n('lu'), 'Contatos criados no mês'),
-            "<path d='M470 101 L470 263' stroke='#94a3b8' stroke-width='1.5' stroke-dasharray='3 3'/>",
-            "<path d='M470 140 L520 140 L520 173' stroke='#94a3b8' stroke-width='1.5' stroke-dasharray='3 3' fill='none'/>",
-            mk(520, 182, '#b45309', 'Encaminhados', n('eng'), 'Negócios criados no pipeline'),
-            "<line x1='529' y1='182' x2='671' y2='182' stroke='#b45309' stroke-width='2'/>",
-            mk(680, 182, '#b45309', 'Transbordados', n('fra'), 'entrou em Distribuição/Validador'),
-            mk(470, 272, '#166534', 'Vendas nas franquias', n('vf'), 'CPF do lead × NOMINAL, qualquer data ≥ lead'),
-            "<line x1='700' y1='272' x2='985' y2='272' stroke='#166534' stroke-width='2' stroke-dasharray='6 4' opacity='0.5'/>",
-            "<text x='985' y='262' font-size='9.5' fill='#166534' text-anchor='end' opacity='0.8'>a venda pode cair depois do mês → entra aqui</text>",
-        ]
-    else:
-        svg += [
-            mk(470, 92, '#1e3a8a', 'Leads criados', n('criados'), 'Contatos novos na coorte'),
-            mk(600, 92, '#1e3a8a', 'Elegíveis', n('eleg'), 'definição de buckets', above=False),
-            "<path d='M470 101 L470 182' stroke='#94a3b8' stroke-width='1.5' stroke-dasharray='3 3'/>",
-            mk(470, 182, '#b45309', 'Esteira Televendas', n('tv'), 'entraram em LEAD', above=False),
-            mk(600, 182, '#b45309', 'No pipeline Distribuição', n('pipe'), 'Distribuição / Sem CEP / Validador'),
-            "<line x1='609' y1='182' x2='751' y2='182' stroke='#b45309' stroke-width='2'/>",
-            mk(760, 182, '#b45309', 'Enviados à franquia', n('valid'), 'Validador — em qualquer data'),
-            "<path d='M760 191 L760 230 L880 230 L880 263' stroke='#94a3b8' stroke-width='1.5' stroke-dasharray='3 3' fill='none'/>",
-            mk(880, 272, '#166534', 'Venda na franquia', n('venda'), 'CPF × NOMINAL, porta a porta + link'),
-        ]
-    # lentes
-    svg += [
-        f"<path d='M455 322 L990 322' stroke='{arr_col}' stroke-width='2.5' opacity='{arr_op}' marker-end='url(#tvra)'/>",
-        f"<text x='460' y='340' font-size='12' fill='{arr_txt}' font-weight='700'>🎬 FILME (aba 🧭): quem virou lead no mês, seguido até hoje — {'lente desta aba' if not foto else 'a outra lente'}</text>",
-        f"<text x='565' y='372' font-size='12' fill='{band_txt}' text-anchor='middle' font-weight='700'>📷 FOTOGRAFIA (aba 🧲): tudo que aconteceu dentro do mês, de quem quer que seja — {'lente desta aba' if foto else 'a outra lente'}</text>",
-        "<text x='565' y='388' font-size='10' fill='#94a3b8' text-anchor='middle'>é a régua do Relatório Mensal: fecha com o mês e não muda depois</text>",
-        # chamada
-        "<rect x='745' y='58' width='262' height='84' rx='8' fill='#fffbeb' stroke='#fcd34d'/>",
-        "<text x='757' y='77' font-size='11' fill='#92400e' font-weight='700'>Uma venda em outubro de um lead de setembro:</text>",
-        "<text x='757' y='95' font-size='10.5' fill='#78350f'>📷 fotografia de setembro: só na linha Vendas (≥ lead)</text>",
-        "<text x='757' y='111' font-size='10.5' fill='#78350f'>📷 fotografia de outubro: NÃO (o lead não é de outubro)</text>",
-        "<text x='757' y='127' font-size='10.5' fill='#78350f'>🎬 filme da coorte de setembro: SIM, sempre</text>",
-        "</svg>",
-    ]
-    cap = ("Cada linha do RMA nasce numa raia: Leads Únicos na de Contato (data de criação), Encaminhados e Transbordados na de Negócio "
-           "(criação / entrada em Distribuição–Validador), Vendas na do CTN (filiação casada por CPF). A fotografia é o corte vertical (o mês); "
-           "o filme é a linha horizontal de uma coorte. Os números são os da janela selecionada — os mesmos do funil."
-           if foto else
-           "Cada etapa da rota nasce numa raia: Leads criados e Elegíveis na de Contato (canal na criação), esteira Televendas e pipeline "
-           "Distribuição/Validador na de Negócio, venda na do CTN (filiação casada por CPF). A coorte é seguida até a última carga — por isso "
-           "os marcadores avançam para a direita do mês. Os números são os da coorte selecionada — os mesmos dos funis.")
-    st.markdown("<div style='border:1px solid #e2e8f0;border-radius:12px;padding:12px 16px 8px 16px;background:#fff;'>" + hdr + "".join(svg)
-                + f"<div style='font-size:10.5px;color:#64748b;margin-top:4px;'>{cap}</div></div>", unsafe_allow_html=True)
-
-
 def _tv_foto_filme_exemplo(key):
     """R29: exemplo didático fotografia (🧲, régua do relatório mensal) × filme (🧭, coorte seguida até hoje).
     Números inventados e pequenos de propósito — o ponto é a mecânica, não a escala. `key` só diferencia o
@@ -7259,6 +7359,18 @@ with tab10:
             _tr8 = _m8('transbordados', 'franquias');     _tr8p = _m8('transbordados', 'franquias', _prev10) if _lu8p is not None else None
             _va8 = _m8('validador', 'franquias')
             _vf8 = _m8('vendas_mes', 'franquias');        _vf8p = _m8('vendas_mes', 'franquias', _prev10) if _lu8p is not None else None
+            # R39: numerador restrito aos Contatos da MESMA definição do denominador (regra do relatório, sem promotor/TIM/
+            #      Importação/Desfiliados/Engajamento) — métricas *_def do s8 (18/09) + decomposição do que fica de fora.
+            _tr8d = _m8('transbordados_def', 'franquias'); _tr8dp = _m8('transbordados_def', 'franquias', _prev10) if _lu8p is not None else None
+            _va8d = _m8('validador_def', 'franquias')
+            _vf8d = _m8('vendas_mes_def', 'franquias');    _vf8dp = _m8('vendas_mes_def', 'franquias', _prev10) if _lu8p is not None else None
+            _ex8 = {k: _m8('transbordados_' + k, 'franquias') for k in ('promotor', 'tim', 'outros_fora', 'sem_lista')}
+            _coer_ok = _tr8d is not None
+            # o toggle `t10_coer` é desenhado ao lado do funil (mais abaixo), mas os KPIs desta linha precisam do estado agora:
+            # session_state guarda o valor do widget da última execução (False na 1ª vez = régua do relatório).
+            _t10_coer = bool(st.session_state.get('t10_coer', False)) and _coer_ok
+            _trX, _trXp, _vaX, _vfX, _vfXp = (_tr8d, _tr8dp, _va8d, _vf8d, _vf8dp) if _t10_coer else (_tr8, _tr8p, _va8, _vf8, _vf8p)
+            _coer_tag = ' · mesma definição' if _t10_coer else ''
             _fr_tot = sum(_v10('s3_nominal', 'vendas', _sel10, t) for t in ('PORTA A PORTA', 'LINK DO VENDEDOR', 'APP DO VENDEDOR'))
             _fr_tot_p = sum(_v10('s3_nominal', 'vendas', _prev10, t) for t in ('PORTA A PORTA', 'LINK DO VENDEDOR', 'APP DO VENDEDOR')) if _prev10 else None
             _tv_ctn = _v10('s3_nominal', 'vendas', _sel10, 'TELEVENDAS')
@@ -7271,10 +7383,10 @@ with tab10:
                     f"{_tv_pct(_t8, _v8)} das filiações dos discados · {_tv_pct(_t8, _tv_ctn)} das vendas TELEVENDAS do CTN", color="#b45309")
             _tv_kpi(_k8[3], "🧲", "Leads Únicos (regra do relatório)", f"{_tv_n(_lu8)} {_tv_delta(_lu8, _lu8p)}",
                     "canal conhecido, fora de Importação / Desfiliados / Engajamento / TIM / promotor", color="#0f172a")
-            _tv_kpi(_k8[4], "🏪", "Transbordados para franquias", f"{_tv_n(_tr8)} {_tv_delta(_tr8, _tr8p)}",
-                    f"{_tv_pct(_tr8, _lu8)} dos leads únicos (tx. de transbordo)", color="#0f172a")
-            _tv_kpi(_k8[5], "✅", "Vendas nas franquias (mês do lead)", f"{_tv_n(_vf8)} {_tv_delta(_vf8, _vf8p)}",
-                    f"{_tv_pct(_vf8, _tr8)} dos transbordados · {_tv_pct(_vf8, _fr_tot)} das vendas das franquias", color="#b45309")
+            _tv_kpi(_k8[4], "🏪", "Transbordados para franquias", f"{_tv_n(_trX)} {_tv_delta(_trX, _trXp)}",
+                    f"{_tv_pct(_trX, _lu8)} dos leads únicos (tx. de transbordo){_coer_tag}", color="#0f172a")
+            _tv_kpi(_k8[5], "✅", "Vendas nas franquias (mês do lead)", f"{_tv_n(_vfX)} {_tv_delta(_vfX, _vfXp)}",
+                    f"{_tv_pct(_vfX, _trX)} dos transbordados · {_tv_pct(_vfX, _fr_tot)} das vendas das franquias{_coer_tag}", color="#b45309")
 
             _f8a, _f8b = st.columns(2)
             with _f8a:
@@ -7341,15 +7453,46 @@ with tab10:
                                + f" · **{_tv_n(_g8)}** entraram em GANHO. Filiações após o 1º contato do mês: **{_tv_n(_ap8)}** de {_tv_n(_v8)}. "
                                "A maioria das filiações dos discados fecha fora da esteira do CRM (site, MGM, campo).", unsafe_allow_html=True)
             with _f8b:
-                _tv_funil("🏪 Funil Franquias — transbordo de leads", [
-                    ("🧲", "Leads Únicos (regra do relatório)", _lu8, "`HS - Leads Únicos mês`, createdate no mês"),
-                    ("🏪", "Leads transbordados", _tr8, "Negócios com 1ª entrada em Distribuição / Validador no mês"),
-                    ("✅", "Vendas nas franquias", _vf8, "CPF do lead × NOMINAL campo, filiação no mês do lead"),
-                ], subtitle=_lbl10, chips=[['contato', 'foto'], ['negocio', 'foto'], ['ctn', 'foto']])
-                st.caption(f"Entradas no **Validador** (entrega confirmada à franquia): **{_tv_n(_va8)}**. "
-                           f"Vendas das franquias no CTN no período: **{_tv_n(_fr_tot)}** — os leads nacionais respondem por "
-                           f"**{_tv_pct(_vf8, _fr_tot)}**" + (f" (período anterior: {_tv_pct(_vf8p, _fr_tot_p)})" if _vf8p and _fr_tot_p else "") + ".",
-                           unsafe_allow_html=True)
+                # R39: numerador e denominador com a MESMA definição (toggle). Desligado = régua do Relatório Mensal (transbordados
+                #      de qualquer origem sobre Leads Únicos sem promotor/TIM). O caption registra, nos dois estados, quem está
+                #      dentro/fora do numerador. O estado (_t10_coer) foi lido de session_state antes dos KPIs.
+                st.toggle("⚖️ Mesma definição no numerador — só Negócios de Contatos da regra do relatório", value=False, key='t10_coer',
+                          disabled=not _coer_ok,
+                          help="Desligado: régua do Relatório Mensal — 'transbordados' conta Negócios do pipeline Distribuição de qualquer origem "
+                               "(promotores, TIM, Importação/Desfiliados/Engajamento, Negócios sem Contato na lista), enquanto 'Leads Únicos' "
+                               "os exclui. Ligado: transbordados, Validador e vendas restritos aos Contatos que passam na mesma regra dos "
+                               "Leads Únicos (KPIs e série mensal acompanham). Precisa do s8 recarregado em/após 18/09.")
+                if _t10_coer:
+                    _tv_funil("🏪 Funil Franquias — transbordo de leads (mesma definição)", [
+                        ("🧲", "Leads Únicos (regra do relatório)", _lu8, "`HS - Leads Únicos mês`, createdate no mês"),
+                        ("🏪", "Leads transbordados — Contatos da regra", _tr8d, "Negócios com 1ª entrada em Distribuição / Validador no mês, só de Contatos que passam na regra do relatório"),
+                        ("✅", "Vendas nas franquias — Contatos da regra", _vf8d, "CPF do lead (regra do relatório, sem promotor) × NOMINAL campo, filiação no mês do lead"),
+                    ], subtitle=_lbl10, chips=[['contato', 'foto'], ['negocio', 'foto'], ['ctn', 'foto']])
+                else:
+                    _tv_funil("🏪 Funil Franquias — transbordo de leads", [
+                        ("🧲", "Leads Únicos (regra do relatório)", _lu8, "`HS - Leads Únicos mês`, createdate no mês"),
+                        ("🏪", "Leads transbordados", _tr8, "Negócios com 1ª entrada em Distribuição / Validador no mês (qualquer origem)"),
+                        ("✅", "Vendas nas franquias", _vf8, "CPF do lead (regra de abril, com promotores) × NOMINAL campo, filiação no mês do lead"),
+                    ], subtitle=_lbl10, chips=[['contato', 'foto'], ['negocio', 'foto'], ['ctn', 'foto']])
+                _fora8 = (f"promotores **{_tv_n(_ex8['promotor'])}** · TIM **{_tv_n(_ex8['tim'])}** · outras exclusões da regra (Importação / "
+                          f"Desfiliados / Engajamento / sem canal) **{_tv_n(_ex8['outros_fora'])}** · sem Contato na `HS - Leads Únicos mês` "
+                          f"**{_tv_n(_ex8['sem_lista'])}**") if _coer_ok else ""
+                if _t10_coer:
+                    st.caption(f"⚖️ **Numerador restrito à mesma definição:** dos **{_tv_n(_tr8)}** transbordados da régua do relatório, "
+                               f"**{_tv_n(_tr8d)}** ({_tv_pct(_tr8d, _tr8)}) são de Contatos que passam na regra dos Leads Únicos. **Ficam de fora:** "
+                               f"{_fora8}. Vendas nas franquias pela régua do relatório (com promotores): {_tv_n(_vf8)}; sem eles: **{_tv_n(_vf8d)}**. "
+                               f"Entradas no **Validador** (mesma restrição): **{_tv_n(_va8d)}** (todas: {_tv_n(_va8)}). "
+                               f"Vendas das franquias no CTN no período: **{_tv_n(_fr_tot)}** — os leads nacionais respondem por "
+                               f"**{_tv_pct(_vf8d, _fr_tot)}**" + (f" (período anterior: {_tv_pct(_vf8dp, _fr_tot_p)})" if _vf8dp and _fr_tot_p else "") + ".",
+                               unsafe_allow_html=True)
+                else:
+                    st.caption((f"⚖️ **Régua do Relatório Mensal:** os **{_tv_n(_tr8)}** transbordados incluem Negócios que os Leads Únicos excluem — "
+                                f"{_fora8} — por isso a taxa de transbordo sai inflada ({_tv_pct(_tr8d, _lu8)} com a mesma definição, toggle acima). "
+                                if _coer_ok else "")
+                               + f"Entradas no **Validador** (entrega confirmada à franquia): **{_tv_n(_va8)}**. "
+                               f"Vendas das franquias no CTN no período: **{_tv_n(_fr_tot)}** — os leads nacionais respondem por "
+                               f"**{_tv_pct(_vf8, _fr_tot)}**" + (f" (período anterior: {_tv_pct(_vf8p, _fr_tot_p)})" if _vf8p and _fr_tot_p else "") + ".",
+                               unsafe_allow_html=True)
 
             # --- abertura por tipo de venda dos discados com venda ---
             _tt8 = _mesa[(_mesa['dim'].str.startswith('tv_tipo|')) & (_mesa['metrica'] == 'vendas_mes') & (_mesa['mes'].isin(list(_sel10)))]
@@ -7382,11 +7525,13 @@ with tab10:
                 _tv_chart_mensal(pd.concat(_l8), "Série mensal — funil Televendas (ligações ativas)", stacked=False, rotulos=True,
                                  subtitle="últimos 12 meses carregados", fonte="ESCALLO_LEADS_MES × NOMINAL_VENDAS (tel-8, mesmo mês)")
                 _l8 = []
-                for met, lbl in [('leads_unicos_deck', 'Leads Únicos'), ('transbordados', 'Transbordados'), ('vendas_mes', 'Vendas nas franquias')]:
+                _ser8 = ([('leads_unicos_deck', 'Leads Únicos'), ('transbordados_def', 'Transbordados (mesma definição)'), ('vendas_mes_def', 'Vendas nas franquias (mesma definição)')]
+                         if _t10_coer else [('leads_unicos_deck', 'Leads Únicos'), ('transbordados', 'Transbordados'), ('vendas_mes', 'Vendas nas franquias')])  # R39
+                for met, lbl in _ser8:
                     d = _mesa[(_mesa['dim'] == 'franquias') & (_mesa['metrica'] == met) & (_mesa['mes'].isin(list(_mg8)))]
                     d = d.groupby('mes', as_index=False)['valor'].sum().sort_values('mes'); d['serie'] = lbl
                     _l8.append(d)
-                _tv_chart_mensal(pd.concat(_l8), "Série mensal — funil Franquias", stacked=False, rotulos=True,
+                _tv_chart_mensal(pd.concat(_l8), "Série mensal — funil Franquias" + (" (mesma definição)" if _t10_coer else ""), stacked=False, rotulos=True,
                                  subtitle="últimos 12 meses carregados",
                                  fonte="HS - Leads Únicos mês · hubspot_deals_raw (pipeline CDT - Distribuição) · NOMINAL_VENDAS")
 
@@ -7410,9 +7555,15 @@ with tab10:
                     "| **Leads transbordados** | Negócios | pipeline CDT - Distribuição (697831824), 1ª entrada em `Distribuição de Leads` (1020141703) ou "
                     "`Validador de Distribuição` (1020141709) no mês — `hs_v2_date_entered_*` guarda a ÚLTIMA entrada, então redistribuições reescrevem meses passados. |\n"
                     "| **Vendas nas franquias** | CPF | leads criados no mês (regra de abril, **com** os promotores — são eles que mais viram venda de franquia) × "
-                    "`NOMINAL_VENDAS` porta a porta / link / app do vendedor, filiação no mesmo mês; dedupe `COUNT(DISTINCT CPF, DT_FILIACAO)`. |\n\n"
-                    "**Ressalva do funil de franquias:** 'transbordados' conta Negócios de qualquer origem (inclusive leads dos promotores das "
-                    "franquias), enquanto 'Leads Únicos' os exclui — a taxa de transbordo pode passar de 50%. A leitura por coorte só com os leads "
+                    "`NOMINAL_VENDAS` porta a porta / link / app do vendedor, filiação no mesmo mês; dedupe `COUNT(DISTINCT CPF, DT_FILIACAO)`. |\n"
+                    "| **Mesma definição (toggle ⚖️, R39)** | Negócios × Contatos | `transbordados_def` / `validador_def` = os mesmos Negócios, restritos aos que têm "
+                    "algum Contato associado que passa na regra dos Leads Únicos (canal conhecido, fora de Importação / Desfiliados / Engajamento / TIM / promotor); "
+                    "`vendas_mes_def` = a venda de franquia com a mesma regra (sem promotores). O resto do numerador é decomposto em promotor · TIM · "
+                    "outras exclusões · sem Contato na lista (soma = transbordados). Desligado = régua do Relatório Mensal. |\n\n"
+                    "**Ressalva do funil de franquias:** na régua do relatório, 'transbordados' conta Negócios de qualquer origem (promotores, TIM, "
+                    "Importação/Desfiliados/Engajamento, Negócios sem Contato na lista), enquanto 'Leads Únicos' os exclui — depois de tirar a TIM "
+                    "(18/09) a taxa de transbordo passou de 80% em ago/26. O toggle ⚖️ restringe o numerador à mesma definição e o caption registra "
+                    "quem entra e quem sai nos dois estados. A leitura por coorte só com os leads "
                     "da regra do relatório está na aba 🧭 Funil Ponta a Ponta (buckets ≠ promotor). Fonte de tudo: seção `s8_mesa` do "
                     "`aquisicao_dash` (`gt7 run aquisicao_dash --arg only=s8`).")
 
@@ -7840,8 +7991,8 @@ with tab11:
             "entraram na etapa LEAD da esteira")
     _tv_kpi(k5, "🏪", "Enviados a franquias", f"{_tv_n(int(_els['enviado_franquia']))} {_fj_d('enviado_franquia')}",
             "passaram pelo Validador de Distribuição")
-    _tv_kpi(k6, "💰", "Vendas (porta a porta + link)", f"{_tv_n(int(_els['venda_franquia']))} {_fj_d('venda_franquia')}",
-            f"+ {format_br(int(_els['venda_app']))} via app do vendedor (conta separada)")
+    _tv_kpi(k6, "💰", "Vendas nas franquias", f"{_tv_n(int(_els['venda_franquia']))} {_fj_d('venda_franquia')}",
+            f"porta a porta + link + app do vendedor · {format_br(int(_els['venda_app']))} via app")
 
     st.markdown("")
 
@@ -7873,7 +8024,7 @@ with tab11:
                 ("✅", "Elegíveis", int(_els['criados']), "definição selecionada acima"),
                 ("🔀", "No pipeline Distribuição", int(_els['pipe_distrib']), "CDT - Distribuição de Leads"),
                 ("📮", "Enviados à franquia", int(_els['enviado_franquia']), "Validador = válido e enviado (definição do especialista)"),
-                ("💰", "Venda na franquia", int(_els['venda_franquia']), "CPF × NOMINAL: porta a porta + link do vendedor"),
+                ("💰", "Venda na franquia", int(_els['venda_franquia']), "CPF × NOMINAL: porta a porta + link + app do vendedor"),
             ], subtitle=_fj_lbl_per,
                 chips=[['contato', 'filme'], ['contato', 'filme'], ['negocio', 'filme'], ['negocio', 'filme'], ['ctn', 'filme']])
     _tv_note(
@@ -7981,8 +8132,9 @@ with tab11:
         "abre para ela. Cada pessoa entra na <b>coorte</b> do mês em que virou lead e carrega as datas do que "
         "aconteceu depois: entrar na esteira do Televendas, ser enviada a uma franquia (o <b>Validador</b> é a "
         "confirmação de que ela foi validada e enviada — definição do especialista de HubSpot), e a <b>venda real</b> "
-        "(filiação no NOMINAL, casada por CPF; 'porta a porta' + 'link do vendedor' contam como venda de franquia; "
-        "'app do vendedor' fica em contagem separada). O canal usado nas quebras é o <b>canal da criação</b> — o que "
+        "(filiação no NOMINAL, casada por CPF; 'porta a porta', 'link do vendedor' e 'app do vendedor' contam como venda "
+        "de franquia — a mesma régua do Funil Franquias da 🧲 e do Relatório Mensal; o app do vendedor aparece também "
+        "como fatia no KPI). O canal usado nas quebras é o <b>canal da criação</b> — o que "
         "trouxe a pessoa — e não o último canal que a tocou.")
     _tv_note(
         "<b>Ressalvas que mudam número.</b> (1) Coortes até <b>abr/2026</b> têm as etapas de Negócio como "
