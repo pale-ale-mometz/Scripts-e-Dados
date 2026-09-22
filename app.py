@@ -24,21 +24,39 @@ except ImportError:
 # --- 1. CONFIGURE PAGE & AUTHENTICATION ---
 st.set_page_config(page_title="Vendas Dashboard", page_icon="📊", layout="wide")
 
+# R42 (22/09/2026): perfis de acesso. Cada senha em st.secrets abre um perfil; o perfil define quais abas existem.
+#   app_password → "analista"   (todas as abas)          tv_password → "televendas" (só 📞 Televendas)
+# Sessões que só têm password_correct=True (smokes antigos) caem em "analista".
+_PERFIS_SENHA = [("analista", "app_password"), ("televendas", "tv_password")]
+_PERFIL_ROTULO = {"analista": "Analista — todas as abas", "televendas": "Televendas — só a aba 📞"}
+
+
 def check_password():
     if st.session_state.get("password_correct", False):
+        st.session_state.setdefault("perfil", "analista")
         return True
     st.title("🔒 Dashboard Login")
     password = st.text_input("Please enter the password:", type="password")
     if password:
-        if password == st.secrets["app_password"]:
+        perfil = None
+        for _p, _chave in _PERFIS_SENHA:
+            _senha = st.secrets.get(_chave)
+            if _senha and password == str(_senha):
+                perfil = _p
+                break
+        if perfil:
             st.session_state["password_correct"] = True
-            st.rerun() 
+            st.session_state["perfil"] = perfil
+            st.rerun()
         else:
             st.error("😕 Password incorrect. Please try again.")
     return False
 
 if not check_password():
     st.stop()
+
+_PERFIL = st.session_state.get("perfil", "analista")
+_PERFIL_FULL = _PERFIL == "analista"
 
 # --- 2. GLOBAL FORMATTING & HELPERS ---
 def format_br(num): return f"{int(num):,}".replace(",", ".")
@@ -1516,6 +1534,12 @@ filtro_dias = st.sidebar.radio("Dias de Operação:", [
     "Todos os dias", "Apenas Dias Úteis", "Apenas Fins de Semana/Feriados"
 ])
 _render_glossario_sidebar()  # R41: 📖 Glossário (lê GLOSSARIO)
+st.sidebar.divider()  # R42: perfil de acesso
+st.sidebar.caption(f"👤 **Perfil:** {_PERFIL_ROTULO.get(_PERFIL, _PERFIL)}")
+if st.sidebar.button("🚪 Sair", key="btn_sair"):
+    for _k in ("password_correct", "perfil"):
+        st.session_state.pop(_k, None)
+    st.rerun()
 
 if filtro_dias == "Apenas Dias Úteis":
     df = df[df['is_dia_util'] == 1]
@@ -1699,12 +1723,44 @@ def load_crm_funil():
         return pd.DataFrame(columns=_FUNIL_COLS), f"{type(e).__name__}: {str(e)[:300]}"
 
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab10, tab11 = st.tabs(["📈 Desempenho de Vendas", "🗺️ Mapa Regional (UF)", "💰 Investimento", "📣 Campanhas", "🌐 Site", "📞 Televendas", "📱 App", "📨 CRM", "🧲 Aquisição", "🧭 Funil Ponta a Ponta"])
+# R42: abas por perfil. _ABAS é a ordem canônica; _ABAS_PERFIL diz quais existem fora do perfil analista.
+_ABAS = [("tab1", "📈 Desempenho de Vendas"), ("tab2", "🗺️ Mapa Regional (UF)"), ("tab3", "💰 Investimento"),
+         ("tab4", "📣 Campanhas"), ("tab5", "🌐 Site"), ("tab6", "📞 Televendas"), ("tab7", "📱 App"),
+         ("tab8", "📨 CRM"), ("tab10", "🧲 Aquisição"), ("tab11", "🧭 Funil Ponta a Ponta")]
+_ABAS_PERFIL = {"televendas": {"tab6"}}
+_abas_vis = [(v, r) for v, r in _ABAS if _PERFIL_FULL or v in _ABAS_PERFIL.get(_PERFIL, set())]
+_abas_obj = dict(zip([v for v, _ in _abas_vis], st.tabs([r for _, r in _abas_vis])))
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab10, tab11 = (_abas_obj.get(v) for v, _ in _ABAS)
+
+
+def _aba(tab):
+    """R42: roda o corpo do bloco da aba na hora, dentro de `with tab:`; pula quando a aba não existe no perfil.
+    Uso:  @_aba(tabN)  /  def _aba_tabN():  /  global <nomes atribuídos no corpo>  /  <corpo>"""
+    def _deco(fn):
+        if tab is not None:
+            with tab:
+                fn()
+        return fn
+    return _deco
 
 # =====================================================================
 # TAB 1: DESEMPENHO DE VENDAS
 # =====================================================================
-with tab1:
+@_aba(tab1)
+def _aba_tab1():
+    global df_slice_c, df_slice_pp, df_slice_pf, df_slice_lp, df_slice_lf, agg_c, agg_pp, agg_pf, agg_lp, agg_lf, ch_c, ch_pp
+    global ch_pf, ch_lp, ch_lf, goal_vendas, pct_goal, sales_expanded, _sales_groups, _exp_cols, _i, _g, _lbl_g, _icon
+    global mostrar_previsao, _fc_when, horizonte_previsao_tabela, fcst_end_date, df_f_slice, agg_fcst_faltante, rows, grupo, nome_exibicao, meta_parc, meta_tot, row_dict
+    global falt_val, ch, v_c, v_pp, v_pf, v_lp, v_lf, v_f_faltante, parent_c, ch_m_parc, ch_m_tot, ch_dict
+    global display_cols, col_pie, col_trend, tipo_visao_pizza, v_dig, v_tv, v_out, v_fra, sum_known, v_rest, pie_data, df_pie
+    global fig_pie, col_gt1, col_gt2, col_gt3, tipo_visao_tend, tipo_graf_tend, escala_tend, canais_grafico, opcoes_ch_raw, col_g1, col_g2, col_g3
+    global show_prev, show_last_yr, show_forecast_chart, horizonte_grafico, show_metas, get_trend_data, bucketize_trend, df_main, plot_dfs, df_prev_plot, df_last_plot, df_fcst_plot
+    global last_points, g, g_main, last_row, df_plot_trend, last_hist_map, first_fcst_val_map, g_m, trace_name, mask, boost_fcst, cumulative_mode
+    global meta_dfs, m, fig_trend, trace, _hover_lbl, _eixo_x, is_cum, _tr, _act, _fc, _mt, C_ACT
+    global C_FC, C_META, r_a, r_f, _lbl, g_ann, mp_ann, mt_ann, _ord_eixo, x_now, x_end, r_m
+    global meta_txt, mp, mt, _CAL_MESES_PT, _CAL_WD, _cal_hoje, _CAL_GRUPOS, _CAL_GRUPOS_FCST, _cal_lbl_mes, _cal_filtra, _cal_fcst_serie, _cal_medias_semana
+    global _cal_card, _cal_chip, _cal_render, _cal_opts_ch, _cal_opcoes, _cal_meses, cc1, cc2, cc3, cc4, _cal_sel, _cal_m1
+    global _cal_m2, _cal_avg, colA, colB, _r1, _dia_cmp
     st.header("Visão Integrada de Vendas")
     st.info(f"**Status do Período ({view_option}):** Decorridos **{e_days_c} de {t_days_c} dias** no calendário. | **Dias Úteis Decorridos:** Atual: {w_ela_c} | Anterior: {w_ela_p} | Ano Passado: {w_ela_l}")
 
@@ -2440,7 +2496,9 @@ with tab1:
 # =====================================================================
 # TAB 2: ANÁLISE GEOGRÁFICA COMPARATIVA
 # =====================================================================
-with tab2:
+@_aba(tab2)
+def _aba_tab2():
+    global col_map_left, col_map_right, render_map_column, df_fr, df_fr_p, fr_uf, _franquia_map, fr_col1, fr_col2
     st.header("Análise Geográfica Comparativa (UF)")
     st.markdown(f"**Período analisado:** {c_s.strftime('%d/%m/%Y')} a {ref_datetime.strftime('%d/%m/%Y')}")
     st.write("")
@@ -2650,7 +2708,17 @@ with tab2:
 # =====================================================================
 # TAB 3: ANÁLISE DE INVESTIMENTO
 # =====================================================================
-with tab3:
+@_aba(tab3)
+def _aba_tab3():
+    global col_filt1, col_filt2, col_filt3, opcoes_canais_inv, _default_canais_inv, canais_invest, categorias_invest, todas_plataformas, plataformas_invest, _crm_on, df_inv_filt, cat_cols
+    global df_invest_global, available_cats_global, filter_inv_date, get_inv_metrics, compute_row, df_c_global, inv_global_total, leads_global_total, goal_invest, pct_goal_inv, goal_leads, pct_goal_leads
+    global col_gb1, col_gb2, col_det1, col_det2, detalhe_plat, detalhe_tipo, df_c_inv, df_pp_inv, df_pf_inv, df_lp_inv, df_lf_inv, metrics
+    global rows_inv, m_idx, m_name, m_goal, row_parent, plat, p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, row_p
+    global cat, row_c, display_cols_inv, col_inv_t1, col_inv_t2, grafico_metrica, tipo_graf_tend_inv, col_ig1, col_ig2, show_prev_inv, show_last_yr_inv, get_inv_trend_data
+    global plot_dfs_inv, df_main_inv, df_prev_plot_inv, df_last_plot_inv, df_plot_trend_inv, fig_line, trace, _crm_leads_t3, _crm_vendas_t3, _zen_t3, _per_t3, _z_c
+    global _z_p, _cl_c, _cl_p, _cv_c, _cv_p, _msgs_c, _msgs_p, _cost_c, _cost_p, _leads_c, _leads_p, _vend_c
+    global _vend_p, _cpv_c, _cpv_p, _split_src_t3, rows_crm, _c8i, _c8i_err, _c8i_c, _c8i_p, _gt7_zen_c, _gt7_zen_p, _gt7_bd_c
+    global _gt7_bd_p, _gt7_v_c, _gt7_v_p, rows_ponte, _top_send
     st.header("Análise de Investimento")
     st.info(f"**Status do Período ({view_option}):** Decorridos **{e_days_c} de {t_days_c} dias** no calendário. | **Dias Úteis Decorridos:** Atual: {w_ela_c} | Anterior: {w_ela_p} | Ano Passado: {w_ela_l}")
     
@@ -3048,7 +3116,17 @@ with tab3:
                 st.markdown("**Top remetentes (Zenvia) no período:**")
                 st.dataframe(_top_send, use_container_width=True, hide_index=True)
 
-with tab4:
+@_aba(tab4)
+def _aba_tab4():
+    global CRM_SOURCE_PATTERNS, GROUP_NAMES, camp_cost, ga_vendas, app_sales, ga_leads, meta_leads, cmp_start, cmp_end, _crm_mask_t4, _name_has_t4, _src_has_t4
+    global col_cf0, col_cf1, col_cf2, canal_camp, plataforma_camp, sel_opts, sel_tipo, crm_is_selected, group_mode, metric_opts, metrica_camp, metric_col
+    global ga_p, cost_p, ga_leads_p, meta_leads_p, app_sales_p, meta_leads_mode, cost_scope, ga_scope, ga_leads_scope, app_scope, _plat_names, _cost_by
+    global _purch_by, _app_by, _ga_leads_by, _ml_scope, _fb_leads_by, _leads_by, _src_by, _uni_names, uni, _is_dl, _opts, campanhas_sel
+    global _asc, _mn, _ms, col_cm1, col_cm2, col_cm3, escala_camp, acum_camp, ver_camp, freq, is_acum, per_campaign
+    global keys, cost_f, purch_f, _app_pf, _ga_lf, _fb_lf, leads_f, _bucketize, cost_b, purch_b, leads_b, merge_on
+    global data, _c, _cum_cols, _cc, metric_label, tot_cost, tot_purch, tot_leads, cpa_avg, cpl_avg, has_cost, _metric_card
+    global mc1, mc2, mc3, mc4, mc5, _zen_t4, _zen_p_t4, _zen_cost, _zen_msgs, _cpa_crm, _cpl_crm, fig_camp
+    global _pd_t4, _pd_scope, _ic_by, _tbl, _money_t, _int_t, _pct1_t, _pct2_t, _scale_colors_t4, _styled
     st.markdown("## 📣 Análise de Campanhas")
     st.caption(f"Custo das plataformas pagas (Google/Meta/TikTok) + eventos de compra do GA, no período "
                f"da barra lateral ({c_s.strftime('%d/%m/%Y')} → {ref_datetime.strftime('%d/%m/%Y')}). "
@@ -3437,7 +3515,16 @@ with tab4:
 # Vendas CTN = RESUMO_VENDAS_DIARIAS (nominal) tipo_venda = Website, para
 # reconciliação com o número oficial. Tudo aqui é ADITIVO às abas 1-4.
 # =====================================================================
-with tab5:
+@_aba(tab5)
+def _aba_tab5():
+    global f5c1, f5c2, f5c3, f5c4, _period_box5, metrica_f5, modo_usuarios5, ckt5, CHECKOUT_STAGES5, checkout_stage_values5, stages_c5, stages_p5
+    global prev_by_lbl5, _purchases_c5, _purchases_p5, _metric_word5, ctn_vendas5, ctn_c5, ctn_p5, _err_ckt5, _pct_br5, _delta_pct5, _delta_chip5, _ratio_html5
+    global real_c5, top_lbl5, top_val_c5, top_val_p5, conv_total_c5, conv_total_p5, gargalo_lbl5, gargalo_rate5, _i, _prev_lbl, _prev_v, _lbl
+    global _v, _r, _n_prev, _n_cur, _kpi_card5, k1, k2, k3, k4, col_fun5, col_conv5, GREEN_RAMP5
+    global _max_v5, _tit_metr5, _leg, _rows_html5, _idx_real5, _prev_c5, _prev_p5, _ic, _ph, _rt, _label_cell, _bar
+    global _conv_cells, _vp, _wid, _bg, _fg, _sub_fg, _conv_at, _conv_an, _vp_txt, _conv_rows5, _pct, _w
+    global _short, _d_top5, _d_ven5, _ven_txt, _insight5, _worst_rt5, _r_txt5, _stage_sums5, _sums_c5, _sums_p5, _exp_rows5, _prev_us5
+    global _ev_col, _us_col, _us_c, _us_p, _ev_c, _ev_p, _pu_c, _exp_df5
     st.markdown("## Performance do Funil de Vendas — Website Checkout")
     st.caption("🧪 **Aba piloto** — em teste para o uso diário do especialista de mídia. "
                "O período atual e o de comparação seguem os **Controles Globais** da barra lateral. "
@@ -4079,7 +4166,36 @@ def _tv_raias(modo, nums, title, subtitle=""):
     st.markdown("<div style='border:1px solid #e2e8f0;border-radius:12px;padding:12px 16px 8px 16px;background:#fff;'>" + hdr + "".join(svg)
                 + f"<div style='font-size:10.5px;color:#64748b;margin-top:4px;'>{cap}</div></div>", unsafe_allow_html=True)
 
-with tab6:
+@_aba(tab6)
+def _aba_tab6():
+    global _tvd_m, _tvd_w, _tv_err, _tv_m_ini, _tv_m_fim, _tv_meses, _tv_p_ini, _tv_p_fim, _tv_meses_p, _tv_c_s, _tv_c_e, _tv_sem_ini
+    global _tv_sem_fim, _tv_semanas, _tv_periodo_curto, _tv_tem_sem, _tv_grain, _tvd, _tv_per, _tv_per_p, _tv_per_lbl, _tv_per_p_lbl, _tv_atual, _tv_atual_w
+    global _tv_hdr1, _tv_hdr2, _tv_val, _tv_serie, _tv_pct, _tv_n, _tv_delta, _tv_kpi, _tv_note, _TV_RAMP, _tv_funil, _tv_fmt_k
+    global _tv_meses_grafico, _TV_CORES_A, _tv_titulo, _tv_fonte, _tv_chart_mensal, _tv_linhas_mensal, _tv_long, _tv_tabs, S, leads, lig, alo
+    global classif, negoc, venda, venda_conf, conf_tel8, piso_l, piso_c, leads_p, alo_p, venda_p, gap, k1
+    global k2, k3, k4, c1, c2, _h_l, _s_l, _h_a, _s_a, _h_v, _s_v, _o_l
+    global _t_l, _aq6, _aq6_err, _m8, _v8, _d8, _a8, _v8m, _t8, _at8, _piso_rate, _esp_piso
+    global _liq, _mg1, _s1, m_, lbl_, _x, _pl, _t, r_leads, r_alo, r_classif, r_venda
+    global r_venda_conf, r_conf, r_leads_p, r_conf_p, crm_tel8, crm_no, crm_deal, crm_v, crm_v_no, crm_v_deal, _t2, _tot_tipo
+    global _tv_tipo, _t2c, fig, _mg2, g_tot, g, p1, p2, po, ps, g_p, _mg3
+    global _comp, _rows, ganho, ganho_conf, fil, fil_tv, fil_tv_antes, fil_cv, fil_cv_pre, nom_tv, nom_tot, esc_cas
+    global esc_at, esc_re, _mg4, _l4, _rows4, _stages, _ent, fluxo, fluxo_funil, _t5_raias, _mg5, _est_all
+    global _p_fim, _p_fim_ant, _est, _est_ant, _hoje, _fim_data, _fim_lbl, _col_est, _rows5, _, r, _va
+    global _aud, _tot_ent, _is_tv, _is_fe, _is_vz, _tv_share, _fe_share, _vz_share, _tv_rot_tot, _a2, _c6, _w6
+    global _cols6, c_, _g6, _ordem, k, i, g_, r_, _rows6, _sub, cr_, s_
+    global _faltam, _d6, _c, _lbl, tk, tl, tlc_id, tcpf, th, tk_h, tk_b, tk_sac
+    global tk_lia, tl_sac, tcomp, tlia, thum, tlc, tpar, tconf, tab_per, tcrm_l, tcrm_c, tcrm_d
+    global tcrm_dq, tl_p, tk_p, tcomp_p, tbot, _tk_api, _tv_min, _tv_tempo, _tv_pivot7, _esp, _esp90, _dur_h
+    global _dur_h90, _dur_b, _dur_b90, _est_dt, _est_tot, _est_att, k5, k6, k7, k8, _mg7, _tv_fase
+    global _tv_fase_max, _f_trg, _f_vnd, _f_tot, _f_n, _f_bot, _f_hum, _f_sr, _f_cv, _f_sac, _f_zero, _f_lv
+    global _f_lsr, _f_hnd, _q_cpf, _q_sr, _q_bot, _q_hum, _e_v, _e_s, _pp, f1, f2, f3
+    global f4, g1, g2, t1, t2, _rows_t, _nm, _ag, _agl, _w, _s, _n_ag
+    global r1, r2, _top, fig_ag, _tab, _hr, h1, h2, _hm_m, _fmt, _cs, _z
+    global _dias, fig_hm, m1, m2, _mot, _ml, fig_mt, _et, _tot, _s8, _s9_dim, _s8_meses
+    global _s8_alvo, _s8_idx, _s8_mes, _rd, _s9_info, _r, _tp, _s9_hum, _s8_piv, _s8_lista, _pr, _alos
+    global _re, _ral, _f, _n_hum, _n_sis, _num_ext, _tab_show, _pv, _hum_v, _esp_v, _tot_v, _bots_v
+    global _semag_v, _hv, _hp, _ho, _hs, _hn, _hw, _pct_col, _vend_show, _esp_show, _pw, _vmax
+    global linhas, dim, cri, vazio, _bg
     st.markdown("## Televendas — Escallo × HubSpot × Talkerchat × NOMINAL")
     _tvd_m, _tvd_w, _tv_err = load_tv_dash()
 
@@ -5623,7 +5739,33 @@ _AP_BUCKET_LBL = {'a_0_30d': '0–30 dias', 'b_31_90d': '31–90 dias', 'c_91_18
                   'd_181_365d': '181–365 dias', 'e_mais_365d': 'mais de 1 ano'}
 _AP_MESES_PT = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
 
-with tab7:
+@_aba(tab7)
+def _aba_tab7():
+    global _apd, _ap_err, _ap_meses, _ap_meses_p, _ap_m_fim, _ap_atual, _ap_hdr1, _ap_hdr2, _ap_val, _ap_serie, _ap_long, _ap_janela
+    global _ap_mes_lbl, _ap_tabs, S, dl, dl_scpf, cad, cad_fil, cad_dia, cad_free, cv30, cv90, cvt
+    global cad_cartao, comp, comp_app, comp_idpv, comp_antes, comp_junto, comp_dep, comp_cad, dl_p, cad_p, comp_app_p, comp_sem_app
+    global k1, k2, k3, k4, c1, c2, _rows_f, _mg1, _, _s1, m_, _pl
+    global lbl_, _t, cc1, cc2, _pop, _mg2, _mes_pop, _pop_n, _ex_free, _uso, _tot, _ult
+    global _u_ult, _u_med, _top, _top1, _usos_ult, _lp, _pv, _pv_show, _rows2, prod, sub, r
+    global row, c, _su, _su_usos, _prods, _prod_sel, _sb1, _sb2, _ss, _ssu, _den, _rows_sb
+    global _sb_, _v, _ev, _pc, _npar, _pu, _po, _denp, _pb1, _pb2, _rows_pc, _pp_
+    global _tops, _evp, _cmp_rows, _pp, _lbl, _pn_, _u_, _prod, _dcmp, _ordp, fig, _pre
+    global _popb, _cv, cb1, cb2, _g, _pre2, _rows3, b_, n_, _n_tot, _mg3, _esc3
+    global _ult3, est, est_ini, ger, ger_ult, cvm, cvm_ult, gcm, ger_prev, cvm_prev, _s3, _go
+    global _x, _ger, _cvm, _est, _base, xx, e, g, _ct, _tt, _tot_ct, _sh
+    global _peq, _rk, _c, _L4, _LTV_MENS, _ENT_LBL, _ENT_ORD, _ENT_COR, _DEF_LBL, _JAN, _JAN_COR, _NCO
+    global _rm, _ref_max, _ref_max_lbl, _todas4, _s4_idx, _s4_sum, _s4_eleg, _s4_ltv, _s4_brl, _s4_ult_coortes, _s4_rng, _c4a
+    global _c4b, _nco_show, _def4, _co4, _xs, _denso, _rows_a, m, _da, _tot_a, _nun_a, t
+    global nn, _pn, _ta, tot, _cmp4, _rows_b, dk, v, n, el, _cores_b, _tit_b
+    global _sub_b, N, _db, _ylo, _yhi, _pad, _tb, _rows_c, _tab_c, _dc, _dcp, d
+    global _rp, _tipos, _rows_d, _dd, _cols_d, _cd, _ddp, _xmin, _xmax, _sp, _td, _L5
+    global _REC_LBL, _REC_ORD, _st5, _v5, _nf, _tot_nf, _login90, _wm, _cash_n, _cash_v, _df5, _tot_desf
+    global _desf90, _da5, _nunca_card, _q, _qc1, _qc2, _col, _cart, _lg, _lt, _n, _cw1
+    global _cw2, _rows_w, seg, lbl, _dw, _dd5, _mot, _tm, _cf, _cp, _hoje5, _cpm
+    global _ylo5, _yhi5, _F6, _C6, _USO_LBL, _USO_ORD, _j6, _n6, _hoje6, _mF, _sub6, _fd
+    global _pv6, _base90, _rows6, u, met, _d6c, _t6, _lift, _mC, _pc6, _rows7, _d7c
+    global _ordp7, _nen, _qq, _d3, _d5, _t7, _el3, _tipos6, _cells, _dm, _piv, _promos
+    global _vrm, _vr, _vr_lbl, _elp, pr, _dp6, _dl, _t8p, _perda
     st.markdown("## App — funil, uso de produtos e freemium")
     _apd, _ap_err = load_app_dash()
     _apd = _ap_derivar_pop(_apd)
@@ -6869,7 +7011,15 @@ with tab7:
 # =====================================================================
 
 
-with tab8:
+@_aba(tab8)
+def _aba_tab8():
+    global _c8, _c8_err, _CRIT_BD, _CRIT_OLD, _crit8, _c8m, _c8_ult, _cc1, _cc2, _cc3, _m_atu, _m_ant_def
+    global _outros, _m_ant, _da, _dp, _dlim, _kpis, _ga, _va, _la, _cpa_a, _cpl_a, _gp
+    global _vp, _lp, _cpa_p, _cpl_p, _lbl_a, _lbl_p, k1, k2, k3, k4, _chip_cpa, _dd
+    global _bgc, _fgc, _BUCKETS, _bucket_df, _CORES8, _met, _tit, _fmt, _pref, _db8, fig, _t8
+    global _, r, dd, rp, _f8, _f8_err, _ESC_GT7, _ESC_ALL, _fc1, _fc2, _can8, _esc8
+    global _fb, _FMET, _fjan, _fsum, _sa, _sp, _sem_leitura, _fstages, _fa1, _fa2, _fm0, _fmm
+    global _fg, _fgw, _rows_f, m, _dfr, _fl1, _fl2, _dfv
     st.markdown("## CRM — WhatsApp/SMS da Instância de Aquisição")
     _c8, _c8_err = load_crm_cpa()
     if _c8_err:
@@ -7124,7 +7274,15 @@ with tab8:
 # Três definições de CPL, porque cada área usa uma régua: HubSpot (Leads Únicos), GA (generate_lead) e CTN
 # (vol_leads do RESUMO). Reaproveita helpers das abas 6/7.
 # =====================================================================
-with tab5:
+@_aba(tab5)
+def _aba_tab5_b():
+    global _aq, _aq_err, _aq_m, _aqv, _aqs, _c9a, _c9b, _c9c, _p9, _fim9, _n9, _mA
+    global _dur, _cmp9, _mB, _ini, _cl9, _lbl9A, _lbl9B, _leads, _leads_serie, _inv_cpl, _inv, _inv_s
+    global _vga, _vga_s, _vsite, _vsite_s, _iA, _iB, _lA, _lB, _sA, _sB, _gA, _gB
+    global k1, k2, k3, k4, _icA, _cpaA, _cpaB, _chip9, _d9, _bg9, _fg9, _met9
+    global _serie, _dA, _dB, _rows9, _d, _per, i, _, r, _d9c, _dinheiro, _xmap
+    global _cores9, fig, _plats, _rows10, pl, meses, per, inv, lea, ven, val, _d10
+    global _ordp, _t9, defn, lbl, fonte, lv, _rows11, ga_tot, crm_v, ctn, midia
     st.markdown("---")
     st.markdown("## Site — investimento, leads, vendas e custo por resultado")
     _aq, _aq_err = load_aq()
@@ -7453,7 +7611,22 @@ def load_lu_buckets():
     return d
 
 
-with tab10:
+@_aba(tab10)
+def _aba_tab10():
+    global _aq10, _aq10_err, _m10, _c10a, _c10b, _t10_glob, _j10, _sel10, _t10_fora, _n10, _prev10, _lbl10
+    global _lbl10_p, _fr10, _fr_lbl, _fr_mensal, _fr_txt, _fr_old, _fr_mes_ini, _fr_m_old, _lu_tab_b, _sel_bk10, _lub, _lu_bucket_ok
+    global _cd1, _cd2, _def10, _v10, _s10, _lu, _lu_rma, _cpf, _eng_cpf, _eng, _fra, _vf
+    global _lu_p, _mm10, _pp10, _eng_p, _fra_p, _vf_p, k1, k2, k3, k4, _pg, _pg_p
+    global _core9, _inv_leads10, _lu_tab, _t10_raias, _bruto_cap, _mg10, _long10, met, lbl, s, _sv, _mesa
+    global _m8, _m8_ok, _d8, _d8p, _a8, _a8p, _n8, _n8p, _v8, _v8p, _t8, _t8p
+    global _ap8, _g8, _va8x, _vt8x, _n8_tv, _r33, _r33_ok, _lu8, _lu8p, _tr8, _tr8p, _va8
+    global _vf8, _vf8p, _tr8d, _tr8dp, _va8d, _vf8d, _vf8dp, _ex8, _coer_ok, _t10_coer, _trX, _trXp
+    global _vaX, _vfX, _vfXp, _coer_tag, _fr_tot, _fr_tot_p, _tv_ctn, _k8, _f8a, _f8b, _t10_neg, _t10_esc
+    global _sem_alo_tv, _antes8, _sem_alo, _sem_alo_b, _fora8, _tt8, _c8a, _c8b, _gt8, fig, _mg8, _l8
+    global dim, d, _ser8, _cs1, _cs2, _cs3, _cs4, _v8s, _ga_users_ok, _esc_s, _ap_dl, _ap_dr
+    global _ap_cad, _ap_com, _ms_app, _ap_fre, _ap_idpv, _nom10, _g10, _tot10, _can, _pc, _t10, canal
+    global r, lu, _sel7, _amp7, _b3t, _q7, _lbl7, _p7, _c, _lu7, _tv7, _b3
+    global _r3c, _r3a, _b6, _r6c, _inv7, _cac, _g7, _med3, _q, _mx, _my, _tb7
     st.markdown("## Aquisição — funis de leads e apropriação (RMA)")
     st.caption("📌 **O que esta aba responde:** a FOTO operacional do período — quanto entrou e quanto virou venda "
                "em cada superfície (site, app, televendas ativo/receptivo), cada uma medida na própria fonte "
@@ -8216,7 +8389,13 @@ with tab10:
 # com o especialista de HubSpot (31/08–04/09) — doc: claude/plano_03-09 no projeto
 # Televendas Funnel. Objetos do HubSpot sempre com maiúscula: Contato, Lead, Negócio.
 # =====================================================================================
-with tab11:
+@_aba(tab11)
+def _aba_tab11():
+    global _FJ_LBL, _FJ_DEFS, load_fj_buckets, load_fj_tempos, _fjb, _num, _c, _fj_disp, _c11a, _c11b, _t11_glob, _j11
+    global _fj_meses, _t11_fora, _n11, _lbl11, _fj_lbl_per, _c_def, _c_bk, _fj_def_nome, _todos_bk, _fj_sel, _cur, _sel
+    global _tot, _els, _prev_meses, _prv, _fj_d, k1, k2, k3, k4, k5, k6, _t11_raias
+    global _cA, _cB, _tmp, _fj_t, _etapas, _rows_html, nome, ent, av, tempo, nota, taxa
+    global perda, _bk, _figb, _ev, _ev_m, _fige
     st.markdown("## Funil Ponta a Ponta — do lead criado à venda")
     st.caption("Cada mês é uma **coorte**: todo mundo que virou lead naquele mês, acompanhado pelos marcos "
                "seguintes (mesmo que aconteçam meses depois). É reconstrução da jornada, não foto do estágio atual.")
