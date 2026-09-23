@@ -1660,6 +1660,24 @@ def load_aq():
 
 
 @st.cache_data(ttl=43200)
+def _load_aq_trecho_raw():
+    d = cquery("SELECT mes, secao, dim, metrica, valor, dia_corte, corte, atualizado_em FROM alex_aq_dash_trecho", ttl=0)
+    d['mes'] = pd.to_datetime(d['mes'])
+    d['corte'] = pd.to_datetime(d['corte'])
+    d['valor'] = pd.to_numeric(d['valor'], errors='coerce')
+    return d
+
+
+def load_aq_trecho():
+    """R43: mês corrente e anterior cortados no MESMO dia (pipeline aquisicao_trecho do claude-toolkit) — base do chip
+    tracejado 'vs 1–D' da aba 🧲. Erro/tabela ausente → DataFrame vazio + mensagem (o chip simplesmente não aparece)."""
+    try:
+        return _load_aq_trecho_raw(), None
+    except Exception as e:
+        return pd.DataFrame(columns=_AQ_COLS + ['dia_corte', 'corte']), f"{type(e).__name__}: {str(e)[:400]}"
+
+
+@st.cache_data(ttl=43200)
 def _load_crm_cpa_raw():
     g = cquery("""SELECT report_date AS dia, ROUND(SUM(total_cost), 2) AS gasto_zenvia,
                          ROUND(SUM(CASE WHEN status IN ('Enviada','Entregue','Lida')
@@ -4170,7 +4188,7 @@ def _tv_raias(modo, nums, title, subtitle=""):
 def _aba_tab6():
     global _tvd_m, _tvd_w, _tv_err, _tv_m_ini, _tv_m_fim, _tv_meses, _tv_p_ini, _tv_p_fim, _tv_meses_p, _tv_c_s, _tv_c_e, _tv_sem_ini
     global _tv_sem_fim, _tv_semanas, _tv_periodo_curto, _tv_tem_sem, _tv_grain, _tvd, _tv_per, _tv_per_p, _tv_per_lbl, _tv_per_p_lbl, _tv_atual, _tv_atual_w
-    global _tv_hdr1, _tv_hdr2, _tv_val, _tv_serie, _tv_pct, _tv_n, _tv_delta, _tv_kpi, _tv_note, _TV_RAMP, _tv_funil, _tv_fmt_k
+    global _tv_hdr1, _tv_hdr2, _tv_val, _tv_serie, _tv_pct, _tv_n, _tv_delta, _tv_delta2, _tv_kpi, _tv_note, _TV_RAMP, _tv_funil, _tv_fmt_k
     global _tv_meses_grafico, _TV_CORES_A, _tv_titulo, _tv_fonte, _tv_chart_mensal, _tv_linhas_mensal, _tv_long, _tv_tabs, S, leads, lig, alo
     global classif, negoc, venda, venda_conf, conf_tel8, piso_l, piso_c, leads_p, alo_p, venda_p, gap, k1
     global k2, k3, k4, c1, c2, _h_l, _s_l, _h_a, _s_a, _h_v, _s_v, _o_l
@@ -4303,7 +4321,9 @@ def _aba_tab6():
     def _tv_n(x):
         return "—" if x is None else format_br(x)
 
-    def _tv_delta(cur, prev):
+    def _tv_delta(cur, prev, lbl=None, trecho=False):
+        """Chip de variação. R43: `lbl` (ex.: 'vs ago/26') entra em fonte menor dentro do chip; `trecho=True` é o chip
+        do MESMO TRECHO (dias 1..D do mês anterior), com borda tracejada para distingui-lo do chip do mês cheio."""
         if cur is None or prev is None or prev <= 0:
             return ""
         d = (cur - prev) / prev * 100
@@ -4313,8 +4333,18 @@ def _aba_tab6():
             bg, fg = "#dcfce7", "#15803d"
         else:
             bg, fg = "#fee2e2", "#b91c1c"
-        return (f"<span style='background:{bg};color:{fg};font-weight:700;font-size:11.5px;"
-                f"padding:2px 8px;border-radius:10px;white-space:nowrap;'>{'+' if d > 0 else ''}{d:.0f}%</span>")
+        _lb = f" <span style='font-weight:600;font-size:10px;opacity:.85;'>{lbl}</span>" if lbl else ""
+        _bd = "border:1px dashed currentColor;" if trecho else ""
+        _tt = " title='mesmo trecho: dias 1 a D do mês anterior, D = último dia completo na base'" if trecho else ""
+        return (f"<span{_tt} style='background:{bg};color:{fg};font-weight:700;font-size:11.5px;{_bd}"
+                f"padding:2px 8px;border-radius:10px;white-space:nowrap;'>{'+' if d > 0 else ''}{d:.0f}%{_lb}</span>")
+
+    def _tv_delta2(cur, prev, prev_t=None, lbl=None, lbl_t=None, cur_t=None):
+        """R43: os dois chips — vs período cheio (cur × prev) e vs mesmo trecho (cur_t × prev_t; cur_t = cur se None).
+        Cada chip some quando falta a base; sem trecho o resultado é o chip único de sempre."""
+        a = _tv_delta(cur, prev, lbl)
+        b = _tv_delta(cur if cur_t is None else cur_t, prev_t, lbl_t, trecho=True) if prev_t is not None else ""
+        return " ".join(x for x in (a, b) if x)
 
     def _tv_kpi(col, icon, label, value_html, sub, color="#166534"):
         col.markdown(
@@ -4339,8 +4369,9 @@ def _aba_tab6():
 
     _TV_RAMP = ['#1e6b3c', '#2e8a4f', '#57a86f', '#8cc79e', '#c8e3cf', '#e5f0e8']
 
-    def _tv_funil(title, stages, subtitle="", chips=None):
+    def _tv_funil(title, stages, subtitle="", chips=None, deltas=None):
         """stages: lista de (icone, rotulo, valor, nota[, base]). Barra proporcional ao topo,
+        deltas (R43, opcional): lista com um item por etapa — HTML dos chips de comparação (_tv_delta2), desenhados sob a nota.
         chips (R31, opcional): lista com um item por etapa — lista de chaves de _TV_CHIPS (objeto contado e régua),
         renderizadas ao lado do rótulo; None/[] = sem chip.
         conversão sequencial (vs etapa anterior) e acumulada (vs topo).
@@ -4360,11 +4391,14 @@ def _aba_tab6():
         for i, (ic, lbl, v, note, base) in enumerate(stages):
             den = (vidx[base] if base is not None and 0 <= base < len(vidx) else prev)
             _ch = "".join(_tv_chip(k) for k in (chips[i] or [])) if i < len(chips) else ""
+            _dl = (deltas[i] or "") if deltas and i < len(deltas) else ""
             label = (f"<div style='flex:0 0 250px;display:flex;align-items:center;gap:8px;'>"
                      f"<div style='width:30px;height:30px;border-radius:8px;background:#14532d;display:flex;"
                      f"align-items:center;justify-content:center;font-size:14px;flex:0 0 30px;'>{ic}</div>"
                      f"<div><div style='font-size:12.5px;font-weight:700;color:#0f172a;' title='{_gl(lbl)}'>{lbl}{_ch}</div>"
-                     f"<div style='font-size:10.5px;color:#64748b;'>{note}</div></div></div>")
+                     f"<div style='font-size:10.5px;color:#64748b;'>{note}</div>"
+                     + (f"<div style='margin-top:3px;display:flex;flex-wrap:wrap;gap:4px;'>{_dl}</div>" if _dl else "")
+                     + "</div></div>")
             if v is None:
                 bar = ("<div style='flex:1;display:flex;justify-content:center;'><div style='width:60%;border:2px dashed #cbd5e1;"
                        "border-radius:8px;padding:6px 10px;text-align:center;color:#94a3b8;font-size:11.5px;'>sem dados</div></div>")
@@ -7611,6 +7645,15 @@ def load_lu_buckets():
     return d
 
 
+@st.cache_data(ttl=43200)
+def load_lu_buckets_trecho(dia):
+    """R43: Leads Únicos por bucket criados até o dia `dia` de cada mês (o mesmo trecho 1..D)."""
+    d = cquery(f"SELECT mes, bucket, COUNT(*) criados FROM alex_funil_journey WHERE DAY(createdate) <= {int(dia)} GROUP BY 1,2")
+    d['mes'] = pd.to_datetime(d['mes'])
+    d['criados'] = pd.to_numeric(d['criados'])
+    return d
+
+
 @_aba(tab10)
 def _aba_tab10():
     global _aq10, _aq10_err, _m10, _c10a, _c10b, _t10_glob, _j10, _sel10, _t10_fora, _n10, _prev10, _lbl10
@@ -7627,6 +7670,8 @@ def _aba_tab10():
     global _ap_cad, _ap_com, _ms_app, _ap_fre, _ap_idpv, _nom10, _g10, _tot10, _can, _pc, _t10, canal
     global r, lu, _sel7, _amp7, _b3t, _q7, _lbl7, _p7, _c, _lu7, _tv7, _b3
     global _r3c, _r3a, _b6, _r6c, _inv7, _cac, _g7, _med3, _q, _mx, _my, _tb7
+    global _tr10, _tr10_err, _tr_dia, _tr_ok, _tr_msg, _trc, _corte_t, _lblc, _lblt, _v10t, _dq10, _dd10, _trc_at  # R43
+    global _lu_pt, _lu_ct, _lubt, _dm8, _d8s, _ms_app_p, _dap  # R43
     st.markdown("## Aquisição — funis de leads e apropriação (RMA)")
     st.caption("📌 **O que esta aba responde:** a FOTO operacional do período — quanto entrou e quanto virou venda "
                "em cada superfície (site, app, televendas ativo/receptivo), cada uma medida na própria fonte "
@@ -7760,6 +7805,57 @@ def _aba_tab10():
                 d = d[d['dim'] == dim]
             return d.groupby('mes', as_index=False)['valor'].sum().sort_values('mes')
 
+        # ---- R43: segunda comparação — o MESMO TRECHO (dias 1..D) do mês anterior, D = último dia completo da base ----
+        #      Fonte: alex_aq_dash_trecho (pipeline aquisicao_trecho, roda na recarga diária depois do aquisicao_dash).
+        #      Só faz sentido com UM mês selecionado (o corrente), mês anterior disponível, D antes do fim do mês e o corte da
+        #      tabela igual ao "Dados até" — senão o chip tracejado fica de fora e o caption 📐 diz o motivo.
+        _tr10, _tr10_err = load_aq_trecho()
+        _tr_dia = int(pd.Timestamp(reference_date).day)
+        _tr_ok, _tr_msg = False, ""
+        if (len(_sel10) == 1 and len(_prev10) == 1
+                and pd.Timestamp(_sel10[0]).to_period('M') == pd.Timestamp(reference_date).to_period('M')
+                and _tr_dia < pd.Timestamp(reference_date).days_in_month):
+            if _tr10_err or _tr10.empty:
+                _tr_msg = "tabela `alex_aq_dash_trecho` indisponível — rode `gt7 run aquisicao_trecho` e ♻️ Recarregar dados"
+            else:
+                _trc = _tr10[_tr10['mes'] == pd.Timestamp(_sel10[0])]
+                _corte_t = pd.Timestamp(_trc['corte'].max()).date() if not _trc.empty else None
+                if _corte_t != reference_date or _tr10[_tr10['mes'] == pd.Timestamp(_prev10[0])].empty:
+                    _tr_msg = ((f"trecho calculado com corte {_corte_t:%d/%m}" if _corte_t else "trecho sem o mês corrente")
+                               + f" ≠ Dados até {reference_date:%d/%m} — rode `gt7 run aquisicao_trecho` e ♻️ Recarregar dados")
+                else:
+                    _tr_ok = True
+        _lblc = f"vs {_lbl10_p}"
+        _lblt = f"vs 1–{_tr_dia} {_AP_MESES_PT[pd.Timestamp(_prev10[0]).month - 1]}" if _tr_ok else None
+
+        def _v10t(secao, metrica, meses, dim=None):
+            """Valor do mesmo trecho (alex_aq_dash_trecho); None quando não há linha — o chip tracejado some."""
+            if not _tr_ok:
+                return None
+            d = _tr10[(_tr10['secao'] == secao) & (_tr10['metrica'] == metrica) & (_tr10['mes'].isin(list(meses)))]
+            if dim is not None:
+                d = d[d['dim'] == dim]
+            return float(d['valor'].sum()) if not d.empty else None
+
+        def _dq10(secao, metrica, dim=None, cur=None, prev=None):
+            """R43: os dois chips para uma métrica do agregado — cheio (alex_aq_dash_mes) e mesmo trecho (alex_aq_dash_trecho)."""
+            c = _v10(secao, metrica, _sel10, dim) if cur is None else cur
+            p = (_v10(secao, metrica, _prev10, dim) if _prev10 else None) if prev is None else prev
+            return _tv_delta2(c, p, _v10t(secao, metrica, _prev10, dim), _lblc, _lblt, cur_t=_v10t(secao, metrica, _sel10, dim))
+
+        def _dd10(cur, prev, prev_t=None, cur_t=None):
+            return _tv_delta2(cur, prev, prev_t, _lblc, _lblt, cur_t=cur_t)
+
+        if _tr_ok:
+            _trc_at = pd.Timestamp(_tr10['atualizado_em'].max())
+            st.caption(f"📐 **Duas comparações em cada número:** chip cheio = **{_lblc}** (o mês anterior inteiro); chip tracejado = "
+                       f"**{_lblt}** (o mesmo trecho do mês anterior, dias 1–{_tr_dia}, cortado no último dia completo da base — "
+                       f"`alex_aq_dash_trecho`, calculado em {_trc_at:%d/%m %H:%M}). O chip tracejado usa o mês corrente também "
+                       f"cortado no dia {_tr_dia}; quando o mês fecha, os dois coincidem e ele some. 💳 Leads pagos (s9) e 📱 App "
+                       "só têm o chip cheio.")
+        elif _tr_msg:
+            st.caption(f"📐 Comparação do mesmo trecho (dias 1–{_tr_dia}) indisponível: {_tr_msg}.")
+
         # ---------- 1 · as três linhas do RMA ----------
         _lu = _v10('s1_rma', 'leads_unicos', _sel10, 'rma')
         _lu_rma = _lu  # regra RMA (s1) — base do % com CPF, mesmo quando _lu vem dos buckets
@@ -7769,6 +7865,7 @@ def _aba_tab10():
         _fra = _v10('s1_rma', 'transbordados_franquias', _sel10, 'rma')
         _vf = _v10('s1_rma', 'vendas', _sel10, 'venda_franquia')
         _lu_p = _v10('s1_rma', 'leads_unicos', _prev10, 'rma')
+        _lu_pt = _v10t('s1_rma', 'leads_unicos', _prev10, 'rma'); _lu_ct = _v10t('s1_rma', 'leads_unicos', _sel10, 'rma')  # R43
         if _lu_bucket_ok and _sel_bk10:
             _mm10 = [pd.Timestamp(m) for m in _sel10]
             _lu = float(_lub[_lub['mes'].isin(_mm10) & _lub['bucket'].isin(_sel_bk10)]['criados'].sum())
@@ -7778,17 +7875,22 @@ def _aba_tab10():
                 _lu_p = float(_lub[_lub['mes'].isin(_pp10) & _lub['bucket'].isin(_sel_bk10)]['criados'].sum())
             else:
                 _lu_p = None
+            _lu_pt = _lu_ct = None
+            if _tr_ok:  # R43: o mesmo trecho pelos buckets (alex_funil_journey, DAY(createdate) <= D)
+                _lubt = load_lu_buckets_trecho(_tr_dia)
+                _lu_ct = float(_lubt[_lubt['mes'].isin(_mm10) & _lubt['bucket'].isin(_sel_bk10)]['criados'].sum())
+                _lu_pt = float(_lubt[_lubt['mes'].isin(_pp10) & _lubt['bucket'].isin(_sel_bk10)]['criados'].sum()) if _lu_p is not None else None
         _eng_p = _v10('s1_rma', 'enviados_engajamento', _prev10, 'rma')
         _fra_p = _v10('s1_rma', 'transbordados_franquias', _prev10, 'rma')
         _vf_p = _v10('s1_rma', 'vendas', _prev10, 'venda_franquia')
         k1, k2, k3, k4 = st.columns(4)
-        _tv_kpi(k1, "🧲", "Leads Únicos", f"{_tv_n(_lu)} {_tv_delta(_lu, _lu_p)}",
+        _tv_kpi(k1, "🧲", "Leads Únicos", f"{_tv_n(_lu)} {_dd10(_lu, _lu_p, _lu_pt, _lu_ct)}",
                 "Instância de Aquisição (site, checkout, mídia, WhatsApp)")
-        _tv_kpi(k2, "📨", "Encaminhados para engajamento", f"{_tv_n(_eng)} {_tv_delta(_eng, _eng_p)}",
+        _tv_kpi(k2, "📨", "Encaminhados para engajamento", f"{_tv_n(_eng)} {_dq10('s1_rma', 'enviados_engajamento', 'rma', _eng, _eng_p)}",
                 f"{_tv_pct(_eng, _lu)} dos Leads Únicos", color="#2e8a4f")
-        _tv_kpi(k3, "🏪", "Transbordados para franquias", f"{_tv_n(_fra)} {_tv_delta(_fra, _fra_p)}",
+        _tv_kpi(k3, "🏪", "Transbordados para franquias", f"{_tv_n(_fra)} {_dq10('s1_rma', 'transbordados_franquias', 'rma', _fra, _fra_p)}",
                 f"{_tv_pct(_fra, _lu)} dos Leads Únicos", color="#0f172a")
-        _tv_kpi(k4, "🛒", "Vendas nas franquias", f"{_tv_n(_vf)} {_tv_delta(_vf, _vf_p)}",
+        _tv_kpi(k4, "🛒", "Vendas nas franquias", f"{_tv_n(_vf)} {_dq10('s1_rma', 'vendas', 'venda_franquia', _vf, _vf_p)}",
                 f"{_tv_pct(_vf, _lu)} dos Leads Únicos (conversão do RMA)", color="#b45309")
 
         _pg = _v10('s9_pagos', 'leads_pagos', _sel10, 'hs'); _pg_p = _v10('s9_pagos', 'leads_pagos', _prev10, 'hs') if _prev10 else 0.0
@@ -7817,7 +7919,9 @@ def _aba_tab10():
                 ("🏪", "Transbordados para franquias", _fra, "entraram em Distribuição de Leads / Validador"),
                 ("🛒", "Vendas nas franquias", _vf, "CPF do lead × NOMINAL: porta a porta / link / app do vendedor — só leads com CPF cruzam"),
             ], subtitle=f"janela {_lbl10}",
-                chips=[['contato', 'foto'], ['negocio', 'foto'], ['negocio', 'foto'], ['ctn', 'foto_lead']])
+                chips=[['contato', 'foto'], ['negocio', 'foto'], ['negocio', 'foto'], ['ctn', 'foto_lead']],
+                deltas=[_dd10(_lu, _lu_p, _lu_pt, _lu_ct), _dq10('s1_rma', 'enviados_engajamento', 'rma', _eng, _eng_p),
+                        _dq10('s1_rma', 'transbordados_franquias', 'rma', _fra, _fra_p), _dq10('s1_rma', 'vendas', 'venda_franquia', _vf, _vf_p)])
         if _lu_rma and _cpf:
             st.caption(f"🆔 **CPF:** {_tv_pct(_cpf, _lu_rma)} dos Leads Únicos (regra RMA, {_tv_n(_cpf)} de {_tv_n(_lu_rma)}) têm `cpf_chave` — "
                        "só esses podem aparecer em *Vendas nas franquias*, porque a venda é casada por CPF com o NOMINAL. "
@@ -7880,6 +7984,12 @@ def _aba_tab10():
                 d = _mesa[(_mesa['dim'] == dim) & (_mesa['mes'].isin(list(meses)))]
                 return bool(meses) and d['mes'].nunique() == len(list(meses))
 
+            def _dm8(metrica, dim, cur=None, prev=None):
+                """R43: chips cheio + mesmo trecho para uma métrica do s8_mesa (prev só quando a seção cobre o período anterior)."""
+                c = _m8(metrica, dim) if cur is None else cur
+                p = (_m8(metrica, dim, _prev10) if _m8_ok(dim, _prev10) else None) if prev is None else prev
+                return _tv_delta2(c, p, _v10t('s8_mesa', metrica, _prev10, dim), _lblc, _lblt, cur_t=_v10t('s8_mesa', metrica, _sel10, dim))
+
             # --- televendas (ligações ativas) ---
             _d8 = _m8('discados', 'televendas');      _d8p = _m8('discados', 'televendas', _prev10) if _m8_ok('televendas', _prev10) else None
             _a8 = _m8('alo10', 'televendas');         _a8p = _m8('alo10', 'televendas', _prev10) if _d8p is not None else None
@@ -7918,16 +8028,16 @@ def _aba_tab10():
             _tv_ctn = _v10('s3_nominal', 'vendas', _sel10, 'TELEVENDAS')
 
             _k8 = st.columns(6)
-            _tv_kpi(_k8[0], "📵", "Leads discados (ativo)", f"{_tv_n(_d8)} {_tv_delta(_d8, _d8p)}", "Escallo, tipo ATIVO, 1º contato no mês")
-            _tv_kpi(_k8[1], "🛒", "Filiaram no mês (régua do relatório)", f"{_tv_n(_v8)} {_tv_delta(_v8, _v8p)}",
+            _tv_kpi(_k8[0], "📵", "Leads discados (ativo)", f"{_tv_n(_d8)} {_dm8('discados', 'televendas', _d8, _d8p)}", "Escallo, tipo ATIVO, 1º contato no mês")
+            _tv_kpi(_k8[1], "🛒", "Filiaram no mês (régua do relatório)", f"{_tv_n(_v8)} {_dm8('vendas_mes', 'televendas', _v8, _v8p)}",
                     f"{_tv_pct(_v8, _d8)} dos discados · qualquer tipo de venda", color="#2e8a4f")
-            _tv_kpi(_k8[2], "📞", "└ com tipo Televendas (CTN)", f"{_tv_n(_t8)} {_tv_delta(_t8, _t8p)}",
+            _tv_kpi(_k8[2], "📞", "└ com tipo Televendas (CTN)", f"{_tv_n(_t8)} {_dm8('vendas_mes_tv', 'televendas', _t8, _t8p)}",
                     f"{_tv_pct(_t8, _v8)} das filiações dos discados · {_tv_pct(_t8, _tv_ctn)} das vendas TELEVENDAS do CTN", color="#b45309")
-            _tv_kpi(_k8[3], "🧲", "Leads Únicos (regra do relatório)", f"{_tv_n(_lu8)} {_tv_delta(_lu8, _lu8p)}",
+            _tv_kpi(_k8[3], "🧲", "Leads Únicos (regra do relatório)", f"{_tv_n(_lu8)} {_dm8('leads_unicos_deck', 'franquias', _lu8, _lu8p)}",
                     "canal conhecido, fora de Importação / Desfiliados / Engajamento / TIM / promotor", color="#0f172a")
-            _tv_kpi(_k8[4], "🏪", "Transbordados para franquias", f"{_tv_n(_trX)} {_tv_delta(_trX, _trXp)}",
+            _tv_kpi(_k8[4], "🏪", "Transbordados para franquias", f"{_tv_n(_trX)} {_dm8('transbordados_def' if _t10_coer else 'transbordados', 'franquias', _trX, _trXp)}",
                     f"{_tv_pct(_trX, _lu8)} dos Leads Únicos (tx. de transbordo){_coer_tag}", color="#0f172a")
-            _tv_kpi(_k8[5], "✅", "Vendas nas franquias (mês do lead)", f"{_tv_n(_vfX)} {_tv_delta(_vfX, _vfXp)}",
+            _tv_kpi(_k8[5], "✅", "Vendas nas franquias (mês do lead)", f"{_tv_n(_vfX)} {_dm8('vendas_mes_def' if _t10_coer else 'vendas_mes', 'franquias', _vfX, _vfXp)}",
                     f"{_tv_pct(_vfX, _trX)} dos transbordados · {_tv_pct(_vfX, _fr_tot)} das vendas das franquias{_coer_tag}", color="#b45309")
 
             _f8a, _f8b = st.columns(2)
@@ -7953,7 +8063,8 @@ def _aba_tab10():
                         ("📞", "└ Negócio que passou pela esteira", _r33['com_negocio_tv'], "criado no 1º estágio da esteira (LEAD)", 2),
                         ("🗣️", "Entraram em EM NEGOCIAÇÃO no mês", _r33['negociacao_leads'], f"com venda no CTN no mês: {_tv_n(_r33['negociacao_leads_venda'])} ({_tv_pct(_r33['negociacao_leads_venda'], _r33['negociacao_leads'])})"),
                         ("🏆", "Entraram em GANHO no mês", _r33['ganho_leads'], f"seq. = % dos leads com Negócio (GANHO não passa necessariamente por negociação) · com venda no CTN: {_tv_n(_r33['ganho_leads_venda'])} ({_tv_pct(_r33['ganho_leads_venda'], _r33['ganho_leads'])})", 2),
-                    ], subtitle=_lbl10, chips=[['tel', 'foto'], ['contato', 'foto'], ['negocio', 'foto'], ['negocio', 'foto'], ['negocio', 'foto'], ['negocio', 'foto']])
+                    ], subtitle=_lbl10, chips=[['tel', 'foto'], ['contato', 'foto'], ['negocio', 'foto'], ['negocio', 'foto'], ['negocio', 'foto'], ['negocio', 'foto']],
+                        deltas=[_dm8(m, 'televendas') for m in ('discados', 'com_contato', 'com_negocio', 'com_negocio_tv', 'negociacao_leads', 'ganho_leads')])
                     st.caption(f"🪪 **Vendas no CTN da mesma população:** {_tv_n(_v8)} discados filiaram no mês — {_tv_n(_r33['venda_sem_negocio'])} sem "
                                f"Negócio e {_tv_n(_r33['venda_sem_contato'])} sem Contato. **Pelo lado dos Negócios:** {_tv_n(_r33['negociacao_deals'])} entradas em "
                                f"EM NEGOCIAÇÃO no mês (qualquer pipeline atual; {_tv_n(_n8_tv)} ainda no pipeline TV) → {_tv_n(_r33['ganho_de_negociacao'])} foram a GANHO "
@@ -7971,7 +8082,8 @@ def _aba_tab10():
                         ("⏱️", "└ após o 1º contato do mês", _ap8, f"{_tv_n(_antes8)} compraram antes de serem discados · seq. = % do teto", 2),
                         ("🗣️", "└ conversaram (alô ≥ 10 s) e filiaram", _va8x, f"{_tv_pct(_va8x, _a8)} dos alôs · seq. = % do teto", 2),
                         ("📞", "└ Piso — tipo Televendas (CTN)", _t8, f"{_tv_n(_vt8x)} com alô · {_tv_n(_sem_alo_tv)} sem alô ≥ 10 s no mês · seq. = % do teto", 2),
-                    ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto']])
+                    ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto']],
+                        deltas=[_dm8(m, 'televendas') for m in ('discados', 'alo10', 'vendas_mes', 'vendas_apos', 'vendas_alo', 'vendas_mes_tv')])
                     st.caption(f"🪜 **Escada de atribuição** da mesma população ({_tv_n(_d8)} discados): o **teto** ({_tv_n(_v8)}) é tudo o que o mailing tocou e "
                                f"filiou; **após o 1º contato** ({_tv_n(_ap8)}) tira quem já tinha comprado; **conversou e filiou** ({_tv_n(_va8x)}) é a leitura "
                                f"defensável para CPA; o **piso** ({_tv_n(_t8)}) é o que o vendedor registrou — e {_tv_n(_sem_alo_tv)} dessas não têm alô ≥ 10 s no mês. "
@@ -7984,13 +8096,14 @@ def _aba_tab10():
                         ("📞", "└ dos alôs: com tipo Televendas (CTN)", _vt8x, "seq. = % das filiações dos alôs", 2),
                         ("🛒", "Filiaram no mês (régua do relatório) — todos os discados", _v8, "todos os discados · inner join por tel-8, 1 lead = 1, mesmo mês-calendário · seq. = % dos discados", 0),
                         ("📞", "└ com tipo Televendas (CTN)", _t8, "seq. = % das filiações dos discados", 4),
-                    ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto']])
+                    ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto']],
+                        deltas=[_dm8(m, 'televendas') for m in ('discados', 'alo10', 'vendas_alo', 'vendas_alo_tv', 'vendas_mes', 'vendas_mes_tv')])
                     _sem_alo = ((_v8 or 0) - (_va8x or 0)) if _va8x is not None else None
                     _sem_alo_b = ((_d8 or 0) - (_a8 or 0)) if _va8x is not None else None
                     st.caption((f"🗣️ **Filiação com alô × sem alô:** {_tv_pct(_va8x, _a8)} dos alôs filiaram no mês contra {_tv_pct(_sem_alo, _sem_alo_b)} "
                                 f"de quem não teve alô ≥ 10 s — a régua sobre alôs mede a esteira, a sobre discados mede o mailing. "
                                 f"Das {_tv_n(_t8)} filiações com tipo Televendas, {_tv_n(_vt8x)} são de leads com alô. " if _va8x is not None else "")
-                               + f"Indicadores laterais (HubSpot): **{_tv_n(_n8)}** Negócios entraram em EM NEGOCIAÇÃO {_tv_delta(_n8, _n8p)}"
+                               + f"Indicadores laterais (HubSpot): **{_tv_n(_n8)}** Negócios entraram em EM NEGOCIAÇÃO {_dm8('negociacao_hs', 'televendas', _n8, _n8p)}"
                                + (f" (qualquer pipeline atual; {_tv_n(_n8_tv)} ainda no pipeline TV)" if _n8_tv is not None else "")
                                + f" · **{_tv_n(_g8)}** entraram em GANHO. Filiações após o 1º contato do mês: **{_tv_n(_ap8)}** de {_tv_n(_v8)}. "
                                "A maioria das filiações dos discados fecha fora da esteira do CRM (site, MGM, campo).", unsafe_allow_html=True)
@@ -8009,13 +8122,15 @@ def _aba_tab10():
                         ("🧲", "Leads Únicos (regra do relatório)", _lu8, "`HS - Leads Únicos mês`, createdate no mês"),
                         ("🏪", "Leads transbordados — Contatos da regra", _tr8d, "Negócios com 1ª entrada em Distribuição / Validador no mês, só de Contatos que passam na regra do relatório"),
                         ("✅", "Vendas nas franquias — Contatos da regra", _vf8d, "CPF do lead (regra do relatório, sem promotor) × NOMINAL campo, filiação no mês do lead"),
-                    ], subtitle=_lbl10, chips=[['contato', 'foto'], ['negocio', 'foto'], ['ctn', 'foto']])
+                    ], subtitle=_lbl10, chips=[['contato', 'foto'], ['negocio', 'foto'], ['ctn', 'foto']],
+                        deltas=[_dm8(m, 'franquias') for m in ('leads_unicos_deck', 'transbordados_def', 'vendas_mes_def')])
                 else:
                     _tv_funil("🏪 Funil Franquias — transbordo de leads", [
                         ("🧲", "Leads Únicos (regra do relatório)", _lu8, "`HS - Leads Únicos mês`, createdate no mês"),
                         ("🏪", "Leads transbordados", _tr8, "Negócios com 1ª entrada em Distribuição / Validador no mês (qualquer origem)"),
                         ("✅", "Vendas nas franquias", _vf8, "CPF do lead (regra de abril, com promotores) × NOMINAL campo, filiação no mês do lead"),
-                    ], subtitle=_lbl10, chips=[['contato', 'foto'], ['negocio', 'foto'], ['ctn', 'foto']])
+                    ], subtitle=_lbl10, chips=[['contato', 'foto'], ['negocio', 'foto'], ['ctn', 'foto']],
+                        deltas=[_dm8(m, 'franquias') for m in ('leads_unicos_deck', 'transbordados', 'vendas_mes')])
                 _fora8 = (f"promotores **{_tv_n(_ex8['promotor'])}** · TIM **{_tv_n(_ex8['tim'])}** · outras exclusões da regra (Importação / "
                           f"Desfiliados / Engajamento / sem canal) **{_tv_n(_ex8['outros_fora'])}** · sem Contato na `HS - Leads Únicos mês` "
                           f"**{_tv_n(_ex8['sem_lista'])}**") if _coer_ok else ""
@@ -8122,6 +8237,11 @@ def _aba_tab10():
             meses = _sel10 if meses is None else meses
             d = _aq10[(_aq10['secao'] == 's8_mesa') & (_aq10['dim'] == dim) & (_aq10['metrica'] == metrica) & (_aq10['mes'].isin(list(meses)))]
             return float(d['valor'].sum()) if not d.empty else None
+
+        def _d8s(metrica, dim):
+            """R43: chips (cheio + mesmo trecho) de uma métrica do s8 nos funis por superfície."""
+            return _tv_delta2(_v8s(metrica, dim), _v8s(metrica, dim, _prev10) if _prev10 else None,
+                              _v10t('s8_mesa', metrica, _prev10, dim), _lblc, _lblt, cur_t=_v10t('s8_mesa', metrica, _sel10, dim))
         _ga_users_ok = not _aq10[(_aq10['secao'] == 's4_ga') & (_aq10['metrica'] == 'purchase_users') & (_aq10['mes'].isin(list(_sel10)))].empty
         with _cs1:
             if _ga_users_ok:
@@ -8132,7 +8252,9 @@ def _aba_tab10():
                     ("💳", "Etapa 3 · Dados de pagamento", _v10('s4_ga', 'add_payment_info_users', _sel10, 'ga'), "add_payment_info (usuários)"),
                     ("🛒", "Etapa 4 · Compra", _v10('s4_ga', 'purchase_users', _sel10, 'ga'), "purchase (usuários)"),
                     ("✅", "Vendas Website (CTN)", _v10('s3_nominal', 'vendas', _sel10, 'WEBSITE'), "tipo_venda WEBSITE no NOMINAL"),
-                ], subtitle=_lbl10, chips=[['ga', 'foto'], ['ga', 'foto'], ['ga', 'foto'], ['ga', 'foto'], ['ga', 'foto'], ['ctn', 'foto']])
+                ], subtitle=_lbl10, chips=[['ga', 'foto'], ['ga', 'foto'], ['ga', 'foto'], ['ga', 'foto'], ['ga', 'foto'], ['ctn', 'foto']],
+                    deltas=[_dq10('s4_ga', m, 'ga') for m in ('active_users', 'generate_lead_users', 'add_shipping_info_users', 'add_payment_info_users', 'purchase_users')]
+                           + [_dq10('s3_nominal', 'vendas', 'WEBSITE')])
             else:
                 _tv_funil("🌐 Site — checkout (eventos)", [
                     ("👣", "Usuários ativos (GA)", _v10('s4_ga', 'active_users', _sel10, 'ga'), "usuários ativos no checkout"),
@@ -8140,7 +8262,9 @@ def _aba_tab10():
                     ("💳", "Pagamento iniciado (eventos)", _v10('s4_ga', 'add_payment_info', _sel10, 'ga'), "add_payment_info"),
                     ("🛒", "Compras (eventos)", _v10('s4_ga', 'purchase', _sel10, 'ga'), "purchase no checkout"),
                     ("✅", "Vendas Website (CTN)", _v10('s3_nominal', 'vendas', _sel10, 'WEBSITE'), "tipo_venda WEBSITE no NOMINAL"),
-                ], subtitle=_lbl10, chips=[['ga', 'foto'], ['ga', 'foto'], ['ga', 'foto'], ['ga', 'foto'], ['ctn', 'foto']])
+                ], subtitle=_lbl10, chips=[['ga', 'foto'], ['ga', 'foto'], ['ga', 'foto'], ['ga', 'foto'], ['ctn', 'foto']],
+                    deltas=[_dq10('s4_ga', m, 'ga') for m in ('active_users', 'generate_lead', 'add_payment_info', 'purchase')]
+                           + [_dq10('s3_nominal', 'vendas', 'WEBSITE')])
                 st.caption("ℹ️ Colunas de usuários ainda não carregadas — rode `gt7 run aquisicao_dash --arg only=s4` para ver a mesma régua da aba 🌐.")
             st.caption(f"🧲 Leads Únicos (HubSpot) na janela: **{_tv_n(_lu)}** — ficam fora do funil porque contam Contatos criados por "
                        "todas as origens (formulários, WhatsApp, parcerias), não só o checkout; a comparação certa é com a Etapa 1.")
@@ -8158,13 +8282,15 @@ def _aba_tab10():
                 ] if _esc_s else []) + [
                     ("📞", "└ com tipo Televendas (CTN)" + (" — piso" if _esc_s else ""), _v8s('vendas_mes_tv', 'televendas'),
                      (f"{_tv_n(_v8s('vendas_alo_tv', 'televendas'))} com alô · seq. = % do teto" if _esc_s else "seq. = % das filiações dos discados"), 2),
-                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto']] + [['tel_ctn', 'foto']] * (4 if _esc_s else 2))
+                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto']] + [['tel_ctn', 'foto']] * (4 if _esc_s else 2),
+                    deltas=[_d8s(m, 'televendas') for m in (['discados', 'alo10', 'vendas_mes'] + (['vendas_apos', 'vendas_alo'] if _esc_s else []) + ['vendas_mes_tv'])])
             else:
                 _tv_funil("📵 Televendas — Ativo (discador)", [
                     ("📵", "Leads discados", _v10('s2_super', 'leads', _sel10, 'ativo'), "ESCALLO_LEADS_MES, tipo ATIVO"),
                     ("🗣️", "Alô (≥ 10 s)", _v10('s2_super', 'alo10', _sel10, 'ativo'), "alô humano"),
                     ("✅", "Vendas confirmadas (janela do contato)", _v10('s2_super', 'venda_confirmada', _sel10, 'ativo'), "tel-8 × NOMINAL na janela do contato"),
-                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto']])
+                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto']],
+                    deltas=[_dq10('s2_super', m, 'ativo') for m in ('leads', 'alo10', 'venda_confirmada')])
         with _cs3:
             if _v8s('discados', 'receptivo') is not None:
                 _tv_funil("📲 Televendas — Receptivo", [
@@ -8172,13 +8298,15 @@ def _aba_tab10():
                     ("🗣️", "Alô (≥ 10 s)", _v8s('alo10', 'receptivo'), "alô humano"),
                     ("🛒", "Filiaram no mês (régua do relatório)", _v8s('vendas_mes', 'receptivo'), "tel-8 × NOMINAL no mesmo mês — régua do relatório"),
                     ("📞", "└ com tipo Televendas (CTN)", _v8s('vendas_mes_tv', 'receptivo'), "seq. = % das filiações"),
-                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto']])
+                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto']],
+                    deltas=[_d8s(m, 'receptivo') for m in ('discados', 'alo10', 'vendas_mes', 'vendas_mes_tv')])
             else:
                 _tv_funil("📲 Televendas — Receptivo", [
                     ("📲", "Ligações recebidas", _v10('s2_super', 'leads', _sel10, 'receptivo'), "ESCALLO_LEADS_MES, tipo RECEPTIVO"),
                     ("🗣️", "Alô (≥ 10 s)", _v10('s2_super', 'alo10', _sel10, 'receptivo'), "alô humano"),
                     ("✅", "Vendas confirmadas (janela do contato)", _v10('s2_super', 'venda_confirmada', _sel10, 'receptivo'), "tel-8 × NOMINAL na janela do contato"),
-                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto']])
+                ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto']],
+                    deltas=[_dq10('s2_super', m, 'receptivo') for m in ('leads', 'alo10', 'venda_confirmada')])
         with _cs4:
             _ap_dl = _ap_dr = _ap_cad = _ap_com = None
             if not _apd.empty:
@@ -8188,13 +8316,20 @@ def _aba_tab10():
                 _ap_fre = _ap_val('s1_funil', 'cadastros_freemium', meses=_ms_app)
                 _ap_com = _ap_val('s1_funil', 'compras_com_app_ate_venda', meses=_ms_app)
                 _ap_idpv = _ap_val('s1_funil', 'compras_app_do_filiado', meses=_ms_app)
+            # R43: o app_dash não entra no trecho — no 📱 só o chip cheio (mês anterior inteiro); CTN tem os dois.
+            _ms_app_p = [m for m in _prev10 if (not _apd.empty) and m in list(_apd['mes'].unique())]
+
+            def _dap(metrica, cur):
+                return _tv_delta2(cur, _ap_val('s1_funil', metrica, meses=_ms_app_p) if _ms_app_p else None, None, _lblc)
             _tv_funil("📱 App", [
                 ("⬇️", "Downloads (1º login)", _ap_dl, "fl_data_login"),
                 ("📝", "Cadastros", _ap_cad, "fl_plano_usuario.dt_criacao"),
                 ("🌱", "└ dos cadastros: entraram como freemium", _ap_fre if _ap_dl is not None else None, "fatia de Cadastros: sem filiação anterior · seq. = % dos cadastros", 1),
                 ("🛒", "└ dos cadastros: compra junto à venda", _ap_com, "fatia de Cadastros: cadastro até 1 dia após a venda · seq. = % dos cadastros", 1),
                 ("✅", "Vendas App do Filiado (CTN)", _v10('s3_nominal', 'vendas', _sel10, 'APP DO FILIADO'), "tipo_venda · seq. = % dos cadastros"),
-            ], subtitle=_lbl10, chips=[['app', 'foto'], ['app', 'foto'], ['app', 'foto'], ['app', 'foto'], ['ctn', 'foto']])
+            ], subtitle=_lbl10, chips=[['app', 'foto'], ['app', 'foto'], ['app', 'foto'], ['app', 'foto'], ['ctn', 'foto']],
+                deltas=[_dap('downloads', _ap_dl), _dap('cadastros', _ap_cad), _dap('cadastros_freemium', _ap_fre if _ap_dl is not None else None),
+                        _dap('compras_com_app_ate_venda', _ap_com), _dq10('s3_nominal', 'vendas', 'APP DO FILIADO')])
         st.caption(f"📞 As vendas **TELEVENDAS (CTN)** da janela — {format_br(_v10('s3_nominal', 'vendas', _sel10, 'TELEVENDAS'))} — "
                    "fecham as duas esteiras juntas: o `tipo_venda` do CTN não separa ligação ativa de receptiva. Os dois funis de "
                    "televendas usam a **mesma régua do relatório** (bloco acima e aba 📞 → nota 🧲): filiou no mês, por qualquer canal de venda; "
@@ -8392,6 +8527,7 @@ def _aba_tab10():
 @_aba(tab11)
 def _aba_tab11():
     global _FJ_LBL, _FJ_DEFS, load_fj_buckets, load_fj_tempos, _fjb, _num, _c, _fj_disp, _c11a, _c11b, _t11_glob, _j11
+    global load_fj_buckets_trecho, _fj_dia, _fj_tr_ok, _fjbt, _els_t, _prv_t, _tot_t, _tot_pt, _tot_p, _lblc11, _lblt11  # R43
     global _fj_meses, _t11_fora, _n11, _lbl11, _fj_lbl_per, _c_def, _c_bk, _fj_def_nome, _todos_bk, _fj_sel, _cur, _sel
     global _tot, _els, _prev_meses, _prv, _fj_d, k1, k2, k3, k4, k5, k6, _t11_raias
     global _cA, _cB, _tmp, _fj_t, _etapas, _rows_html, nome, ent, av, tempo, nota, taxa
@@ -8435,6 +8571,25 @@ def _aba_tab11():
             "SUM(dt_validador IS NOT NULL) enviado_franquia, SUM(dt_distrib IS NOT NULL) encaminhado_conf, "
             "SUM(dt_venda_franquia IS NOT NULL) venda_franquia, SUM(dt_venda_app IS NOT NULL) venda_app "
             "FROM alex_funil_journey GROUP BY 1,2")
+
+    @st.cache_data(ttl=43200)
+    def load_fj_buckets_trecho(dia):
+        """R43: a coorte cortada no MESMO trecho — Contatos criados até o dia `dia` do mês E marcos até esse dia
+        (lim = mes + dia). Assim a coorte atual (que só teve `dia` dias para andar) e a anterior são comparáveis.
+        com_negocio (n_negocios) não tem data: fica sem corte."""
+        lim = f"DATE_ADD(mes, INTERVAL {int(dia)} DAY)"
+        trab = ("LEAST(COALESCE(dt_negociacao,'2100-01-01'),COALESCE(dt_css,'2100-01-01'),"
+                "COALESCE(dt_perdido,'2100-01-01'),COALESCE(dt_ganho,'2100-01-01'))")
+        return cquery(
+            f"SELECT mes, bucket, COUNT(*) criados, SUM(n_negocios>0) com_negocio, "
+            f"SUM(dt_lead_tv < {lim}) tv_lead, "
+            f"SUM(dt_lead_tv < {lim} AND {trab} < {lim}) tv_trab, "
+            f"SUM(dt_negociacao < {lim}) negociacao, SUM(dt_ganho < {lim}) ganho, "
+            f"SUM(dt_perdido < {lim}) perdido, "
+            f"SUM(LEAST(COALESCE(dt_distrib,'2100-01-01'),COALESCE(dt_semcep,'2100-01-01'),COALESCE(dt_validador,'2100-01-01')) < {lim}) pipe_distrib, "
+            f"SUM(dt_validador < {lim}) enviado_franquia, SUM(dt_distrib < {lim}) encaminhado_conf, "
+            f"SUM(dt_venda_franquia < {lim}) venda_franquia, SUM(dt_venda_app < {lim}) venda_app "
+            f"FROM alex_funil_journey WHERE createdate < {lim} GROUP BY 1,2")
 
     @st.cache_data(ttl=43200)
     def load_fj_tempos(meses_key):
@@ -8524,12 +8679,37 @@ def _aba_tab11():
     _prv = _fjb[_fjb['mes'].isin(_prev_meses) & _fjb['bucket'].isin(_fj_sel)][_num].sum() \
         if set(_prev_meses) & set(_fj_disp) else None
 
-    def _fj_d(campo):
-        return _tv_delta(int(_els[campo]), int(_prv[campo])) if _prv is not None else ""
+    # R43: segunda comparação — a coorte do mês anterior cortada no MESMO trecho (Contatos criados até o dia D e marcos até o
+    #      dia D de cada mês, D = último dia completo da base). Só com UMA coorte selecionada (a do mês corrente).
+    _fj_dia = int(pd.Timestamp(reference_date).day)
+    _fj_tr_ok = (len(_fj_meses) == 1 and _prv is not None
+                 and pd.Timestamp(_fj_meses[0]).to_period('M') == pd.Timestamp(reference_date).to_period('M')
+                 and _fj_dia < pd.Timestamp(reference_date).days_in_month)
+    _els_t = _prv_t = _tot_t = _tot_pt = None
+    if _fj_tr_ok:
+        _fjbt = load_fj_buckets_trecho(_fj_dia)
+        _fjbt['mes'] = pd.to_datetime(_fjbt['mes'])
+        for _c in _num:
+            _fjbt[_c] = pd.to_numeric(_fjbt[_c])
+        _els_t = _fjbt[_fjbt['mes'].isin(_fj_meses) & _fjbt['bucket'].isin(_fj_sel)][_num].sum()
+        _prv_t = _fjbt[_fjbt['mes'].isin(_prev_meses) & _fjbt['bucket'].isin(_fj_sel)][_num].sum()
+        _tot_t = _fjbt[_fjbt['mes'].isin(_fj_meses)][_num].sum()
+        _tot_pt = _fjbt[_fjbt['mes'].isin(_prev_meses)][_num].sum()
+    _tot_p = _fjb[_fjb['mes'].isin(_prev_meses)][_num].sum() if _prv is not None else None
+    _lblc11 = "vs " + (_ap_mes_lbl(_prev_meses[0]) if len(_prev_meses) == 1 else f"{_ap_mes_lbl(_prev_meses[0])}–{_ap_mes_lbl(_prev_meses[-1])}")
+    _lblt11 = f"vs 1–{_fj_dia} {_AP_MESES_PT[pd.Timestamp(_prev_meses[0]).month - 1]}" if _fj_tr_ok else None
+
+    def _fj_d(campo, tudo=False):
+        """R43: chip cheio (coorte anterior inteira) + chip tracejado (mesmo trecho); tudo=True = todos os buckets."""
+        c, p = (_tot, _tot_p) if tudo else (_els, _prv)
+        ct, pt = ((_tot_t, _tot_pt) if tudo else (_els_t, _prv_t)) if _fj_tr_ok else (None, None)
+        return _tv_delta2(int(c[campo]), int(p[campo]) if p is not None else None,
+                          int(pt[campo]) if pt is not None else None, _lblc11, _lblt11,
+                          cur_t=int(ct[campo]) if ct is not None else None)
 
     st.markdown(f"#### Visão macro — {_fj_lbl_per}")
     k1, k2, k3, k4, k5, k6 = st.columns(6)
-    _tv_kpi(k1, "🌱", "Leads criados (tudo)", f"{_tv_n(int(_tot['criados']))}",
+    _tv_kpi(k1, "🌱", "Leads criados (tudo)", f"{_tv_n(int(_tot['criados']))} {_fj_d('criados', tudo=True)}",
             "Contatos novos na Instância de Aquisição")
     _tv_kpi(k2, "✅", "Leads Únicos (definição acima)", f"{_tv_n(int(_els['criados']))} {_fj_d('criados')}",
             f"{_els['criados'] / _tot['criados'] * 100:.0f}% do total" if _tot['criados'] else "—")
@@ -8541,6 +8721,13 @@ def _aba_tab11():
             "passaram pelo Validador de Distribuição")
     _tv_kpi(k6, "💰", "Vendas nas franquias", f"{_tv_n(int(_els['venda_franquia']))} {_fj_d('venda_franquia')}",
             f"porta a porta + link + app do vendedor · {format_br(int(_els['venda_app']))} via app")
+    if _fj_tr_ok:
+        st.caption(f"📐 **Duas comparações em cada número:** chip cheio = **{_lblc11}** (a coorte anterior inteira, seguida até a última carga); "
+                   f"chip tracejado = **{_lblt11}** (as duas coortes cortadas no mesmo trecho: Contatos criados até o dia {_fj_dia} "
+                   f"e marcos até o dia {_fj_dia} de cada mês — a coorte atual só teve {_fj_dia} dias para andar, então é a comparação justa). "
+                   "'Viraram Negócio' não tem data de marco e fica sem corte.")
+    elif len(_fj_meses) == 1 and _prv is not None:
+        st.caption("📐 Comparação do mesmo trecho só existe para a coorte do mês corrente (Dados até = último dia completo).")
 
     st.markdown("")
 
@@ -8565,7 +8752,8 @@ def _aba_tab11():
                 ("🏆", "GANHO", int(_els['ganho']), f"PERDIDO: {format_br(int(_els['perdido']))}"),
             ], subtitle=_fj_lbl_per,
                 chips=[['contato', 'filme'], ['contato', 'filme'], ['negocio', 'filme'], ['negocio', 'filme'],
-                       ['negocio', 'filme'], ['negocio', 'filme']])
+                       ['negocio', 'filme'], ['negocio', 'filme']],
+                deltas=[_fj_d('criados', tudo=True), _fj_d('criados'), _fj_d('tv_lead'), _fj_d('tv_trab'), _fj_d('negociacao'), _fj_d('ganho')])
         with _cB:
             _tv_funil("🏪 Rota Franquias", [
                 ("🌱", "Leads criados", int(_tot['criados']), "todos os Contatos novos do período"),
@@ -8574,7 +8762,8 @@ def _aba_tab11():
                 ("📮", "Enviados à franquia (Validador)", int(_els['enviado_franquia']), "validado e entregue à franquia (definição do especialista)"),
                 ("💰", "Vendas nas franquias", int(_els['venda_franquia']), "CPF × NOMINAL: porta a porta + link + app do vendedor"),
             ], subtitle=_fj_lbl_per,
-                chips=[['contato', 'filme'], ['contato', 'filme'], ['negocio', 'filme'], ['negocio', 'filme'], ['ctn', 'filme']])
+                chips=[['contato', 'filme'], ['contato', 'filme'], ['negocio', 'filme'], ['negocio', 'filme'], ['ctn', 'filme']],
+                deltas=[_fj_d('criados', tudo=True), _fj_d('criados'), _fj_d('pipe_distrib'), _fj_d('enviado_franquia'), _fj_d('venda_franquia')])
     _tv_note(
         "<b>Por que a Rota Franquias não bate com o 'Funil Franquias' da aba 🧲.</b> Aqui é o <b>filme da coorte</b>: os Contatos "
         "criados no período (espelho vivo, canal <i>na criação</i>, buckets à sua escolha) seguidos até hoje — Distribuição, Validador "
