@@ -4563,14 +4563,41 @@ def _aba_tab6():
         c1, c2 = st.columns([1.9, 1])
         with c1:
             _negoc_tot = (negoc or 0) + (venda or 0) if (negoc is not None or venda is not None) else None
-            _tv_funil("Funil Escallo · discagem ativa", [
-                ("📞", "Leads discados", leads, "1 linha por telefone × mês (ESCALLO_LEADS_MES, tipo ATIVO)"),
-                ("🗣️", "Ligação Qualificada (≥ 10 s)", alo, "tempoConversa ≥ 10 s em alguma ligação do mês (o antigo 'alô')"),
-                ("🤝", "↳ Em negociação (tabulação do operador)", _negoc_tot,
-                 "agendamento · confirmação de terceiros · venda travada · venda tabulada (REL086) — fatia das qualificadas", 1),
-                ("🛒", "Vendas (CTN)", v_ctn, "discados com filiação no NOMINAL no mesmo período, qualquer canal (tel-8) · seq. = % dos discados", 0),
-                ("🗣️", "└ conversaram (≥ 10 s) e filiaram", v_ctn_alo, f"{_tv_pct(v_ctn_alo, alo)} das ligações qualificadas · seq. = % das vendas", 3),
-                ("📞", "└ com tipo Televendas (CTN)", v_ctn_tv, f"{_tv_n(v_ctn_alo_tv)} com conversa ≥ 10 s · {_tv_n(_sem_alo_tv)} sem · seq. = % das vendas", 3),
+            # R48: tabulação ENTRE as ligações qualificadas (alo_est_*, pipeline R48); toggle abre todas as tabulações
+            _est_lbl = [('venda', 'venda tabulada'), ('venda_travada', 'venda travada (pagamento / cadastro)'),
+                        ('negociacao', 'confirmação de terceiros'), ('agendado', 'agendamento de retorno'),
+                        ('contato_sem_avanco', 'contato sem avanço (só informação, recusa, já contatado…)'),
+                        ('ja_cliente', 'já cliente (CPF cadastrado)'), ('redirecionado', 'redirecionado (SAC, unidade, agendamento)'),
+                        ('ruido', 'ruído (engano, pesquisa)'), ('sem_classificacao', 'sem classificação'),
+                        ('nao_classificado', 'não classificado'), ('sem_contato', "sem contato (caixa postal, ligação caiu)"),
+                        ('outros', 'outros')]
+            _ae = {k: _tv_val(S, 'alo_est_' + k) for k, _ in _est_lbl}
+            _ae_ok = any(v is not None for v in _ae.values())
+            _neg_q = (sum((_ae.get(k) or 0) for k in ('venda', 'venda_travada', 'negociacao', 'agendado')) if _ae_ok else None)
+            _t6_tab = st.toggle("🏷️ Abrir as ligações qualificadas por tabulação do operador", value=False, key='t6_s1_tab',
+                                disabled=not _ae_ok,
+                                help="Desligado: só a fatia 'em negociação' (agendamento · confirmação de terceiros · venda travada · venda). "
+                                     "Ligado: todas as tabulações, como fatias das ligações qualificadas (melhor estágio do lead no período). "
+                                     "Precisa do agregado R48 (alo_est_*).")
+            _stA = [("📞", "Leads discados", leads, "1 linha por telefone × mês (ESCALLO_LEADS_MES, tipo ATIVO)"),
+                    ("🗣️", "Ligação Qualificada (≥ 10 s)", alo, "tempoConversa ≥ 10 s em alguma ligação do mês (o antigo 'alô')")]
+            if _t6_tab and _ae_ok:
+                for _k, _l in _est_lbl:
+                    if _ae.get(_k):
+                        _stA.append(("🏷️", f"↳ {_l}", _ae[_k], "fatia das qualificadas · melhor estágio do lead no período (REL086)", 1))
+            elif _ae_ok:
+                _stA.append(("🤝", "↳ Em negociação (tabulação do operador)", _neg_q,
+                             f"agendamento · confirmação de terceiros · venda travada · venda tabulada — fatia das qualificadas; "
+                             f"+{_tv_n((_negoc_tot or 0) - (_neg_q or 0))} leads nesses estágios sem conversa ≥ 10 s", 1))
+            else:
+                _stA.append(("🤝", "↳ Em negociação (tabulação do operador)", _negoc_tot,
+                             "agendamento · confirmação de terceiros · venda travada · venda tabulada (REL086) — todos os leads (agregado anterior ao R48)", 1))
+            _tv_funil("Funil Escallo · discagem ativa — do discado à tabulação", _stA, subtitle=_tv_per_lbl)
+            _tv_funil("Funil Escallo · discagem ativa — do discado à venda no CTN", [
+                ("📞", "Leads discados (referência)", leads, "a mesma base do funil acima"),
+                ("🛒", "Vendas (CTN)", v_ctn, "discados com filiação no NOMINAL no mesmo período, qualquer canal (tel-8) · seq. = % dos discados"),
+                ("🗣️", "└ conversaram (≥ 10 s) e filiaram", v_ctn_alo, f"{_tv_pct(v_ctn_alo, alo)} das ligações qualificadas · seq. = % das vendas", 1),
+                ("📞", "└ com tipo Televendas (CTN)", v_ctn_tv, f"{_tv_n(v_ctn_alo_tv)} com conversa ≥ 10 s · {_tv_n(_sem_alo_tv)} sem · seq. = % das vendas", 1),
             ], subtitle=_tv_per_lbl)
             st.caption("Fonte: ESCALLO_LEADS_MES (REL003 ativo + REL086 classificação; carga diária 8h) × NOMINAL_VENDAS por tel-8. "
                        "'Vendas (CTN)' é a régua do Relatório Mensal (R45): filiação no CTN no mesmo período, por qualquer canal de venda — "
@@ -4722,7 +4749,8 @@ def _aba_tab6():
             _tv_funil("Funil Escallo · receptivo", [
                 ("📲", "Ligações recebidas", lg_rec, "ligações que chegaram à fila/operador no período (REL002, sem as pernas de URA)"),
                 ("✅", "Ligações atendidas", lg_atd, "statusFormatado = Atendido (agente + conversa)"),
-                ("🚫", "↳ Abandono", lg_ab, "não atendida · cancelada · indisponível — fatia das recebidas (quem abandona não segue)", 0),
+                ("🚫", "↳ Abandono", lg_ab, f"ligações não atendidas · canceladas · indisponíveis — fatia das recebidas (quem abandona não segue); "
+                                          f"= {_tv_n((tl_ab or 0) + (tl_ab_rec or 0)) if tl_ab is not None else '—'} telefones, porque um telefone pode abandonar mais de uma vez", 0),
                 ("🛒", "Vendas (CTN)", v10, f"telefones atendidos com filiação no NOMINAL no mesmo período (tel-8, qualquer canal) · "
                                           f"seq. = % das ligações atendidas · {_tv_pct(v10, tl_atd)} dos telefones atendidos", 1),
                 ("📞", "└ com tipo Televendas (CTN)", v10_tv, "seq. = % das vendas", 3),
@@ -4732,7 +4760,8 @@ def _aba_tab6():
                        "no KPI para conferência. Vendas por telefone porque o CTN não sabe qual ligação vendeu.")
             _tv_funil("Apropriação das não atendidas — o que aconteceu com quem só abandonou", [
                 ("🚫", "Telefones só com abandono no período", tl_ab,
-                 f"nenhuma ligação atendida; outros {_tv_n(tl_ab_rec)} abandonaram e foram atendidos depois (ligaram de novo)"),
+                 f"telefones (tel-8), não ligações: as {_tv_n(lg_ab)} ligações de abandono acima são destes {_tv_n(tl_ab)} telefones + outros "
+                 f"{_tv_n(tl_ab_rec)} que abandonaram e foram atendidos depois (ligaram de novo) — um telefone pode abandonar mais de uma vez"),
                 ("📞", "↳ receberam ligação ativa depois", ab_ret, "o discador (REL003) ligou para o número após o abandono, no mesmo período", 0),
                 ("🗣️", "↳ … e conversaram (≥ 10 s)", ab_alo, "retorno ativo com conversa ≥ 10 s", 0),
                 ("👤", "↳ existem como Contato no HubSpot", ab_hs, "tel-8 × telefone do Contato (alex_tv_contato_tel)", 0),
@@ -4973,16 +5002,24 @@ def _aba_tab6():
         if u_ne is not None:
             _tv_funil("🔗 Funil unificado · do Contato no HubSpot à venda no CTN (passando pela discagem)", [
                 ("🚪", "Contatos no fluxo do televendas (no expediente)", u_ne,
-                 f"entraram no fluxo no período; {_tv_n(u_fe)} fora do expediente ficam fora · {_tv_pct(u_tel, u_ne)} com telefone conhecido"),
-                ("🤝", "↳ viraram Negócio na esteira (LEAD no período)", u_lead, "fatia dos Contatos · o Negócio nasce na esteira, a discagem não depende dele", 0),
+                 f"entraram no fluxo no período; {_tv_n(u_fe)} fora do expediente ficam fora · {_tv_pct(u_tel, u_ne)} destes com telefone na ponte "
+                 f"tel-8 (alex_tv_contato_tel: phone / WhatsApp com ≥ 8 dígitos) — só esses podem ser casados com o Escallo e o CTN"),
+                ("🤝", "↳ Contatos com Negócio que entrou em LEAD no período", u_lead,
+                 "fatia dos Contatos (conta Contatos, não Negócios — o funil do pipeline abaixo conta Negócios de qualquer Contato/coorte)", 0),
                 ("📞", "Discados no Escallo (ativo, mesmo período)", u_disc,
-                 f"tel-8 do Contato × ESCALLO_LEADS_MES ATIVO · {_tv_n(u_disc_neg)} deles com Negócio LEAD no período · seq. = % dos Contatos", 0),
+                 f"tel-8 do Contato × ESCALLO_LEADS_MES ATIVO · {_tv_n(u_disc_neg)} deles com Negócio LEAD no período, "
+                 f"{_tv_n((u_disc or 0) - (u_disc_neg or 0)) if u_disc is not None else '—'} sem · seq. = % dos Contatos", 0),
                 ("🗣️", "Ligação Qualificada (≥ 10 s)", u_alo, "conversa ≥ 10 s em alguma ligação do período", 2),
                 ("🤝", "↳ Em negociação (tabulação do operador)", u_neg, "agendamento · confirmação de terceiros · venda travada · venda — fatia das qualificadas", 3),
                 ("🛒", "Vendas (CTN) — dos discados", u_v, "tel-8 × NOMINAL no mesmo período, qualquer canal · seq. = % dos discados", 2),
                 ("🗣️", "└ conversaram (≥ 10 s) e filiaram", u_v_alo, f"{_tv_pct(u_v_alo, u_alo)} das ligações qualificadas · seq. = % das vendas", 5),
                 ("📞", "└ com tipo Televendas (CTN)", u_v_tv, "seq. = % das vendas", 5),
             ], subtitle=_tv_per_lbl)
+            st.caption("Por que 'com Negócio LEAD' aqui difere de 'Viraram Negócio na esteira' no funil do pipeline (abaixo): aqui a unidade é o "
+                       "Contato que entrou no fluxo neste período e no expediente, contado uma vez mesmo com vários Negócios; lá a unidade é o "
+                       "Negócio que entrou em LEAD no período, de qualquer Contato (inclusive fora do expediente e quem entrou no fluxo em meses "
+                       "anteriores) — e um Contato pode ter mais de um Negócio. A discagem é lida pelo telefone do Contato, não pelo Negócio: "
+                       "por isso existem discados sem Negócio LEAD no período e Negócios LEAD que não foram discados.")
             st.caption(f"Um Contato só, do HubSpot ao CTN: entrou no fluxo → (Negócio) → foi discado no Escallo → conversou → tabulação → filiou. "
                        f"Fora do funil: {_tv_n(u_v_nd)} Contatos do fluxo filiaram no período sem discagem ativa (site, WhatsApp, receptivo, campo); "
                        f"dos fora do expediente, {_tv_n(u_fe_disc)} foram discados e {_tv_n(u_fe_v)} filiaram. A ponte é o telefone (alex_tv_contato_tel); "
