@@ -279,13 +279,19 @@ GLOSSARIO = {
         o="Escallo", a="📞 🧲", s=["ativo", "receptivo", "discador"]),
     'Leads discados (ativo)': dict(sec="Televendas (Escallo)",
         d="Telefones que receberam ao menos uma ligação ativa no mês; uma linha por telefone × mês, no mês do primeiro contato. É a base de todo funil de televendas.",
-        o="Escallo", a="📞 🧲", s=["discados", "Leads discados", "Leads ativos discados", "Ligações recebidas"]),
-    'Alô (≥ 10 s)': dict(sec="Televendas (Escallo)",
-        d="Uma conversa com pelo menos 10 segundos em alguma ligação do mês — o sinal de que alguém falou com o cliente. Numa linha de sistema, o 'alô' é o cliente ouvindo uma gravação.",
-        o="Escallo", a="📞 🧲", s=["alô", "alô humano", "Falaram ≥ 10 s", "Ligações qualificadas", "conversaram"]),
+        o="Escallo", a="📞 🧲", s=["discados", "Leads discados", "Leads ativos discados"]),
+    'Ligação Qualificada (≥ 10 s)': dict(sec="Televendas (Escallo)",
+        d="Uma conversa com pelo menos 10 segundos em alguma ligação do mês — o sinal de que alguém falou com o cliente (era chamada de 'alô' até a R45). Numa linha de sistema, é o cliente ouvindo uma gravação.",
+        o="Escallo", a="📞 🧲", s=["alô", "alô humano", "Alô (≥ 10 s)", "Falaram ≥ 10 s", "Ligações qualificadas", "conversaram"]),
+    'Em negociação (Escallo)': dict(sec="Televendas (Escallo)",
+        d="Tabulação do operador no Escallo depois da conversa: agendamento (privado, público ou via HubSpot), 'confirmação de terceiros' (cliente precisa de outra pessoa para fechar), venda travada (pagamento no cartão não autorizado, erro de cadastro/pagamento no CTN) e a própria venda tabulada. Fatia das ligações qualificadas. Não é o estágio EM NEGOCIAÇÃO do HubSpot.",
+        o="Escallo (REL086)", a="📞", s=["negociação", "agendado", "venda travada", "Fase de negociação"]),
+    'Ligações recebidas / atendidas / abandono': dict(sec="Televendas (Escallo)",
+        d="Receptivo por ligação (REL002): recebida = chegou à fila/operador (a perna que fica só na URA não conta); atendida = um agente atendeu; abandono = o cliente desligou antes (não atendida, cancelada, indisponível) — fatia das recebidas. A conversão é lida sobre as atendidas.",
+        o="Escallo", a="📞", s=["Ligações recebidas", "Ligações atendidas", "Abandono", "pernas de URA", "Apropriação das não atendidas"]),
     'Classificado / venda tabulada': dict(sec="Televendas (Escallo)",
         d="Classificado = o operador registrou um estágio depois do alô; venda tabulada = marcou o resultado como 'venda'. É registro da operação, não filiação confirmada. Tudo o que se mede depois do alô é piso.",
-        o="Escallo", a="📞", s=["tabulação", "Venda tabulada", "Classificados", "Gap alô × classificado"]),
+        o="Escallo", a="📞", s=["tabulação", "Venda tabulada", "Classificados", "Gap qualificada × classificado"]),
     'tel-8': dict(sec="Televendas (Escallo)",
         d="Os oito últimos dígitos do telefone, usados como chave para cruzar Escallo (que não tem CPF) com o CTN e o HubSpot. Menos preciso que CPF: números compartilhados geram falsos positivos.",
         o="Regra do time de dados", a="📞 🧲", s=["telefone", "tel-8 × CTN"]),
@@ -293,9 +299,9 @@ GLOSSARIO = {
         d="O telefone discado aparece no CTN com filiação entre o 1º contato do mês e o último contato + 14 dias. É um teto de influência: a filiação coincidiu com a ligação, não prova que o televendas vendeu. Vive nos funis da operação (📞).",
         p="Os 14 dias cobrem o tempo típico entre a conversa e a adesão sem casar vendas sem relação com o atendimento.",
         o="Escallo × NOMINAL por tel-8", a="📞 🧲", s=["Confirmada no CTN", "Vendas confirmadas", "conf. CTN", "venda casada", "Vendas confirmadas (janela do contato)", "Vendas confirmadas (janela)"]),
-    'Filiaram no mês (régua do relatório)': dict(sec="Televendas (Escallo)",
-        d="O telefone discado aparece no CTN com filiação no mesmo mês-calendário, por qualquer canal de venda. É a régua do slide Funil Televendas do RMA (🧲). Dá números maiores que a venda confirmada porque não exige janela de contato nem tabulação.",
-        o="Escallo × NOMINAL por tel-8", a="🧲 📞", s=["Filiaram no mês", "Discados que filiaram", "teto"]),
+    'Vendas (CTN) / Filiaram no mês (régua do relatório)': dict(sec="Televendas (Escallo)",
+        d="O telefone discado (ou atendido, no receptivo) aparece no CTN com filiação no mesmo período, por qualquer canal de venda. É a régua do slide Funil Televendas do RMA (🧲) e, desde a R45, o último degrau dos funis da 📞. Dá números maiores que a venda confirmada na janela porque não exige janela de contato nem tabulação; 'com tipo Televendas' é a fatia que o CTN creditou ao canal (humanos + bots).",
+        o="Escallo × NOMINAL por tel-8", a="🧲 📞", s=["Vendas (CTN)", "Filiaram no mês", "Discados que filiaram", "teto", "com tipo Televendas (CTN)"]),
     'Escada de atribuição (teto → piso)': dict(sec="Televendas (Escallo)",
         d="Quatro leituras da mesma população de discados: teto = filiaram no mês por qualquer canal; após o 1º contato = tira quem já tinha comprado; conversou e filiou = teve alô e filiou (a leitura defensável para CPA); piso = tipo Televendas no CTN. Piso e alôs não se aninham.",
         o="Escallo × NOMINAL", a="🧲", s=["escada", "após o 1º contato", "conversou e filiou", "Piso"]),
@@ -312,6 +318,11 @@ GLOSSARIO = {
     'Compra reportada / confirmada': dict(sec="WhatsApp (Talkerchat)",
         d="Compra reportada = ticket fechado com esse motivo (o que o atendente ou o bot registrou). Confirmada = o CPF aparece no CTN com filiação até 3 dias antes ou depois do fechamento.",
         o="Talkerchat × NOMINAL por CPF", a="📞", s=["Compras reportadas", "Confirmadas no CTN (CPF ±3 d)"]),
+    'Vendas Lia (NOMINAL por IDPV)': dict(sec="WhatsApp (Talkerchat)",
+        d="Filiações do CTN (NOMINAL_VENDAS, CPF × data de filiação) cujo IDPV é o da Lia (LIA - GT7). É a régua da planilha de controle do Talkerchat ('Numeros Lia'): venda de fato, não o que o bot reportou. Humano = tipo Televendas sem os IDPVs dos bots.",
+        p="Compra reportada (Talkerchat) superestima ~23%: registra intenção/relato; o CTN registra a filiação.",
+        o="NOMINAL_VENDAS por IDPV (DT_FILIACAO); hora pelas fotos diárias do CTN (NOMINAL_VENDAS_DIARIO_CONSOLIDADO)", a="📞",
+        s=["Vendas Lia (CTN)", "Vendas Lia", "Televendas humano (CTN)", "NOMINAL por IDPV"]),
     'Lia, Cris, Nora (bots)': dict(sec="WhatsApp (Talkerchat)",
         d="Os assistentes automáticos do WhatsApp. A Lia faz a triagem (pede CPF) e, para quem não é filiado, envia o link de adesão. Os bots têm IDPV de televendas: as vendas deles entram como tipo Televendas no CTN (~40% do canal).",
         o="Talkerchat / CTN", a="📞", s=["Lia", "bots", "triagem", "handover", "sales-ready"]),
@@ -3908,8 +3919,8 @@ def _aba_tab5():
 # meses que ele toca (c_s → ref_datetime); o "período anterior" idem.
 #
 # Seções (sub-abas):
-#   1 Escallo · Ativo      discados → alô ≥10s → negociação (inclui vendas) → venda tabulada → confirmada no CTN
-#   2 Escallo · Receptivo  recebidas → alô → venda; nada volta ao CRM; vendas por tel-8 e tipo
+#   1 Escallo · Ativo      discados → ligação qualificada ≥10s → (em negociação, tabulação) → Vendas (CTN) [R45]
+#   2 Escallo · Receptivo  ligações recebidas → atendidas → (abandono) → Vendas (CTN) sobre atendidas + apropriação [R45]
 #   3 Ganhos por porta     Negócio GANHO: tabulação (porta 1) × checkout (porta 2) × outros
 #   4 Três réguas          GANHO × Contato (CTN) × NOMINAL_VENDAS — como ler
 #   5 Pipeline CRM         LEAD → EM NEGOCIAÇÃO → CONTATO SEM SUCESSO → PERDIDO → GANHO + auditoria
@@ -4539,25 +4550,57 @@ def _aba_tab6():
         k1, k2, k3, k4 = st.columns(4)
         _tv_kpi(k1, "📞", "Leads discados (ativo)", f"{_tv_n(leads)} {_tv_delta(leads, leads_p)}",
                 (f"{_tv_n(lig)} ligações · " + f"{lig / leads:.2f}".replace('.', ',') + " por lead") if leads and lig else "")
-        _tv_kpi(k2, "🗣️", "Alô (≥ 10 s)", f"{_tv_pct(alo, leads)} {_tv_delta(alo, alo_p)}",
+        _tv_kpi(k2, "🗣️", "Ligação Qualificada (≥ 10 s)", f"{_tv_pct(alo, leads)} {_tv_delta(alo, alo_p)}",
                 f"{_tv_n(alo)} leads falaram")
-        _tv_kpi(k3, "📝", "Gap alô × classificado", f"{_tv_pct(gap, alo)}",
+        _tv_kpi(k3, "📝", "Gap qualificada × classificado", f"{_tv_pct(gap, alo)}",
                 f"{_tv_n(gap)} falaram ≥10 s e não receberam estágio ({_tv_n(classif)} classificados)", color="#b45309")
-        _tv_kpi(k4, "✅", "Venda tabulada → confirmada (janela do contato)", f"{_tv_pct(venda_conf, venda)} {_tv_delta(venda, venda_p)}",
-                f"{_tv_n(venda)} tabuladas 'venda' · {_tv_n(venda_conf)} com filiação no NOMINAL (tel-8)")
+        v_ctn = _tv_val(S, 'vendas_ctn'); v_ctn_tv = _tv_val(S, 'vendas_ctn_tv'); v_ctn_alo = _tv_val(S, 'vendas_ctn_alo')
+        v_ctn_alo_tv = _tv_val(S, 'vendas_ctn_alo_tv'); v_ctn_p = _tv_val(S, 'vendas_ctn', meses=_tv_per_p)
+        _sem_alo_tv = ((v_ctn_tv or 0) - (v_ctn_alo_tv or 0)) if v_ctn_tv is not None else None
+        _tv_kpi(k4, "🛒", "Vendas (CTN)", f"{_tv_pct(v_ctn, leads)} {_tv_delta(v_ctn, v_ctn_p)}",
+                f"{_tv_n(v_ctn)} discados com filiação no NOMINAL no período (tel-8, qualquer canal) · {_tv_n(v_ctn_tv)} com tipo Televendas")
 
         c1, c2 = st.columns([1.9, 1])
         with c1:
+            _negoc_tot = (negoc or 0) + (venda or 0) if (negoc is not None or venda is not None) else None
             _tv_funil("Funil Escallo · discagem ativa", [
                 ("📞", "Leads discados", leads, "1 linha por telefone × mês (ESCALLO_LEADS_MES, tipo ATIVO)"),
-                ("🗣️", "Alô (≥ 10 s)", alo, "tempoConversa ≥ 10 s em alguma ligação do mês"),
-                ("🤝", "Fase de negociação (inclui as vendas)", (negoc or 0) + (venda or 0) if (negoc is not None or venda is not None) else None,
-                 "negociacao · agendado · venda_travada + venda — toda venda passou pela negociação"),
-                ("💰", "Venda (tabulação do operador)", venda, "melhor_estagio = venda"),
-                ("✅", "Venda confirmada (janela do contato)", venda_conf, "tel-8 com DT_FILIACAO entre 1º contato e último + 14 d"),
+                ("🗣️", "Ligação Qualificada (≥ 10 s)", alo, "tempoConversa ≥ 10 s em alguma ligação do mês (o antigo 'alô')"),
+                ("🤝", "↳ Em negociação (tabulação do operador)", _negoc_tot,
+                 "agendamento · confirmação de terceiros · venda travada · venda tabulada (REL086) — fatia das qualificadas", 1),
+                ("🛒", "Vendas (CTN)", v_ctn, "discados com filiação no NOMINAL no mesmo período, qualquer canal (tel-8) · seq. = % dos discados", 0),
+                ("🗣️", "└ conversaram (≥ 10 s) e filiaram", v_ctn_alo, f"{_tv_pct(v_ctn_alo, alo)} das ligações qualificadas · seq. = % das vendas", 3),
+                ("📞", "└ com tipo Televendas (CTN)", v_ctn_tv, f"{_tv_n(v_ctn_alo_tv)} com conversa ≥ 10 s · {_tv_n(_sem_alo_tv)} sem · seq. = % das vendas", 3),
             ], subtitle=_tv_per_lbl)
-            st.caption("Fonte: ESCALLO_LEADS_MES (REL003 ativo + REL086 classificação; carga diária 8h). "
-                       "'Confirmada' usa o telefone (tel-8) porque o Escallo não captura CPF — é teto de influência, não atribuição.")
+            st.caption("Fonte: ESCALLO_LEADS_MES (REL003 ativo + REL086 classificação; carga diária 8h) × NOMINAL_VENDAS por tel-8. "
+                       "'Vendas (CTN)' é a régua do Relatório Mensal (R45): filiação no CTN no mesmo período, por qualquer canal de venda — "
+                       "o Escallo não captura CPF, então o cruzamento é por telefone (teto de influência, não atribuição). "
+                       "A tabulação 'venda' do operador e a confirmação na janela do contato saíram do funil e ficam na nota ao lado. "
+                       "'Em negociação' é o que o operador tabulou no Escallo (agendamento, confirmação de terceiros, venda travada por "
+                       "pagamento/cadastro, venda) — não é o EM NEGOCIAÇÃO do HubSpot (sub-aba 3). "
+                       "🔗 O mesmo funil começando no HubSpot (Contato no fluxo → Negócio → discado → qualificada → Vendas (CTN)) está na sub-aba 3 (R47).")
+            # R46: o que há dentro de "em negociação" (melhor_estagio da ESCALLO_LEADS_MES ← tabulação do REL086)
+            with st.expander("📖 O que é 'em negociação' no Escallo — de onde vem cada sub-estágio"):
+                _ne_ag = _tv_val(S, 'negoc_agendado'); _ne_ng = _tv_val(S, 'negoc_negociacao'); _ne_vt = _tv_val(S, 'negoc_venda_travada')
+                _rows_ne = [
+                    {'Sub-estágio (melhor_estagio)': 'agendado', 'Tabulação do operador no Escallo (REL086)': "Agendamento Privado · Agendamento Público · Agendamento HubSpot · Refiliação - Agendamento",
+                     'Leads no período': _tv_n(_ne_ag), 'O que significa': 'o cliente pediu retorno em outro horário; a venda ainda não começou', '_level': 0, '_is_eff': False},
+                    {'Sub-estágio (melhor_estagio)': 'negociacao', 'Tabulação do operador no Escallo (REL086)': "Pré Vendas - AUT - Confirmação de terceiros (e a versão Refiliação)",
+                     'Leads no período': _tv_n(_ne_ng), 'O que significa': 'o cliente depende de outra pessoa (titular do cartão, cônjuge) para fechar', '_level': 0, '_is_eff': False},
+                    {'Sub-estágio (melhor_estagio)': 'venda_travada', 'Tabulação do operador no Escallo (REL086)': "Pagamento no Cartão (crédito ou débito) não autorizado · ERRO VENDA - CTN - CADASTRO / PAGAMENTO",
+                     'Leads no período': _tv_n(_ne_vt), 'O que significa': 'a venda foi tentada e travou no pagamento ou no cadastro do CTN', '_level': 0, '_is_eff': False},
+                    {'Sub-estágio (melhor_estagio)': 'venda', 'Tabulação do operador no Escallo (REL086)': "Pré Vendas - POV - Leitura do Contrato com titular do cartão de TODOS - Venda (e a versão Refiliação)",
+                     'Leads no período': _tv_n(venda), 'O que significa': f"o operador registrou a venda; {_tv_n(venda_conf)} têm filiação no CTN na janela do contato ({_tv_pct(venda_conf, venda)})", '_level': 0, '_is_eff': False},
+                ]
+                st.markdown(render_metric_table(_rows_ne, ['Sub-estágio (melhor_estagio)', 'Tabulação do operador no Escallo (REL086)', 'Leads no período', 'O que significa']),
+                            unsafe_allow_html=True)
+                st.caption("Regra: cada lead recebe, no mês, o melhor estágio entre as tabulações das suas ligações (venda > venda travada > negociação > "
+                           "agendado > contato sem avanço > já cliente > redirecionado > sem contato…). O rótulo 'Caixa postal' aparece junto porque o "
+                           "mesmo telefone teve outras ligações no mês. Em ago/26 (ATIVO): 279 agendados (57 filiaram na janela, 20%), 42 vendas travadas "
+                           "(7, 17%), 17 em confirmação de terceiros (5, 29%) e 342 vendas tabuladas (249, 73%) — a fatia 'em negociação' é, na prática, "
+                           "agendamento de retorno. Fonte da conferência: bi.alex_rel086 (espelho do REL086 do BI GT7, `gt7 run rel086_sync`). "
+                           "Não confundir com o EM NEGOCIAÇÃO do HubSpot (12,5 mil entradas em ago/26, movido pela esteira do CRM): são registros de "
+                           "sistemas diferentes sobre populações diferentes.")
             # ---- R37: quem fez o 1º contato do mês — operador humano × linha de sistema (s9_tipo; agente logado no REL003) ----
             if _tv_grain == 'M':
                 _h_l = _tv_val('s9_tipo', 'leads', dim='humano'); _s_l = _tv_val('s9_tipo', 'leads', dim='sistema')
@@ -4592,11 +4635,10 @@ def _aba_tab6():
                         f"Escada de atribuição (R34): após o 1º contato {_tv_n(_v8('vendas_apos'))} · conversaram (alô ≥ 10 s) e filiaram "
                         f"{_tv_n(_v8('vendas_alo'))} · tipo Televendas com alô {_tv_n(_v8('vendas_alo_tv'))}. "
                         f"Agregado calculado em {_at8:%d/%m %H:%M}.<br>"
-                        "<b>Por que difere do funil acima:</b> o funil Escallo conta o que a <i>operação registrou</i> (tabulação 'venda' do "
-                        "operador e a confirmação dessa tabulação no CTN na janela do contato + 14 d); a régua do relatório conta "
-                        "<i>quem filiou</i> entre os discados, por qualquer canal de venda (site, MGM, campo, televendas). Use o funil Escallo para "
-                        "gerir a operação (aproveitamento do discador, gap de tabulação, qualidade do registro); use a régua do relatório "
-                        "para o resultado de negócio e para bater com o Relatório Mensal de Aquisição.",
+                        "<b>Desde a R45 o funil acima usa esta mesma régua</b> em 'Vendas (CTN)' (calculada no televendas_dash, seção "
+                        "s1_ativo — pode diferir por frescor quando os dois agregados foram calculados em horas diferentes). A tabulação "
+                        "'venda' do operador e a confirmação na janela do contato + 14 d continuam na nota ao lado, como leitura da "
+                        "operação (aproveitamento do discador, gap de tabulação, qualidade do registro).",
                         bg="#f8fafc", icon="🧲")
                 elif not _aq6_err:
                     st.caption("ℹ️ Régua do relatório (aba 🧲, s8_mesa) sem dados para estes meses — rode `gt7 run aquisicao_dash --arg only=s8`.")
@@ -4616,26 +4658,27 @@ def _aba_tab6():
                 f"• <b>Piso</b> ({_tv_pct(piso_c, piso_l)}): a mesma taxa só nos leads em que <i>ninguém falou com o cliente</i> "
                 f"(sem contato / não classificado). Sem conversa, essas filiações vieram de outros canais — é a coincidência "
                 f"natural da lista (o mailing contém gente que já ia comprar pelo site, por indicação, pelo campo).<br>"
-                f"• <b>Sinal</b> ({_tv_pct(venda_conf, venda)}): leads que o operador tabulou como 'venda'.<br>"
+                f"• <b>Sinal</b> ({_tv_pct(venda_conf, venda)}): dos {_tv_n(venda)} leads que o operador tabulou como 'venda', "
+                f"{_tv_n(venda_conf)} têm filiação na janela — registro da operação, fora do funil desde a R45.<br>"
                 f"Leitura: teto e piso quase iguais → discar a lista, em média, quase não muda a chance de filiar; "
                 f"a distância entre 'venda' e o piso é o que a tabulação realmente enxerga. "
                 + (f"Das {_tv_n(venda_conf)} vendas tabuladas e confirmadas, ~{_tv_n(_esp_piso)} seriam esperadas só pela "
                    f"coincidência do piso — sobram <b>~{_tv_n(_liq)}</b> que a ligação explica de fato."
                    if _liq is not None else ""))
         _mg1 = _tv_meses_grafico('t6_s1_ano')
-        _tv_chart_mensal(_tv_long(S, ['leads', 'alo10', 'classif', 'venda'], meses=_mg1,
-                                  labels={'leads': 'Leads discados', 'alo10': 'Alô (≥ 10 s)', 'classif': 'Classificados', 'venda': 'Venda tabulada'}),
+        _tv_chart_mensal(_tv_long(S, ['leads', 'alo10', 'classif', 'vendas_ctn'], meses=_mg1,
+                                  labels={'leads': 'Leads discados', 'alo10': 'Ligação Qualificada (≥ 10 s)', 'classif': 'Classificados', 'vendas_ctn': 'Vendas (CTN)'}),
                          "Série mensal — discagem ativa", stacked=False, rotulos=True, fonte="ESCALLO_LEADS_MES (REL003 + REL086)")
         # % mensal
         _s1 = _tv_serie(S, 'leads', meses=_mg1).rename(columns={'valor': 'leads'})
-        for m_, lbl_ in [('alo10', 'Alô (≥ 10 s)'), ('classif', 'Classificados')]:
+        for m_, lbl_ in [('alo10', 'Ligação Qualificada (≥ 10 s)'), ('classif', 'Classificados')]:
             _x = _tv_serie(S, m_, meses=_mg1).rename(columns={'valor': m_})
             _s1 = _s1.merge(_x, on='mes', how='left')
         _pl = []
-        for m_, lbl_ in [('alo10', '% alô ≥10 s'), ('classif', '% classificados')]:
+        for m_, lbl_ in [('alo10', '% qualificadas (≥ 10 s)'), ('classif', '% classificados')]:
             _t = _s1[['mes']].copy(); _t['serie'] = lbl_; _t['valor'] = (_s1[m_] / _s1['leads'] * 100).round(2)
             _pl.append(_t)
-        _tv_linhas_mensal(pd.concat(_pl), "Taxa de alô e de classificação por mês (%)", pct=True, rotulos=True)
+        _tv_linhas_mensal(pd.concat(_pl), "Taxa de ligações qualificadas e de classificação por mês (%)", pct=True, rotulos=True)
 
     # =================================================================
     # 2 · ESCALLO RECEPTIVO
@@ -4653,25 +4696,50 @@ def _aba_tab6():
         _tot_tipo = float(_t2['valor'].sum()) if not _t2.empty else None
         _tv_tipo = float(_t2.loc[_t2['dim'] == 'televendas', 'valor'].sum()) if not _t2.empty else None
 
+        # R45: funil por LIGAÇÃO (REL002, seção s10_rec_lig) — recebidas → atendidas → (abandono) → Vendas (CTN) sobre atendidas
+        S10 = 's10_rec_lig'
+        lg_rec = _tv_val(S10, 'recebidas'); lg_atd = _tv_val(S10, 'atendidas'); lg_ab = _tv_val(S10, 'abandono')
+        lg_atd10 = _tv_val(S10, 'atendidas_10s'); lg_ura = _tv_val(S10, 'ura_pernas')
+        tl_rec = _tv_val(S10, 'tel_recebidos'); tl_atd = _tv_val(S10, 'tel_atendidos'); tl_ab = _tv_val(S10, 'tel_so_abandono')
+        tl_ab_rec = _tv_val(S10, 'tel_abandono_recuperado')
+        v10 = _tv_val(S10, 'vendas_ctn'); v10_tv = _tv_val(S10, 'vendas_ctn_tv')
+        ab_ret = _tv_val(S10, 'ab_retorno_ativo'); ab_alo = _tv_val(S10, 'ab_retorno_alo')
+        ab_hs = _tv_val(S10, 'ab_contato_hs'); ab_v = _tv_val(S10, 'ab_venda_ctn')
+        lg_rec_p = _tv_val(S10, 'recebidas', meses=_tv_per_p); v10_p = _tv_val(S10, 'vendas_ctn', meses=_tv_per_p)
         k1, k2, k3, k4 = st.columns(4)
-        _tv_kpi(k1, "📲", "Ligações recebidas (leads receptivos)", f"{_tv_n(r_leads)} {_tv_delta(r_leads, r_leads_p)}",
-                f"alô ≥10 s em {_tv_pct(r_alo, r_leads)} · classificados {_tv_pct(r_classif, r_leads)}")
-        _tv_kpi(k2, "🚫", "Existem no CRM (Contato por tel-8)", f"{_tv_pct(crm_no, crm_tel8)}",
-                f"com Negócio vinculado: {_tv_pct(crm_deal, crm_tel8)} — a ligação receptiva não cria nem move o Negócio", color="#b45309")
-        _tv_kpi(k3, "🔎", "Vendas encontradas para esses telefones", f"{_tv_pct(r_conf, r_leads)} {_tv_delta(r_conf, r_conf_p)}",
-                f"{_tv_n(r_conf)} tel-8 com filiação no NOMINAL na janela (qualquer canal)")
-        _tv_kpi(k4, "🏷️", "…das quais creditadas ao televendas (IDPV)", f"{_tv_pct(_tv_tipo, _tot_tipo)}",
-                f"{_tv_n(_tv_tipo)} de {_tv_n(_tot_tipo)} vendas confirmadas com tipo Televendas no CTN (humanos + bots GT7)")
+        _tv_kpi(k1, "📲", "Ligações recebidas", f"{_tv_n(lg_rec)} {_tv_delta(lg_rec, lg_rec_p)}",
+                f"{_tv_n(tl_rec)} telefones · chegaram à fila/operador (REL002); {_tv_n(lg_ura)} pernas de URA fora da conta")
+        _tv_kpi(k2, "✅", "Ligações atendidas", f"{_tv_pct(lg_atd, lg_rec)}",
+                f"{_tv_n(lg_atd)} ligações · {_tv_n(lg_atd10)} com conversa ≥ 10 s · {_tv_n(tl_atd)} telefones")
+        _tv_kpi(k3, "🚫", "Abandono", f"{_tv_pct(lg_ab, lg_rec)}",
+                f"{_tv_n(lg_ab)} não atendidas / canceladas · {_tv_n(tl_ab)} telefones só com abandono no período", color="#b45309")
+        _tv_kpi(k4, "🛒", "Vendas (CTN)", f"{_tv_pct(v10, lg_atd)} {_tv_delta(v10, v10_p)}",
+                f"{_tv_n(v10)} telefones atendidos com filiação no NOMINAL no período ({_tv_pct(v10, tl_atd)} dos telefones atendidos) · "
+                f"{_tv_n(v10_tv)} tipo Televendas")
 
         c1, c2 = st.columns([1.9, 1])
         with c1:
             _tv_funil("Funil Escallo · receptivo", [
-                ("📲", "Ligações recebidas (leads)", r_leads, "tipo RECEPTIVO = 1ª interação do mês foi do cliente (REL002)"),
-                ("🗣️", "Alô (≥ 10 s)", r_alo, "tempoConversa ≥ 10 s"),
-                ("📝", "Classificados pelo operador", r_classif, "alo_classificado = 1"),
-                ("💰", "Venda (tabulação)", r_venda, "melhor_estagio = venda"),
-                ("✅", "Venda confirmada (janela do contato)", r_venda_conf, "tel-8 × NOMINAL na janela"),
+                ("📲", "Ligações recebidas", lg_rec, "ligações que chegaram à fila/operador no período (REL002, sem as pernas de URA)"),
+                ("✅", "Ligações atendidas", lg_atd, "statusFormatado = Atendido (agente + conversa)"),
+                ("🚫", "↳ Abandono", lg_ab, "não atendida · cancelada · indisponível — fatia das recebidas (quem abandona não segue)", 0),
+                ("🛒", "Vendas (CTN)", v10, f"telefones atendidos com filiação no NOMINAL no mesmo período (tel-8, qualquer canal) · "
+                                          f"seq. = % das ligações atendidas · {_tv_pct(v10, tl_atd)} dos telefones atendidos", 1),
+                ("📞", "└ com tipo Televendas (CTN)", v10_tv, "seq. = % das vendas", 3),
             ], subtitle=_tv_per_lbl)
+            st.caption("Fonte: Televendas_REL002 (uma linha por ligação recebida; carga da TI) × NOMINAL_VENDAS por tel-8 — régua 'Vendas (CTN)' "
+                       "da R45. Uma ligação que fica só na URA (sem fila, sem agente) não conta como recebida pela operação; o volume aparece "
+                       "no KPI para conferência. Vendas por telefone porque o CTN não sabe qual ligação vendeu.")
+            _tv_funil("Apropriação das não atendidas — o que aconteceu com quem só abandonou", [
+                ("🚫", "Telefones só com abandono no período", tl_ab,
+                 f"nenhuma ligação atendida; outros {_tv_n(tl_ab_rec)} abandonaram e foram atendidos depois (ligaram de novo)"),
+                ("📞", "↳ receberam ligação ativa depois", ab_ret, "o discador (REL003) ligou para o número após o abandono, no mesmo período", 0),
+                ("🗣️", "↳ … e conversaram (≥ 10 s)", ab_alo, "retorno ativo com conversa ≥ 10 s", 0),
+                ("👤", "↳ existem como Contato no HubSpot", ab_hs, "tel-8 × telefone do Contato (alex_tv_contato_tel)", 0),
+                ("🛒", "↳ filiaram no período (CTN)", ab_v, "tel-8 × NOMINAL no mesmo período, qualquer canal", 0),
+            ], subtitle=_tv_per_lbl)
+            st.caption("Leitura: cada linha é uma fatia dos telefones só com abandono (não se somam). É a 'apropriação' do receptivo: quanto da "
+                       "demanda não atendida a operação recupera pelo retorno ativo, e quanto acaba filiando por outro caminho.")
             if not _t2.empty:
                 _t2c = _t2.copy(); _t2c['pct'] = _t2c['valor'] / _t2c['valor'].sum() * 100
                 _t2c['mes'] = 'período'; _t2c['serie'] = _t2c['dim']
@@ -4711,16 +4779,16 @@ def _aba_tab6():
                 f"<b>O receptivo não retroalimenta o CRM.</b> Só {_tv_pct(crm_no, crm_tel8)} dos telefones que ligaram "
                 f"existem como Lead/Contato no HubSpot e {_tv_pct(crm_deal, crm_tel8)} têm um Negócio — e o Negócio, quando existe, "
                 f"não é movido pela ligação (Bloco 7 da Jornada: o receptivo não cria nem movimenta Negócio).<br><br>"
-                f"<b>Vendas encontradas.</b> {_tv_n(r_conf)} telefones ({_tv_pct(r_conf, r_leads)}) aparecem com filiação no NOMINAL; "
+                f"<b>Vendas encontradas (janela do contato + 14 d, leitura anterior à R45).</b> {_tv_n(r_conf)} telefones ({_tv_pct(r_conf, r_leads)}) aparecem com filiação no NOMINAL; "
                 f"dessas vendas, {_tv_pct(crm_v_no, crm_v)} têm Lead no CRM e {_tv_pct(crm_v_deal, crm_v)} têm Negócio. "
                 f"Apenas <b>{_tv_pct(_tv_tipo, _tot_tipo)}</b> foram registradas pelo CTN com IDPV de televendas "
                 f"(tipo Televendas no CTN); o restante foi creditado a outros canais (site, MGM, campo…) — vendas trabalhadas "
                 f"ou influenciadas pelo televendas, não necessariamente convertidas por ele.",
                 bg="#fff7ed", icon="⚠️")
         _mg2 = _tv_meses_grafico('t6_s2_ano')
-        _tv_chart_mensal(_tv_long(S, ['leads', 'alo10', 'venda', 'conf_tel8'], meses=_mg2,
-                                  labels={'leads': 'Ligações recebidas', 'alo10': 'Alô (≥ 10 s)', 'venda': 'Venda tabulada', 'conf_tel8': 'Vendas confirmadas (janela)'}),
-                         "Série mensal — receptivo", stacked=False, rotulos=True, fonte="ESCALLO_LEADS_MES (REL002)")
+        _tv_chart_mensal(_tv_long(S10, ['recebidas', 'atendidas', 'abandono', 'vendas_ctn'], meses=_mg2,
+                                  labels={'recebidas': 'Ligações recebidas', 'atendidas': 'Ligações atendidas', 'abandono': 'Abandono', 'vendas_ctn': 'Vendas (CTN)'}),
+                         "Série mensal — receptivo", stacked=False, rotulos=True, fonte="Televendas_REL002 × NOMINAL (tel-8)")
 
     # =================================================================
     # 6 · GANHOS POR PORTA
@@ -4862,15 +4930,67 @@ def _aba_tab6():
         _stages = ['LEAD', 'EM NEGOCIAÇÃO', 'CONTATO SEM SUCESSO', 'PERDIDO', 'GANHO']
         _ent = {s_: _tv_val(S, 'entradas', dim=s_) for s_ in _stages}
         fluxo = _tv_val('s5_fluxo', 'entradas_fluxo'); fluxo_funil = _tv_val('s5_fluxo', 'entradas_com_funil_preenchido')
+        # R46: perfil das entradas (s5_perfil, dim '<funil>|<origem>') — fora do expediente × origem WhatsApp
+        _pf = _tvd[(_tvd['secao'] == 's5_perfil') & (_tvd['mes'].isin(list(_tv_per)))]
+
+        def _pf_sum(met, funil=None, origem=None):
+            d = _pf[_pf['metrica'] == met]
+            if funil is not None:
+                d = d[d['dim'].str.startswith(funil + '|')]
+            if origem is not None:
+                d = d[d['dim'].str.endswith('|' + origem)]
+            return float(d['valor'].sum()) if not d.empty else None
+        fluxo_fe = _pf_sum('entradas', funil='fora_expediente')
+        _tg1, _tg2 = st.columns(2)
+        _t5_fe = _tg1.toggle("🌙 Incluir no topo os leads que entraram fora do expediente", value=False, key='t5_fe',
+                             help="Pedido do time (25/09): o lead que entra no fluxo fora do horário de atendimento (rótulo 'Fora do "
+                                  "expediente' no funil_de_contatos) não é trabalhado pela esteira e sai do topo do funil. Ligue para ver o total bruto.")
+        _t5_wpp = _tg2.toggle("💬 Conversão com e sem os leads de WhatsApp", value=False, key='t5_wpp',
+                              help="Estudo complementar: taxa de filiação dos Contatos que entraram no fluxo, separando quem veio de um canal "
+                                   "WhatsApp (primeiro canal / canal detalhado começando com 'Whatsapp') do restante.")
+        fluxo_bruto = fluxo
+        if not _t5_fe and fluxo is not None and fluxo_fe is not None:
+            fluxo = fluxo - fluxo_fe
         k1, k2, k3, k4 = st.columns(4)
-        _tv_kpi(k1, "🚪", "Contatos que entraram no fluxo", _tv_n(fluxo),
-                f"data_de_entrada_no_fluxo_do_televendas no período · {_tv_pct(fluxo_funil, fluxo)} com funil_de_contatos preenchido")
+        _tv_kpi(k1, "🚪", "Contatos que entraram no fluxo" + ("" if _t5_fe else " (no expediente)"), _tv_n(fluxo),
+                f"data_de_entrada_no_fluxo_do_televendas no período · "
+                + (f"{_tv_n(fluxo_fe)} fora do expediente {'incluídos' if _t5_fe else 'excluídos'} ({_tv_pct(fluxo_fe, fluxo_bruto)} de {_tv_n(fluxo_bruto)})"
+                   if fluxo_fe is not None else f"{_tv_pct(fluxo_funil, fluxo)} com funil_de_contatos preenchido"))
         _tv_kpi(k2, "🧩", "Negócios criados na esteira", _tv_n(_ent['LEAD']),
                 f"{_tv_pct(_ent['LEAD'], fluxo)} dos Contatos do fluxo viraram um Negócio no período (1º estágio da esteira, LEAD)")
         _tv_kpi(k3, "🤝", "Entradas em EM NEGOCIAÇÃO", _tv_n(_ent['EM NEGOCIAÇÃO']),
                 f"CONTATO SEM SUCESSO: {_tv_n(_ent['CONTATO SEM SUCESSO'])}", color="#2e8a4f")
         _tv_kpi(k4, "🏁", "GANHO · PERDIDO", f"{_tv_n(_ent['GANHO'])} · {_tv_n(_ent['PERDIDO'])}",
                 f"ganho/(ganho+perdido) = {_tv_pct(_ent['GANHO'], (_ent['GANHO'] or 0) + (_ent['PERDIDO'] or 0))}", color="#0f172a")
+
+        # ---- R47: funil unificado — do Contato no HubSpot à venda no CTN, passando pela discagem (s11_unificado, dim fluxo) ----
+        S11 = 's11_unificado'
+        u_ne = _tv_val(S11, 'no_expediente'); u_fe = _tv_val(S11, 'fora_expediente'); u_tel = _tv_val(S11, 'com_telefone')
+        u_lead = _tv_val(S11, 'com_negocio_lead'); u_disc = _tv_val(S11, 'discados'); u_disc_neg = _tv_val(S11, 'discados_com_negocio')
+        u_alo = _tv_val(S11, 'qualificadas'); u_neg = _tv_val(S11, 'em_negociacao')
+        u_v = _tv_val(S11, 'vendas_ctn_discados'); u_v_alo = _tv_val(S11, 'vendas_ctn_alo'); u_v_tv = _tv_val(S11, 'vendas_ctn_discados_tv')
+        u_v_nd = _tv_val(S11, 'vendas_ctn_nao_discados'); u_fe_disc = _tv_val(S11, 'fe_discados'); u_fe_v = _tv_val(S11, 'fe_vendas_ctn')
+        if u_ne is not None:
+            _tv_funil("🔗 Funil unificado · do Contato no HubSpot à venda no CTN (passando pela discagem)", [
+                ("🚪", "Contatos no fluxo do televendas (no expediente)", u_ne,
+                 f"entraram no fluxo no período; {_tv_n(u_fe)} fora do expediente ficam fora · {_tv_pct(u_tel, u_ne)} com telefone conhecido"),
+                ("🤝", "↳ viraram Negócio na esteira (LEAD no período)", u_lead, "fatia dos Contatos · o Negócio nasce na esteira, a discagem não depende dele", 0),
+                ("📞", "Discados no Escallo (ativo, mesmo período)", u_disc,
+                 f"tel-8 do Contato × ESCALLO_LEADS_MES ATIVO · {_tv_n(u_disc_neg)} deles com Negócio LEAD no período · seq. = % dos Contatos", 0),
+                ("🗣️", "Ligação Qualificada (≥ 10 s)", u_alo, "conversa ≥ 10 s em alguma ligação do período", 2),
+                ("🤝", "↳ Em negociação (tabulação do operador)", u_neg, "agendamento · confirmação de terceiros · venda travada · venda — fatia das qualificadas", 3),
+                ("🛒", "Vendas (CTN) — dos discados", u_v, "tel-8 × NOMINAL no mesmo período, qualquer canal · seq. = % dos discados", 2),
+                ("🗣️", "└ conversaram (≥ 10 s) e filiaram", u_v_alo, f"{_tv_pct(u_v_alo, u_alo)} das ligações qualificadas · seq. = % das vendas", 5),
+                ("📞", "└ com tipo Televendas (CTN)", u_v_tv, "seq. = % das vendas", 5),
+            ], subtitle=_tv_per_lbl)
+            st.caption(f"Um Contato só, do HubSpot ao CTN: entrou no fluxo → (Negócio) → foi discado no Escallo → conversou → tabulação → filiou. "
+                       f"Fora do funil: {_tv_n(u_v_nd)} Contatos do fluxo filiaram no período sem discagem ativa (site, WhatsApp, receptivo, campo); "
+                       f"dos fora do expediente, {_tv_n(u_fe_disc)} foram discados e {_tv_n(u_fe_v)} filiaram. A ponte é o telefone (alex_tv_contato_tel); "
+                       "o funil da sub-aba 1 parte de TODOS os discados (mailing inteiro, inclusive quem não entrou no fluxo neste período) — por isso os "
+                       "discados aqui são um subconjunto. Seção s11_unificado do televendas_dash (R47).")
+        else:
+            st.caption("ℹ️ Funil unificado (R47) sem dados para este período — rode `gt7 run televendas_dash --arg only=s11` (grão mensal: 2 últimos meses; "
+                       "`--arg s11_all=1` para o histórico).")
 
         c1, c2 = st.columns([1.9, 1])
         with c1:
@@ -4884,13 +5004,38 @@ def _aba_tab6():
                           "Pipeline CDT - Lead Televendas · entradas por estágio", _tv_per_lbl)
             else:
                 _tv_funil("Pipeline CDT - Lead Televendas · Negócios dos Contatos no fluxo, por estágio", [
-                    ("🚪", "Contatos no fluxo do televendas", fluxo, "Contato: data_de_entrada_no_fluxo_do_televendas no período"),
+                    ("🚪", "Contatos no fluxo do televendas" + ("" if _t5_fe else " (no expediente)"), fluxo,
+                     "Contato: data_de_entrada_no_fluxo_do_televendas no período"
+                     + (f" · {_tv_n(fluxo_fe)} fora do expediente excluídos (R46)" if (fluxo_fe is not None and not _t5_fe) else "")),
+                ] + ([("🌙", "↳ dos quais fora do expediente", fluxo_fe, "rótulo 'Fora do expediente' no funil_de_contatos · seq. = % dos Contatos", 0)]
+                     if (_t5_fe and fluxo_fe is not None) else []) + [
                     ("🤝", "Viraram Negócio na esteira", _ent['LEAD'], "Negócio criado no 1º estágio da esteira (LEAD) · seq. = % dos Contatos"),
                     ("🔁", "↳ estágio EM NEGOCIAÇÃO", _ent['EM NEGOCIAÇÃO'], "…961121695 (régua 7 d) · seq. = % dos Negócios", 1),
                     ("📵", "↳ estágio CONTATO SEM SUCESSO", _ent['CONTATO SEM SUCESSO'], "…961121696 (régua 1 d 12 h) · seq. = % dos Negócios", 1),
                     ("🏁", "↳ estágio GANHO", _ent['GANHO'], "…961121698 — porta 1 (tabulação) ou porta 2 (checkout) · seq. = % dos Negócios", 1),
                     ("❌", "↳ estágio PERDIDO", _ent['PERDIDO'], "…961121697 — auto-redistribui (exceto 'sem interesse') · seq. = % dos Negócios", 1),
                 ], subtitle="os estágios são fatias dos Negócios dos Contatos no fluxo (um Negócio pode entrar em vários no período) · do topo = % dos Contatos")  # sem chips: _tv_chip só é definido mais abaixo no módulo (abas 🧲/🧭)
+            if _t5_wpp:
+                _fun_w = None if _t5_fe else 'no_expediente'
+                _rows_w = []
+                for _lbl_w, _org_w in (("Todos os Contatos do fluxo", None), ("Origem WhatsApp", 'whatsapp'), ("Sem os leads de WhatsApp", 'outros')):
+                    _e = _pf_sum('entradas', funil=_fun_w, origem=_org_w)
+                    _fp = _pf_sum('filiados_periodo', funil=_fun_w, origem=_org_w)
+                    _fa = _pf_sum('filiados_apos', funil=_fun_w, origem=_org_w)
+                    _cp = _pf_sum('com_cpf', funil=_fun_w, origem=_org_w)
+                    _rows_w.append({'Contatos no fluxo': _lbl_w, 'Entradas': _tv_n(_e), 'com CPF': _tv_pct(_cp, _e),
+                                    'Filiaram no período': f"{_tv_n(_fp)} ({_tv_pct(_fp, _e)})",
+                                    'Filiaram após a entrada (qualquer data)': f"{_tv_n(_fa)} ({_tv_pct(_fa, _e)})",
+                                    '_level': 0, '_is_eff': False})
+                _tv_titulo("Conversão dos Contatos do fluxo — com e sem os leads de WhatsApp",
+                           f"filiação pelo Contato (data_de_filiacao) · {'todos' if _t5_fe else 'só no expediente'} · {_tv_per_lbl}", "A")
+                st.markdown(render_metric_table(_rows_w, ['Contatos no fluxo', 'Entradas', 'com CPF', 'Filiaram no período',
+                                                          'Filiaram após a entrada (qualquer data)']), unsafe_allow_html=True)
+                st.caption("Origem WhatsApp = primeiro canal de origem ou canal detalhado começando com 'Whatsapp' (SAC IA, Zenvia…). A filiação é a do "
+                           "Contato no HubSpot (data_de_filiacao), não o NOMINAL — serve para comparar as duas populações com a mesma régua. "
+                           "'Filiaram no período' = a filiação caiu dentro do período selecionado — inclui quem já era cliente quando entrou no fluxo (a data de filiação é anterior à entrada; "
+                           "é o caso da maioria dos leads de WhatsApp: SAC / reimpacto de quem já comprou). A conversão honesta da esteira é 'após a entrada' "
+                           "= filiou depois de entrar no fluxo, em qualquer data.")
             _mg5 = _tv_meses_grafico('t6_s5_ano')
             _tv_chart_mensal(pd.concat([_tv_serie(S, 'entradas', dim=s_, meses=_mg5).assign(serie=s_) for s_ in _stages]),
                              "Entradas por estágio, por mês", stacked=False, rotulos=True,
@@ -5201,6 +5346,118 @@ def _aba_tab6():
                 "(<code>cpf_source = 'messages'</code>, ~75% dos tickets com motivo de compra/cadastro) até a D3 expor o campo. "
                 "Compras confirmadas por CPF ±3 dias no NOMINAL.",
                 bg="#f8fafc", icon="ℹ️")
+
+        # ---- R44 (23/09): vendas da Lia no CTN — NOMINAL_VENDAS por IDPV (régua da planilha "Numeros Lia") ----
+        #      s7_talkerchat.nv_* (período) · s7_nv_dia (por dia) · s7_hora_nv (dia-da-semana × hora — espelho das fotos
+        #      diárias do CTN, dt_filiacao com hora; DT_HOMOLOGACAO não é usado em nada — decisão de 23/09)
+        _nv_lia = _tv_val(S, 'nv_lia'); _nv_tv = _tv_val(S, 'nv_tv'); _nv_hum = _tv_val(S, 'nv_tv_humano')
+        _nv_bo = _tv_val(S, 'nv_bots_outros'); _nv_all = _tv_val(S, 'nv_todas')
+        _nv_lia_h = _tv_val(S, 'nv_lia_com_hora'); _nv_tv_h = _tv_val(S, 'nv_tv_com_hora')
+        _nv_lia_p = _tv_val(S, 'nv_lia', meses=_tv_per_p); _nv_hum_p = _tv_val(S, 'nv_tv_humano', meses=_tv_per_p)
+        _nv_tv_p = _tv_val(S, 'nv_tv', meses=_tv_per_p)
+        if _nv_lia is not None:
+            st.markdown("---")
+            _nv_dias = _tvd[(_tvd['secao'] == 's7_nv_dia') & (_tvd['mes'].isin(list(_tv_per))) & (_tvd['metrica'] == 'nv_lia')]['dim'].nunique()
+            _tv_titulo("Vendas da Lia no CTN — NOMINAL por IDPV (LIA - GT7)",
+                       f"{_tv_per_lbl} · filiações reais (CPF × data), não o que o bot reportou · régua da planilha de controle do Talkerchat", "A")
+            n1, n2, n3, n4 = st.columns(4)
+            _tv_kpi(n1, "🏷️", "Vendas Lia (CTN)", f"{_tv_n(_nv_lia)} {_tv_delta(_nv_lia, _nv_lia_p)}",
+                    (f"{_tv_n(_nv_lia / _nv_dias)} por dia em {_nv_dias} dias" if _nv_dias else "") +
+                    f" · {_tv_pct(_nv_lia, _nv_all)} de todas as vendas do CTN", color="#2e8a4f")
+            _tv_kpi(n2, "🧑‍💼", "Televendas humano (CTN)", f"{_tv_n(_nv_hum)} {_tv_delta(_nv_hum, _nv_hum_p)}",
+                    f"tipo Televendas sem os bots · {_tv_n(_nv_tv)} televendas no total {_tv_delta(_nv_tv, _nv_tv_p)}"
+                    + (f" · outros bots {_tv_n(_nv_bo)}" if _nv_bo else ""), color="#166534")
+            _tv_kpi(n3, "⚖️", "Fatia da Lia no televendas", _tv_pct(_nv_lia, _nv_tv),
+                    f"Lia {_tv_n(_nv_lia)} ÷ televendas {_tv_n(_nv_tv)} (CTN) · humano {_tv_pct(_nv_hum, _nv_tv)}", color="#0f172a")
+            _tv_kpi(n4, "🛒", "Reportadas (Talkerchat) × CTN", f"{_tv_n(tlia)} → {_tv_n(_nv_lia)}",
+                    f"compras reportadas da Lia ÷ vendas Lia no CTN = {_tv_pct(tlia, _nv_lia)} · confirmadas por CPF ±3 d: {_tv_n(tconf)}",
+                    color="#b45309")
+
+            d1, d2 = st.columns([1.9, 1])
+            with d1:
+                _nvd = _tvd[(_tvd['secao'] == 's7_nv_dia') & (_tvd['mes'].isin(list(_tv_per)))]
+                _tv_titulo("Vendas por dia — Lia × humano (CTN)", f"{_tv_per_lbl} · NOMINAL por IDPV, dedup CPF × data de filiação", "A")
+                if _nvd.empty:
+                    st.caption("sem série diária (seção s7_nv_dia ausente — rode `gt7 run televendas_dash --arg only=s7 --arg nv=skip`).")
+                else:
+                    _nvp = _nvd.pivot_table(index='dim', columns='metrica', values='valor', aggfunc='sum').fillna(0).reset_index()
+                    for _c in ['nv_lia', 'nv_tv_humano']:
+                        if _c not in _nvp.columns:
+                            _nvp[_c] = 0.0
+                    _nvp = _nvp.sort_values('dim')
+                    _nvl = _nvp.melt(id_vars=['dim'], value_vars=['nv_lia', 'nv_tv_humano'], var_name='serie', value_name='valor')
+                    _nvl['serie'] = _nvl['serie'].map({'nv_lia': 'Lia (IDPV)', 'nv_tv_humano': 'Televendas humano'})
+                    _nvl['dia'] = pd.to_datetime(_nvl['dim']).dt.strftime('%d/%m')
+                    _nvl['rotulo'] = _nvl['valor'].map(lambda v: format_br(v) if v >= 1 else '')
+                    fig_nv = px.bar(_nvl, x='dia', y='valor', color='serie', barmode='stack', text='rotulo',
+                                    color_discrete_sequence=[_TV_CORES_A[1], _TV_CORES_A[0]],
+                                    template='cdt_a' if _CDT_THEME else 'plotly_white')
+                    fig_nv.update_traces(textposition='inside', insidetextanchor='middle', textfont_size=9, textfont_color='#ffffff')
+                    fig_nv.update_layout(height=330, xaxis_title='', yaxis_title='vendas', legend_title_text='',
+                                         uniformtext_minsize=7, uniformtext_mode='hide', bargap=0.15)
+                    fig_nv.update_xaxes(type='category', tickfont_size=9)
+                    st.plotly_chart(fig_nv, use_container_width=True)
+                    _tv_fonte("NOMINAL_VENDAS por DT_FILIACAO · Lia = IDPV DD433C86… (LIA - GT7) · humano = tipo Televendas sem os IDPVs dos bots")
+                _tv_chart_mensal(_tv_long(S, ['nv_lia', 'nv_tv_humano'], meses=_mg7,
+                                          labels={'nv_lia': 'Lia (IDPV)', 'nv_tv_humano': 'Televendas humano'}),
+                                 "Vendas por mês — Lia × humano (CTN)", subtitle="NOMINAL por IDPV · a série de compras reportadas acima é o relato do Talkerchat",
+                                 stacked=True, rotulos=True, fonte="NOMINAL_VENDAS (CTN) · dedup CPF × DT_FILIACAO")
+            with d2:
+                _tv_note(
+                    f"<b>Por que o CTN, e não 'Compra reportada'.</b> A planilha de controle do Talkerchat ('Numeros Lia') mede a venda da Lia "
+                    f"pelo NOMINAL: filiação no CTN com o IDPV <code>LIA - GT7</code>, uma por CPF × data. Conferida dia a dia desde 18/05 "
+                    f"(123 de 127 dias exatos). O motivo 'Compra reportada' do Talkerchat é o <i>relato</i> do bot/atendente e fica acima "
+                    f"({_tv_pct(tlia, _nv_lia)} neste período); as 'confirmadas por CPF ±3 d' dependem do CPF lido nas mensagens e ficam abaixo.<br><br>"
+                    f"<b>Humano</b> = vendas com <code>tipo_venda = TELEVENDAS</code> cujo IDPV não é de bot (Lia, Nora, Cris, Mara). "
+                    f"Os operadores têm IDPV telefone e IDPV 'ATENDIMENTO WHATSAPP' — aqui os dois contam como humano; a abertura por "
+                    f"superfície está na sub-aba 📟 5.<br><br>"
+                    f"<b>Hora da venda.</b> O <code>DT_FILIACAO</code> do NOMINAL não tem hora; o mapa usa as <b>fotos diárias do CTN</b> "
+                    f"(<code>NOMINAL_VENDAS_DIARIO_CONSOLIDADO</code>, hora real da filiação) — cobre {_tv_pct(_nv_lia_h, _nv_lia)} das vendas da Lia "
+                    f"e {_tv_pct(_nv_tv_h, _nv_tv)} do televendas neste período. A última foto do dia é às 22h: vendas de 22h–24h e as que "
+                    f"entram depois ficam fora do mapa (entram nos totais).",
+                    bg="#f0fdf4", icon="🏷️")
+
+            # ---- heatmap: dia da semana × hora da venda (fotos diárias do CTN) — Lia / televendas / humano / % Lia ----
+            _hn = _tv_pivot7('s7_hora_nv')
+            hn1, hn2 = st.columns([3, 1])
+            with hn2:
+                _hm_nv = st.radio("Vendas no mapa", ["Lia (IDPV)", "Televendas total", "Humano (televendas − bots)", "% Lia no televendas"],
+                                  key='t6_s7_hm_nv', horizontal=False)
+                st.caption("Compare com o mapa dos tickets acima: a Lia vende à noite e no fim de semana, quando não há atendente.")
+            with hn1:
+                _tv_titulo("Mapa de calor — dia da semana × hora da venda (CTN)",
+                           f"{_tv_per_lbl} · hora real da filiação nas fotos diárias do CTN (até 22h) · horário de Brasília", "A")
+                if _hn.empty:
+                    st.caption("sem vendas com hora no período (seção s7_hora_nv ausente).")
+                else:
+                    _hn['d'] = _hn['dim'].str.slice(0, 1).astype(int)
+                    _hn['h'] = _hn['dim'].str.slice(2, 4).astype(int)
+                    for _c in ['nv_lia', 'nv_tv', 'nv_tv_humano']:
+                        if _c not in _hn.columns:
+                            _hn[_c] = 0.0
+                    if _hm_nv == "Lia (IDPV)":
+                        _hn['z'] = _hn['nv_lia']; _fmt_nv = ".0f"; _cs_nv = ['#f0fdf4', '#166534']
+                    elif _hm_nv == "Televendas total":
+                        _hn['z'] = _hn['nv_tv']; _fmt_nv = ".0f"; _cs_nv = ['#f8fafc', '#0f172a']
+                    elif _hm_nv == "Humano (televendas − bots)":
+                        _hn['z'] = _hn['nv_tv_humano']; _fmt_nv = ".0f"; _cs_nv = ['#fffbeb', '#b45309']
+                    else:
+                        _hn['z'] = (_hn['nv_lia'] / _hn['nv_tv'].where(_hn['nv_tv'] > 0) * 100).astype(float); _fmt_nv = ".0f"; _cs_nv = ['#f8fafc', '#2e8a4f']
+                    _zn = _hn.pivot_table(index='d', columns='h', values='z', aggfunc='sum').reindex(index=range(7), columns=range(24))
+                    _dias_nv = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
+                    fig_hn = px.imshow(_zn.values, x=[f"{h:02d}h" for h in range(24)], y=_dias_nv, aspect='auto',
+                                       color_continuous_scale=_cs_nv, text_auto=_fmt_nv,
+                                       template='cdt_a' if _CDT_THEME else 'plotly_white')
+                    fig_hn.update_layout(height=330, xaxis_title='', yaxis_title='', coloraxis_showscale=False,
+                                         margin=dict(l=10, r=10, t=10, b=10))
+                    fig_hn.update_traces(textfont_size=9)
+                    fig_hn.update_xaxes(side='top', tickfont_size=10)
+                    st.plotly_chart(fig_hn, use_container_width=True)
+                    _tv_fonte("NOMINAL_VENDAS_DIARIO_CONSOLIDADO (fotos das 22h do CTN) · Lia = IDPV LIA - GT7 · humano = canal Televendas sem bots · soma dos períodos"
+                              + (f" · {_tv_pct(_nv_tv_h, _nv_tv)} das vendas do televendas têm hora" if _nv_tv else ""))
+        else:
+            st.caption("Vendas da Lia no CTN (NOMINAL por IDPV): o agregado ainda não tem as métricas nv_* — rode "
+                       "`gt7 run televendas_dash --arg only=s7 --arg nv=skip` (claude-toolkit) e recarregue os dados.")
 
         # ---- Fases da conversa (18/09): triagem × Lia vendas × humano — estimativa por AMOSTRA de mensagens (s7_fases,
         #      pipeline tkc_fases). Só existe no agregado mensal: em grão semanal usa os meses tocados pelo período. ----
@@ -5555,7 +5812,7 @@ def _aba_tab6():
                         'Código': [(str(c) if pd.notna(c) and c else "—") for c in _tab['cod_agente']],
                         'Ligações no mês': _tab['ligacoes'].astype(int).values,
                         '% com agente logado': (_tab['lig_com_agente'].astype(float) / _tab['ligacoes'].astype(float).where(_tab['ligacoes'] > 0) * 100).fillna(0).round(0).astype(int).values,   # R37b
-                        'Alô (≥ 10 s) · ligações': _tab['alo10'].astype(int).values,
+                        'Ligação Qualificada (≥ 10 s) · ligações': _tab['alo10'].astype(int).values,
                         'Agentes distintos': _tab['n_agentes'].astype(int).values,
                         'IDPVs no CTN': _tab['n_idpv'].astype(int).values,
                         'Número que o cliente vê': _tab['numero_externo'].fillna(_num_ext).values,
@@ -5563,7 +5820,7 @@ def _aba_tab6():
                     st.dataframe(_tab_show, hide_index=True, use_container_width=True, height=min(560, 38 + 35 * len(_tab_show)),
                                  column_config={'% com agente logado': st.column_config.NumberColumn(format="%d%%"),
                                                 'Ligações no mês': st.column_config.NumberColumn(format="%d"),
-                                                'Alô (≥ 10 s) · ligações': st.column_config.NumberColumn(format="%d")})
+                                                'Ligação Qualificada (≥ 10 s) · ligações': st.column_config.NumberColumn(format="%d")})
                     _tv_fonte(f"alex_tv_ramal_dim (pipeline televendas_dash s9) · REL003 agente logado · REL100 canalEmpresa (saída) · "
                               f"alex_idpvs fonte Televendas · {pd.Timestamp(_s8_mes):%m/%Y}")
 
@@ -5604,7 +5861,7 @@ def _aba_tab6():
                         'Vendedor': [_tv_nome_curto(str(i)) for i in _hum_v.index],
                         'Ramais': _hum_v['ramais'].astype(int).values,
                         'Leads discados': _hum_v['leads'].astype(int).values,
-                        'Alô (≥ 10 s)': _hum_v['alo10'].astype(int).values,
+                        'Ligação Qualificada (≥ 10 s)': _hum_v['alo10'].astype(int).values,
                         '% alô': _pct_col(_hum_v['alo10'], _hum_v['leads']).values,
                         'Venda tabulada': _hum_v['venda'].astype(int).values,
                         'Conf. CTN (janela)': _hum_v['conf'].astype(int).values,
@@ -5633,7 +5890,7 @@ def _aba_tab6():
                     _esp_show = pd.DataFrame({
                         'Linha': [str(i).strip('()').capitalize() for i in _esp_v.index],
                         'Leads discados (1º contato)': _esp_v['leads'].astype(int).values,
-                        'Alô (≥ 10 s)': _esp_v['alo10'].astype(int).values,
+                        'Ligação Qualificada (≥ 10 s)': _esp_v['alo10'].astype(int).values,
                         'Venda tabulada': _esp_v['venda'].astype(int).values,
                         'Conf. CTN (janela)': _esp_v['conf'].astype(int).values,
                         'Vendas TV no CTN (IDPV)': _esp_v['vendas_idpv'].astype(int).values,
@@ -8077,7 +8334,7 @@ def _aba_tab10():
                     _antes8 = ((_v8 or 0) - (_ap8 or 0)) if (_v8 is not None and _ap8 is not None) else None
                     _tv_funil("🪜 Funil Televendas — último degrau aberto (escada de atribuição)", [
                         ("📵", "Leads discados (ativo)", _d8, "ESCALLO_LEADS_MES, tipo ATIVO"),
-                        ("🗣️", "Alô (≥ 10 s)", _a8, "alô humano em alguma ligação do mês"),
+                        ("🗣️", "Ligação Qualificada (≥ 10 s)", _a8, "alô humano em alguma ligação do mês"),
                         ("🛒", "Teto — discados que filiaram no mês (qualquer canal)", _v8, "tel-8 × NOMINAL, mesmo mês-calendário; não depende do HubSpot · seq. = % dos discados", 0),
                         ("⏱️", "└ após o 1º contato do mês", _ap8, f"{_tv_n(_antes8)} compraram antes de serem discados · seq. = % do teto", 2),
                         ("🗣️", "└ conversaram (alô ≥ 10 s) e filiaram", _va8x, f"{_tv_pct(_va8x, _a8)} dos alôs · seq. = % do teto", 2),
@@ -8091,7 +8348,7 @@ def _aba_tab10():
                 else:
                     _tv_funil("📵 Funil Televendas — pipeline de ligações ativas", [
                         ("📵", "Leads discados (ativo)", _d8, "ESCALLO_LEADS_MES, tipo ATIVO"),
-                        ("🗣️", "Alô (≥ 10 s)", _a8, "alô humano em alguma ligação do mês"),
+                        ("🗣️", "Ligação Qualificada (≥ 10 s)", _a8, "alô humano em alguma ligação do mês"),
                         ("🛒", "└ dos alôs: filiaram no mês", _va8x, "fatia dos alôs · tel-8 × NOMINAL, mesmo mês", 1),
                         ("📞", "└ dos alôs: com tipo Televendas (CTN)", _vt8x, "seq. = % das filiações dos alôs", 2),
                         ("🛒", "Filiaram no mês (régua do relatório) — todos os discados", _v8, "todos os discados · inner join por tel-8, 1 lead = 1, mesmo mês-calendário · seq. = % dos discados", 0),
@@ -8196,7 +8453,7 @@ def _aba_tab10():
                 st.markdown(
                     "| Etapa | Objeto | Regra |\n|---|---|---|\n"
                     "| **Leads discados (ativo)** | telefone | `ESCALLO_LEADS_MES`, `tipo_lead = 'ATIVO'`, mês do 1º contato. |\n"
-                    "| **Alô (≥ 10 s)** | telefone | `alo_humano = 1` — falou ≥ 10 s em alguma ligação do mês. |\n"
+                    "| **Ligação Qualificada (≥ 10 s)** | telefone | `alo_humano = 1` — falou ≥ 10 s em alguma ligação do mês. |\n"
                     "| **Vendas (discados que filiaram)** | telefone × CPF | *inner join* dos discados do mês com `NOMINAL_VENDAS` do **mesmo mês-calendário**, "
                     "chave tel-8 (`RIGHT(CELULAR, 8) = RIGHT(tel_lead, 8)`; o Escallo não tem CPF), 1 lead contado uma vez. Difere do "
                     "`venda_confirmada` da própria tabela (janela 1º contato → último + 14 d) e do GANHO do HubSpot (write-back da esteira). |\n"
@@ -8274,7 +8531,7 @@ def _aba_tab10():
                 _esc_s = bool(st.session_state.get('t10_esc', False)) and _v8s('vendas_alo', 'televendas') is not None
                 _tv_funil("📵 Televendas — Ativo (discador)" + (" · último degrau aberto" if _esc_s else ""), [
                     ("📵", "Leads discados", _v8s('discados', 'televendas'), "ESCALLO_LEADS_MES, tipo ATIVO"),
-                    ("🗣️", "Alô (≥ 10 s)", _v8s('alo10', 'televendas'), "alô humano"),
+                    ("🗣️", "Ligação Qualificada (≥ 10 s)", _v8s('alo10', 'televendas'), "alô humano"),
                     ("🛒", "Filiaram no mês (régua do relatório)" + (" — teto" if _esc_s else ""), _v8s('vendas_mes', 'televendas'), "tel-8 × NOMINAL no mesmo mês — régua do relatório", 0),
                 ] + ([
                     ("⏱️", "└ após o 1º contato do mês", _v8s('vendas_apos', 'televendas'), "seq. = % do teto", 2),
@@ -8287,7 +8544,7 @@ def _aba_tab10():
             else:
                 _tv_funil("📵 Televendas — Ativo (discador)", [
                     ("📵", "Leads discados", _v10('s2_super', 'leads', _sel10, 'ativo'), "ESCALLO_LEADS_MES, tipo ATIVO"),
-                    ("🗣️", "Alô (≥ 10 s)", _v10('s2_super', 'alo10', _sel10, 'ativo'), "alô humano"),
+                    ("🗣️", "Ligação Qualificada (≥ 10 s)", _v10('s2_super', 'alo10', _sel10, 'ativo'), "alô humano"),
                     ("✅", "Vendas confirmadas (janela do contato)", _v10('s2_super', 'venda_confirmada', _sel10, 'ativo'), "tel-8 × NOMINAL na janela do contato"),
                 ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto']],
                     deltas=[_dq10('s2_super', m, 'ativo') for m in ('leads', 'alo10', 'venda_confirmada')])
@@ -8295,7 +8552,7 @@ def _aba_tab10():
             if _v8s('discados', 'receptivo') is not None:
                 _tv_funil("📲 Televendas — Receptivo", [
                     ("📲", "Ligações recebidas", _v8s('discados', 'receptivo'), "ESCALLO_LEADS_MES, tipo RECEPTIVO"),
-                    ("🗣️", "Alô (≥ 10 s)", _v8s('alo10', 'receptivo'), "alô humano"),
+                    ("🗣️", "Ligação Qualificada (≥ 10 s)", _v8s('alo10', 'receptivo'), "alô humano"),
                     ("🛒", "Filiaram no mês (régua do relatório)", _v8s('vendas_mes', 'receptivo'), "tel-8 × NOMINAL no mesmo mês — régua do relatório"),
                     ("📞", "└ com tipo Televendas (CTN)", _v8s('vendas_mes_tv', 'receptivo'), "seq. = % das filiações"),
                 ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto']],
@@ -8303,7 +8560,7 @@ def _aba_tab10():
             else:
                 _tv_funil("📲 Televendas — Receptivo", [
                     ("📲", "Ligações recebidas", _v10('s2_super', 'leads', _sel10, 'receptivo'), "ESCALLO_LEADS_MES, tipo RECEPTIVO"),
-                    ("🗣️", "Alô (≥ 10 s)", _v10('s2_super', 'alo10', _sel10, 'receptivo'), "alô humano"),
+                    ("🗣️", "Ligação Qualificada (≥ 10 s)", _v10('s2_super', 'alo10', _sel10, 'receptivo'), "alô humano"),
                     ("✅", "Vendas confirmadas (janela do contato)", _v10('s2_super', 'venda_confirmada', _sel10, 'receptivo'), "tel-8 × NOMINAL na janela do contato"),
                 ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto']],
                     deltas=[_dq10('s2_super', m, 'receptivo') for m in ('leads', 'alo10', 'venda_confirmada')])
