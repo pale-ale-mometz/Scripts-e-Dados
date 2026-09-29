@@ -220,11 +220,11 @@ GLOSSARIO = {
         o="Resumo de investimento × painel de pagantes", a="🧲", s=["retidos por 1.000 leads", "Mensuráveis m3"]),
     # ---- Leads e jornada ----
     'Leads Únicos': dict(sec="Leads e jornada (HubSpot)",
-        d="Leads criados no mês na Instância de Aquisição, contados uma vez por pessoa, com canal de origem conhecido e fora de Importação, Base de Desfiliados e Instância de Engajamento. Primeira linha do RMA.",
-        p="Há quatro definições selecionáveis (Abrangente, relatório HubSpot 347496241, RMA antiga, Personalizada) porque a empresa nunca fechou uma única; o dashboard mostra sempre qual está em uso. A mesma seleção vale nas abas 🧲 e 🧭.",
+        d="Contatos criados no mês no HubSpot, contados uma vez por pessoa, de qualquer canal de origem (desde 29/09/2026 a definição oficial inclui B2B2C - TIM, Instância de Engajamento, Importação e Desfiliados). A quebra por canal e plataforma vem em seguida. Primeira linha do RMA.",
+        p="Definição oficial de reporte (decisão de 28/09/2026, ampliada em 29/09): a Abrangente — todos os buckets, inclusive Instância de Engajamento e B2B2C-TIM, com os leads dos promotores de franquia incluídos — lida como fotografia do mês (aba 🧲 / RMA), não como coorte. O que interessa é a quebra: por canal de origem (bucket), por formulário de entrada e por plataforma de mídia (primeiro toque do HubSpot). As outras seleções (relatório HubSpot 347496241, RMA antiga, Personalizada) existem para reconciliar. Régua E (sugerida, não oficial): sem TIM e sem leads carimbados por IDPV de promotor de franquia, canal livre — a propriedade 'ID Promotor Lead' guarda o IDPV de quem vendeu ou atendeu (Lia, operadores do Televendas, bot do site, promotores), por isso excluir 'quem tem ID Promotor' apagava 90% das vendas Televendas. O dashboard mostra sempre qual régua está em uso; a mesma seleção vale nas abas 🧲 e 🧭.",
         o="HubSpot", a="🧲 🧭 🌐", s=["leads únicos", "lead elegível", "Elegíveis", "Leads Únicos (definição acima)", "Leads Únicos (regra do relatório)", "HS - Leads Únicos mês"]),
     'Bucket': dict(sec="Leads e jornada (HubSpot)",
-        d="Um grupo de canais de origem: Núcleo (site, checkout, WhatsApp, mídia), Parceria B2B2C - TIM, Franquia — ID Promotor, Franquia — Facebook, Franquia — CMS, Regionais, Ruptura, Importação, Desfiliados em massa, Engajamento, Sem canal. Uma definição de Leads Únicos é uma seleção de buckets.",
+        d="Um grupo de canais de origem: Núcleo (site, checkout, WhatsApp, mídia), Parceria B2B2C - TIM, Franquia — ID Promotor, Franquia — Facebook, Franquia — CMS, Regionais, Ruptura, Importação, Desfiliados em massa, Engajamento, Sem canal. Uma definição de Leads Únicos é uma seleção de buckets; a oficial é a Abrangente (todos os canais, desde 29/09/2026). O bucket Franquia — ID Promotor é pelo nome do canal; a propriedade ID Promotor Lead é outra coisa (IDPV do vendedor).",
         o="Regra do time de dados sobre o canal de origem", a="🧲 🧭", s=["buckets", "Núcleo", "Abrangente", "Personalizada"]),
     'Canal de origem': dict(sec="Leads e jornada (HubSpot)",
         d="O canal gravado no Contato na criação — o que trouxe a pessoa — e não o último que a tocou. Base dos buckets e das quebras por canal.",
@@ -7872,8 +7872,7 @@ _LU_LBL = {
     'sem_canal': 'Sem canal registrado',
 }
 _LU_DEFS = {
-    'Abrangente (tudo menos Engajamento e TIM)': ['core', 'importacao', 'desfiliados', 'franquia_cms',
-                                            'franquia_promotor', 'franquia_facebook', 'ruptura', 'regional', 'sem_canal'],
+    'Abrangente (todos os canais)': ['core', 'importacao', 'desfiliados', 'tim', 'engajamento', 'franquia_cms', 'franquia_promotor', 'franquia_facebook', 'ruptura', 'regional', 'sem_canal'],
     'HubSpot — relatório "Leads Únicos" (347496241)': ['core', 'franquia_cms', 'franquia_promotor',
                                                        'franquia_facebook', 'ruptura', 'regional', 'sem_canal'],
     'RMA antiga (só núcleo)': ['core'],
@@ -8519,6 +8518,101 @@ def _aba_tab10():
                     "`aquisicao_dash` (`gt7 run aquisicao_dash --arg only=s8`).")
 
         st.markdown("---")
+        # ---------- 1b · funil de campanhas de mídia (R51) ----------
+        _tv_titulo("📣 Funil de campanhas de mídia — Supermetrics × HubSpot",
+                   "custo e leads reportados pelas plataformas (Google / Meta / TikTok, landings Supermetrics) × Contatos do HubSpot cujo "
+                   "PRIMEIRO toque foi a campanha (`hs_analytics_source` + nome da campanha) → Lead Único → Instância de Engajamento → "
+                   "transbordo para franquias / entrada no Televendas → venda em 30 d. Atribuição de primeiro toque (padrão de 29/09/2026). "
+                   "Tabela `alex_midia_campanha_mes` (`gt7 run midia_campanhas`)", "A")
+
+        @st.cache_data(ttl=43200)
+        def load_midia_mes():
+            return cquery("SELECT mes, plataforma, campanha_key, campaign_name, grupo, objetivo, no_escopo, tem_custo, tem_hubspot, "
+                          "custo, cliques, plat_leads, plat_conversoes, contatos, leads_unicos, contatos_com_cpf, contatos_com_negocio, "
+                          "contatos_com_lead, enviados_engajamento, negocios_distrib, transbordados_fr, televendas, vendas_30d, "
+                          "vendas_30d_franquia FROM alex_midia_campanha_mes")
+
+        try:
+            _md = load_midia_mes()
+        except Exception as _e11:
+            _md = pd.DataFrame(); st.caption(f"⚠️ `alex_midia_campanha_mes` indisponível: {_e11}")
+        if _md.empty:
+            st.info("Tabela `alex_midia_campanha_mes` vazia — rode `gt7 run midia_campanhas --arg ini=AAAA-MM-01 --arg fim=AAAA-MM-01`.")
+        else:
+            _md['mes'] = pd.to_datetime(_md['mes'])
+            _mdm = _md[_md['mes'].isin([pd.Timestamp(m) for m in _sel10])].copy()
+            if _mdm.empty:
+                st.info(f"`alex_midia_campanha_mes` não cobre {_lbl10} (meses carregados: "
+                        f"{', '.join(_ap_mes_lbl(m) for m in sorted(_md['mes'].unique()))}). Rode o `midia_campanhas` para o período.")
+            else:
+                for _c in ('custo', 'cliques', 'plat_leads', 'plat_conversoes', 'contatos', 'leads_unicos', 'contatos_com_cpf', 'contatos_com_negocio',
+                           'contatos_com_lead', 'enviados_engajamento', 'negocios_distrib', 'transbordados_fr', 'televendas', 'vendas_30d', 'vendas_30d_franquia'):
+                    _mdm[_c] = pd.to_numeric(_mdm[_c], errors='coerce').fillna(0)
+                # leads reportados pela plataforma: Meta/TikTok têm "leads"; a landing do Google só tem "conversões" (todas as ações)
+                _mdm['plat_leads_eq'] = _mdm.apply(lambda r: r['plat_leads'] if r['plataforma'] in ('Meta', 'TikTok') else r['plat_conversoes'], axis=1)
+                _cf1, _cf2 = st.columns([1.3, 1])
+                with _cf1:
+                    _grp_opts = sorted(_mdm['grupo'].dropna().unique())
+                    _g11 = st.multiselect("Grupo de campanhas", options=_grp_opts, default=[g for g in _grp_opts if g == 'Nacional'] or _grp_opts,
+                                          key='t10_md_grupo', help="Nacional = campanhas GT7_CDT_Nacional_* (escopo da análise Leads × Vendas por Campanha de Mídia).")
+                with _cf2:
+                    _plat_opts = sorted(_mdm['plataforma'].dropna().unique())
+                    _p11 = st.multiselect("Plataforma", options=_plat_opts, default=_plat_opts, key='t10_md_plat')
+                _f11 = _mdm[_mdm['grupo'].isin(_g11) & _mdm['plataforma'].isin(_p11)]
+                if _f11.empty:
+                    st.info("Nenhuma campanha para a seleção.")
+                else:
+                    _s = _f11.sum(numeric_only=True)
+                    _n_so_midia = int(((_f11['tem_hubspot'] == 0) & (_f11['custo'] > 0)).sum())
+                    _c_so_midia = float(_f11.loc[(_f11['tem_hubspot'] == 0), 'custo'].sum())
+                    _n_so_hs = int(((_f11['tem_custo'] == 0) & (_f11['contatos'] > 0)).sum())
+                    _ct_so_hs = int(_f11.loc[(_f11['tem_custo'] == 0), 'contatos'].sum())
+                    _casadas = _f11[(_f11['tem_custo'] == 1) & (_f11['tem_hubspot'] == 1)]
+                    _tv_funil("📣 Campanhas → HubSpot → engajamento / franquias / televendas", [
+                        ("📣", "Leads / conversões reportados pelas plataformas", float(_s['plat_leads_eq']),
+                         "Meta e TikTok: leads dos formulários (Supermetrics); Google: conversões (todas as ações — a landing não separa lead)"),
+                        ("👤", "Contatos no HubSpot (1º toque na campanha)", float(_s['contatos']),
+                         "`hs_analytics_source` PAID_SEARCH / PAID_SOCIAL + nome da campanha = campanha da landing"),
+                        ("🧲", "Leads Únicos (régua E)", float(_s['leads_unicos']), "sem B2B2C-TIM, sem IDPV de promotor de franquia, sem Importação / Desfiliados / Engajamento"),
+                        ("📨", "Enviados à Instância de Engajamento", float(_s['enviados_engajamento']),
+                         "Contato com `data_do_primeiro_envio_para_instancia_de_engajamento`", 1),
+                        ("🏪", "Transbordados para franquias", float(_s['transbordados_fr']),
+                         "algum Negócio do Contato com 1ª entrada em Distribuição / Validador (pipeline CDT - Distribuição)", 1),
+                        ("📞", "Entraram no Televendas", float(_s['televendas']),
+                         "`data_de_entrada_no_fluxo_do_televendas` do Contato ou Negócio no pipeline CDT - Lead Televendas", 1),
+                        ("✅", "Vendas em 30 d (CPF × NOMINAL)", float(_s['vendas_30d']), f"filiação até 30 d após a criação do Contato; {_tv_n(_s['vendas_30d_franquia'])} na franquia", 1),
+                    ], subtitle=f"{_lbl10} · {', '.join(_g11)} · {', '.join(_p11)}",
+                        chips=[None, ['contato', 'foto'], ['contato', 'foto'], ['contato', 'foto'], ['negocio', 'foto'], ['contato', 'foto'], ['ctn', 'foto']])
+                    _cpl = (_s['custo'] / _s['leads_unicos']) if _s['leads_unicos'] else None
+                    st.caption(f"💸 Custo **R$ {_s['custo']:,.0f}** · CPL (Leads Únicos) **{('R$ %.2f' % _cpl) if _cpl else '—'}** · "
+                               f"cobertura Contatos ÷ leads da plataforma **{_tv_pct(_s['contatos'], _s['plat_leads_eq'])}** · "
+                               f"Contatos com Negócio **{_tv_pct(_s['contatos_com_negocio'], _s['contatos'])}** · com objeto Lead **{_tv_pct(_s['contatos_com_lead'], _s['contatos'])}**. "
+                               f"**Órfãos:** {_n_so_midia} campanha-mês com custo (R$ {_c_so_midia:,.0f}) e nenhum Contato · "
+                               f"{_n_so_hs} campanha-mês com {_tv_n(_ct_so_hs)} Contatos cuja campanha não está nas landings do Supermetrics "
+                               f"(outras contas de anúncio, campanhas pausadas/renomeadas). Casadas: {len(_casadas)} campanha-mês.".replace(',', '.'),
+                               unsafe_allow_html=True)
+                    with st.expander("📋 Por campanha (mês a mês na seleção)", expanded=False):
+                        _t11 = (_f11.groupby(['plataforma', 'campaign_name', 'objetivo'], as_index=False)
+                                    .agg(custo=('custo', 'sum'), leads_plat=('plat_leads_eq', 'sum'), contatos=('contatos', 'sum'),
+                                         leads_unicos=('leads_unicos', 'sum'), engajamento=('enviados_engajamento', 'sum'),
+                                         franquias=('transbordados_fr', 'sum'), televendas=('televendas', 'sum'), vendas_30d=('vendas_30d', 'sum'),
+                                         so_midia=('tem_hubspot', lambda s: int((s == 0).sum())), so_hubspot=('tem_custo', lambda s: int((s == 0).sum()))))
+                        _t11['cobertura'] = (_t11['contatos'] / _t11['leads_plat'].where(_t11['leads_plat'] > 0)).round(3)
+                        _t11['% engaj.'] = (_t11['engajamento'] / _t11['contatos'].where(_t11['contatos'] > 0)).round(3)
+                        _t11['% franquias'] = (_t11['franquias'] / _t11['contatos'].where(_t11['contatos'] > 0)).round(3)
+                        _t11['% televendas'] = (_t11['televendas'] / _t11['contatos'].where(_t11['contatos'] > 0)).round(3)
+                        _t11['CPL'] = (_t11['custo'] / _t11['leads_unicos'].where(_t11['leads_unicos'] > 0)).round(2)
+                        _t11 = _t11.sort_values(['custo', 'contatos'], ascending=False)
+                        st.dataframe(_t11, use_container_width=True, hide_index=True,
+                                     column_config={'custo': st.column_config.NumberColumn(format="R$ %.0f"), 'CPL': st.column_config.NumberColumn(format="R$ %.2f"),
+                                                    'cobertura': st.column_config.NumberColumn(format="%.3f"),
+                                                    '% engaj.': st.column_config.NumberColumn(format="%.3f"), '% franquias': st.column_config.NumberColumn(format="%.3f"),
+                                                    '% televendas': st.column_config.NumberColumn(format="%.3f")})
+                        st.caption("`so_midia` / `so_hubspot` = nº de meses da seleção em que a campanha só apareceu na landing (sem Contato) / só no HubSpot (sem custo). "
+                                   "cobertura = Contatos ÷ leads/conversões da plataforma (Google > 1 é normal: uma conversão pode não ser lead e um Contato pode ter várias).")
+                    _tv_fonte("alex_midia_campanha_mes (midia_campanhas v2): alex_google/meta/tiktok_campaigns × hubspot_contacts_raw (1º toque) × hubspot_assoc_contact_deal × hubspot_deals_raw × hubspot_leads_raw × NOMINAL_VENDAS")
+
+        st.markdown("---")
         # ---------- 2 · funis por superfície ----------
         _tv_titulo("Funis de aquisição por superfície",
                    "cada superfície tem a sua própria definição de 'lead' — os números NÃO são deduplicados entre elas "
@@ -8845,8 +8939,7 @@ def _aba_tab11():
         'sem_canal': 'Sem canal registrado',
     }
     _FJ_DEFS = {
-        'Abrangente (tudo menos Engajamento e TIM)': ['core', 'importacao', 'desfiliados', 'franquia_cms',
-                                                'franquia_promotor', 'franquia_facebook', 'ruptura', 'regional', 'sem_canal'],
+        'Abrangente (todos os canais)': ['core', 'importacao', 'desfiliados', 'tim', 'engajamento', 'franquia_cms', 'franquia_promotor', 'franquia_facebook', 'ruptura', 'regional', 'sem_canal'],
         'HubSpot — relatório "Leads Únicos" (347496241)': ['core', 'franquia_cms', 'franquia_promotor',
                                                            'franquia_facebook', 'ruptura', 'regional', 'sem_canal'],
         'RMA antiga (só núcleo)': ['core'],
