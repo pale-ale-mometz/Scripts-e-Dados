@@ -201,7 +201,7 @@ GLOSSARIO = {
         d="A medição do site e do checkout: usuários ativos, eventos e a atribuição de cada sessão a uma campanha. Conta comportamento no navegador, não pessoas.",
         o="GA4 via planilha Ad Sources & Events", a="🌐 💰 📣 🧲", s=["GA", "Google Analytics"]),
     'Zenvia': dict(sec="Sistemas e fontes",
-        d="A plataforma que dispara WhatsApp e SMS e cobra por mensagem. Tem todos os remetentes da empresa, não só aquisição.",
+        d="A plataforma que dispara WhatsApp e SMS e cobra por mensagem. Tem todos os remetentes da empresa, não só aquisição; o dashboard conta como investimento de CRM só a Instância de Aquisição (templates GT7) na régua da Mesa.",
         o="API Zenvia + planilha de custo", a="📨 💰"),
     'Lake do app': dict(sec="Sistemas e fontes",
         d="O repositório de dados do App do Filiado: logins, cadastros, uso de produtos (cashback, cartão virtual), filiados e pagamentos mensais. Os Leads do app não passam pelo HubSpot.",
@@ -1282,22 +1282,48 @@ def load_zenvia():
     except Exception:
         return pd.DataFrame(columns=['report_date', 'sender_name', 'total_messages', 'total_price'])
 
+@st.cache_data(ttl=43200, show_spinner="Carregando custo do CRM de Aquisição (Zenvia GT7)...")
+def load_zenvia_gt7():
+    """R57 (01/10): custo do CRM de Aquisição por dia, na régua da Mesa / aba 📨 CRM — Instância de Aquisição (templates
+    com 'GT7' no nome, alex_zenvia_template_status). custo_regua = Enviada + Entregue + Lida × R$ 0,32 (exclui 'Não Entregue'
+    e Erro: a Zenvia cobra as 'Não Entregue', a Mesa não conta); custo_cobrado = total_cost da Zenvia; msgs = disparos de todos
+    os status; msgs_cobradas = Enviada + Entregue + Lida. Mesma régua de _load_crm_cpa_raw (aba 📨) e do RMA. Substitui
+    alex_zenvia_sender (mensageria da empresa inteira, ~9× maior) no canal CRM da aba 💰, no bloco 📡 e no card CRM da 📣.
+    Sem tabela → DataFrame vazio."""
+    cols = ['report_date', 'msgs', 'msgs_cobradas', 'custo_cobrado', 'custo_regua']
+    try:
+        d = cquery("""SELECT report_date,
+                             SUM(total_messages) AS msgs,
+                             SUM(CASE WHEN status IN ('Enviada','Entregue','Lida') THEN total_messages ELSE 0 END) AS msgs_cobradas,
+                             ROUND(SUM(total_cost), 2) AS custo_cobrado,
+                             ROUND(SUM(CASE WHEN status IN ('Enviada','Entregue','Lida') THEN total_messages ELSE 0 END) * 0.32, 2) AS custo_regua
+                      FROM alex_zenvia_template_status
+                      WHERE UPPER(template_name) LIKE '%%GT7%%'
+                      GROUP BY 1""")
+        d['report_date'] = pd.to_datetime(d['report_date'])
+        for c in cols[1:]:
+            d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0.0)
+        return d[cols]
+    except Exception:
+        return pd.DataFrame(columns=cols)
+
 CRM_INVEST_COLS = ['data_investimento', 'canal', 'plataforma', 'branding', 'leads', 'venda', 'vol_leads', 'vol_vendas']
 
 def build_crm_invest_rows():
     """Linhas de investimento do canal/plataforma 'CRM' no formato de RESUMO_INVESTIMENTO_DIARIO, para que o
     CRM entre nos filtros, na tabela e nos gráficos da aba Investimento (R5, 26/08).
-      - custo = mensageria Zenvia (alex_zenvia_sender.total_price, todos os remetentes), lançado na categoria
+      - custo = CRM de Aquisição na régua da Mesa (R57, 01/10: load_zenvia_gt7().custo_regua — templates GT7, Enviada+Entregue+Lida
+        × R$ 0,32; antes era alex_zenvia_sender.total_price, todos os remetentes da empresa, ~9× maior), lançado na categoria
         'venda' (disparos de conversão/reimpacto; o Zenvia não abre branding/leads/venda);
       - vol_leads / vol_vendas = eventos GA atribuídos a whatsapp/sms/crm (alex_crm_wpp_sms_*), DISJUNTOS das
         fontes pagas — somam sem dupla contagem.
     RESUMO_INVESTIMENTO_DIARIO não tem linhas de CRM (conferido em 26/08), então nada é contado duas vezes.
     Sem tabelas → DataFrame vazio (a aba fica como antes)."""
-    zen = load_zenvia()
+    zen = load_zenvia_gt7()  # R57: régua da Mesa (antes load_zenvia(): todos os remetentes)
     crm_leads, crm_vendas = load_crm_wpp_sms()
     parts = []
     if not zen.empty:
-        parts.append(zen.groupby('report_date')['total_price'].sum().rename('venda'))
+        parts.append(zen.groupby('report_date')['custo_regua'].sum().rename('venda'))
     if not crm_leads.empty:
         parts.append(crm_leads.groupby('date')['event_count'].sum().rename('vol_leads'))
     if not crm_vendas.empty:
@@ -2815,9 +2841,10 @@ def _aba_tab3():
         _crm_on = ('CRM' in canais_invest) and ('CRM' in plataformas_invest)
         st.caption(
             ("ℹ️ **CRM ativo** nos filtros: " if _crm_on else "ℹ️ Selecione **CRM** em Canal *e* Plataforma para incluir: ")
-            + "custo de mensageria **Zenvia** (todos os remetentes, lançado na categoria *Venda*) + leads e vendas "
-              "atribuídos a **WhatsApp/SMS no GA**. Entra na tabela e nos gráficos como qualquer outra plataforma; "
-              "o detalhe por remetente continua no bloco 📡 abaixo. As barras 🎯 globais seguem só com mídia paga."
+            + "investimento do **CRM de Aquisição** na régua da Mesa / aba 📨 (disparos de templates GT7 Enviada + Entregue + Lida "
+              "× R$ 0,32, lançado na categoria *Venda*) + leads e vendas atribuídos a **WhatsApp/SMS no GA** (mkt_direto). "
+              "Entra na tabela, nos gráficos e nos Indicadores de Eficiência como qualquer outra plataforma; a mensageria da "
+              "empresa inteira (todos os remetentes) fica só na ponte do bloco 📡 abaixo. As barras 🎯 globais seguem só com mídia paga."
         )
     
     df_inv_filt = df_invest[
@@ -3101,10 +3128,21 @@ def _aba_tab3():
         _cv_c = _per_t3(_crm_vendas_t3, 'date', c_s, ref_datetime)
         _cv_p = _per_t3(_crm_vendas_t3, 'date', p_s, p_partial)
 
-        _msgs_c = float(_z_c['total_messages'].sum()) if not _z_c.empty else 0.0
-        _msgs_p = float(_z_p['total_messages'].sum()) if not _z_p.empty else 0.0
-        _cost_c = float(_z_c['total_price'].sum()) if not _z_c.empty else 0.0
-        _cost_p = float(_z_p['total_price'].sum()) if not _z_p.empty else 0.0
+        # R57 (01/10): mensagens e custo do CRM = Instância de Aquisição (templates GT7) na régua da Mesa / aba 📨;
+        # o total da empresa (todos os remetentes, alex_zenvia_sender) fica em _emp_* e só aparece na ponte.
+        _zg_t3 = load_zenvia_gt7()
+        _zg_c = _per_t3(_zg_t3, 'report_date', c_s, ref_datetime)
+        _zg_p = _per_t3(_zg_t3, 'report_date', p_s, p_partial)
+        _msgs_c = float(_zg_c['msgs'].sum()) if not _zg_c.empty else 0.0
+        _msgs_p = float(_zg_p['msgs'].sum()) if not _zg_p.empty else 0.0
+        _msgsc_c = float(_zg_c['msgs_cobradas'].sum()) if not _zg_c.empty else 0.0
+        _msgsc_p = float(_zg_p['msgs_cobradas'].sum()) if not _zg_p.empty else 0.0
+        _cost_c = float(_zg_c['custo_regua'].sum()) if not _zg_c.empty else 0.0
+        _cost_p = float(_zg_p['custo_regua'].sum()) if not _zg_p.empty else 0.0
+        _emp_msgs_c = float(_z_c['total_messages'].sum()) if not _z_c.empty else 0.0
+        _emp_msgs_p = float(_z_p['total_messages'].sum()) if not _z_p.empty else 0.0
+        _emp_cost_c = float(_z_c['total_price'].sum()) if not _z_c.empty else 0.0
+        _emp_cost_p = float(_z_p['total_price'].sum()) if not _z_p.empty else 0.0
         _leads_c = float(_cl_c['event_count'].sum()) if not _cl_c.empty else 0.0
         _leads_p = float(_cl_p['event_count'].sum()) if not _cl_p.empty else 0.0
         _vend_c = float(_cv_c['event_count'].sum()) if not _cv_c.empty else 0.0
@@ -3112,7 +3150,7 @@ def _aba_tab3():
         _cpv_c = (_cost_c / _vend_c) if _vend_c > 0 else 0.0
         _cpv_p = (_cost_p / _vend_p) if _vend_p > 0 else 0.0
 
-        if _zen_t3.empty and _crm_leads_t3.empty and _crm_vendas_t3.empty:
+        if _zg_t3.empty and _zen_t3.empty and _crm_leads_t3.empty and _crm_vendas_t3.empty:
             st.info("Tabelas de CRM/Zenvia ainda não disponíveis no banco.")
         else:
             def _split_src_t3(dfx, prefix):
@@ -3122,9 +3160,11 @@ def _aba_tab3():
                 return float(dfx.loc[s.str.startswith(prefix), 'event_count'].sum())
 
             rows_crm = [
-                {'Métrica': '💬 Mensagens enviadas (Zenvia)', '_level': 0, '_is_eff': False,
+                {'Métrica': '💬 Disparos do CRM de Aquisição (templates GT7, todos os status)', '_level': 0, '_is_eff': False,
                  'Atual': format_br(_msgs_c), 'vs Anterior (Parcial)': fmt_val_delta(_msgs_c, _msgs_p)},
-                {'Métrica': '💸 Custo mensageria (Zenvia)', '_level': 0, '_is_eff': True,
+                {'Métrica': 'cobrados na régua (Enviada + Entregue + Lida)', '_level': 1, '_is_eff': False,
+                 'Atual': format_br(_msgsc_c), 'vs Anterior (Parcial)': fmt_val_delta(_msgsc_c, _msgsc_p)},
+                {'Métrica': '💸 Investimento CRM — régua da Mesa (cobrados × R$ 0,32)', '_level': 0, '_is_eff': True,
                  'Atual': format_money(_cost_c), 'vs Anterior (Parcial)': fmt_val_delta_money(_cost_c, _cost_p)},
                 {'Métrica': '📢 Leads CRM (Wpp/SMS)', '_level': 0, '_is_eff': False,
                  'Atual': format_br(_leads_c), 'vs Anterior (Parcial)': fmt_val_delta(_leads_c, _leads_p)},
@@ -3142,12 +3182,13 @@ def _aba_tab3():
                 {'Métrica': 'SMS', '_level': 1, '_is_eff': False,
                  'Atual': format_br(_split_src_t3(_cv_c, 'sms')),
                  'vs Anterior (Parcial)': fmt_val_delta(_split_src_t3(_cv_c, 'sms'), _split_src_t3(_cv_p, 'sms'))},
-                {'Métrica': '🎯 Custo por venda CRM', '_level': 0, '_is_eff': True,
+                {'Métrica': '🎯 CPA do CRM de Aquisição (régua da Mesa)', '_level': 0, '_is_eff': True,
                  'Atual': format_money(_cpv_c), 'vs Anterior (Parcial)': fmt_val_delta_money(_cpv_c, _cpv_p)},
             ]
             _st_mt(rows_crm, ['Métrica', 'Atual', 'vs Anterior (Parcial)'])
-            st.caption("ℹ️ O custo Zenvia é o total de mensageria (todos os disparos), não atribuído "
-                       "por campanha — o custo por venda CRM é uma aproximação.")
+            st.caption("ℹ️ Mesma régua da aba 📨 CRM e do RMA: só a Instância de Aquisição (templates com 'GT7' no nome), "
+                       "disparos Enviada + Entregue + Lida × R$ 0,32 — 'Não Entregue' (que a Zenvia cobra) e Erro ficam fora. "
+                       "A mensageria da empresa inteira está na ponte abaixo.")
 
             # ---- ponte com a aba 📨 CRM: o mesmo período, os dois recortes lado a lado ----
             _c8i, _c8i_err = load_crm_cpa()
@@ -3159,7 +3200,7 @@ def _aba_tab3():
                 _gt7_v_c, _gt7_v_p = float(_c8i_c['vendas_ga'].sum()), float(_c8i_p['vendas_ga'].sum())
                 rows_ponte = [
                     {'Métrica': '🏢 Mensageria da empresa — todos os remetentes (cobrado pela Zenvia)', '_level': 0, '_is_eff': True,
-                     'Atual': format_money(_cost_c), 'vs Anterior (Parcial)': fmt_val_delta_money(_cost_c, _cost_p)},
+                     'Atual': format_money(_emp_cost_c), 'vs Anterior (Parcial)': fmt_val_delta_money(_emp_cost_c, _emp_cost_p)},
                     {'Métrica': 'Instância de Aquisição — templates GT7, cobrado (inclui Não Entregue)', '_level': 1, '_is_eff': True,
                      'Atual': format_money(_gt7_zen_c), 'vs Anterior (Parcial)': fmt_val_delta_money(_gt7_zen_c, _gt7_zen_p)},
                     {'Métrica': 'Instância de Aquisição — régua da aba 📨 CRM (Enviada+Entregue+Lida × R$ 0,32)', '_level': 1, '_is_eff': True,
@@ -3174,14 +3215,13 @@ def _aba_tab3():
                 _st_mt(rows_ponte, ['Métrica', 'Atual', 'vs Anterior (Parcial)'])
                 st.markdown(
                     "<div style='border-radius:12px;padding:12px 14px;background:#f8fafc;font-size:12.5px;color:#0f172a;line-height:1.5;'>"
-                    "<b>Por que os dois números são tão diferentes.</b> O bloco acima soma <b>toda</b> a mensageria da empresa "
+                    "<b>Mesma régua da aba 📨 CRM e do RMA (R57, 01/10).</b> As linhas acima, o canal <b>CRM</b> da tabela de investimento, "
+                    "os Indicadores de Eficiência e o card CRM da 📣 usam só a <b>Instância de Aquisição</b> (templates com 'GT7' no "
+                    "nome) na régua da BD_CRM: mensagens Enviada + Entregue + Lida × R$ 0,32 (a Zenvia cobra também as 'Não Entregue'; "
+                    "a Mesa não conta). A linha <i>Mensageria da empresa</i> soma <b>toda</b> a mensageria cobrada pela Zenvia "
                     "(remetentes <i>CDT Relacionamento 9713</i>, <i>CDT Nacional 7537</i>, Energia de Todos, TIM/Tutti, SMS…): "
-                    "em ago/26 foram ~1,03 milhão de mensagens e ~R$ 302 mil, dos quais ~90% são réguas de relacionamento e "
-                    "engajamento com a base (retenção), não aquisição. A aba 📨 CRM e o relatório da Mesa olham só a "
-                    "<b>Instância de Aquisição</b> (templates com 'GT7' no nome — ~108 mil mensagens em ago/26) e usam a régua da "
-                    "BD_CRM: mensagens Enviada + Entregue + Lida × R$ 0,32 (a Zenvia cobra também as 'Não Entregue'; a Mesa não "
-                    "conta). <b>Quando usar cada um:</b> este bloco para custo total de mensageria (orçamento/contrato Zenvia, "
-                    "visão da empresa); a aba 📨 para CPA e CPL do marketing direto de aquisição (a régua do relatório mensal).</div>",
+                    "~R$ 250–300 mil/mês, dos quais ~90% são réguas de relacionamento e engajamento com a base (retenção), não "
+                    "aquisição — serve para orçamento/contrato Zenvia (visão da empresa), nunca para CPA/CPL de aquisição.</div>",
                     unsafe_allow_html=True)
 
             if not _z_c.empty:
@@ -3375,8 +3415,8 @@ def _aba_tab4():
         ver_camp = col_cm3.radio("Visualização:", ["Agregado", "Por Campanha"], horizontal=True, key='t4_view')
 
         if crm_is_selected and not group_mode:
-            st.caption("ℹ️ CRM não tem custo por campanha no banco — os cards usam o custo total de "
-                       "mensageria (Zenvia, tabela nova alex_zenvia_sender) no período como aproximação; "
+            st.caption("ℹ️ CRM não tem custo por campanha no banco — os cards usam o investimento do CRM de Aquisição "
+                       "(régua da Mesa / aba 📨: templates GT7 Enviada + Entregue + Lida × R$ 0,32, alex_zenvia_template_status) no período; "
                        "eventos filtrados por session_source_medium.")
 
         if not campanhas_sel:
@@ -3469,25 +3509,25 @@ def _aba_tab4():
                 _metric_card(mc5, "CPL médio",
                              (format_money(cpl_avg) if cpl_avg is not None else "—"), "#7c3aed")
             else:
-                # CRM: sem custo por campanha, mas o custo TOTAL de mensageria (Zenvia)
+                # CRM: sem custo por campanha; R57 (01/10): investimento = régua da Mesa (templates GT7 cobrados × R$ 0,32)
                 # do período dá um CPA/CPL aproximado — melhor que nada, e sinalizado.
-                _zen_t4 = load_zenvia()
+                _zen_t4 = load_zenvia_gt7()
                 _zen_p_t4 = (_zen_t4[(_zen_t4['report_date'] >= cmp_start) & (_zen_t4['report_date'] <= cmp_end)]
                              if not _zen_t4.empty else _zen_t4)
-                _zen_cost = float(_zen_p_t4['total_price'].sum()) if not _zen_p_t4.empty else 0.0
-                _zen_msgs = float(_zen_p_t4['total_messages'].sum()) if not _zen_p_t4.empty else 0.0
+                _zen_cost = float(_zen_p_t4['custo_regua'].sum()) if not _zen_p_t4.empty else 0.0
+                _zen_msgs = float(_zen_p_t4['msgs_cobradas'].sum()) if not _zen_p_t4.empty else 0.0
                 _cpa_crm = (_zen_cost / tot_purch) if (tot_purch > 0 and _zen_cost > 0) else None
                 _cpl_crm = (_zen_cost / tot_leads) if (tot_leads > 0 and _zen_cost > 0) else None
                 mc1, mc2, mc3, mc4, mc5 = st.columns(5)
-                _metric_card(mc1, "Custo mensageria (Zenvia)", format_money(_zen_cost), "#2563eb")
+                _metric_card(mc1, "Investimento CRM (régua da Mesa)", format_money(_zen_cost), "#2563eb")
                 _metric_card(mc2, "Ev. de compra", format_br(tot_purch), "#16a34a")
-                _metric_card(mc3, "CPA aprox.",
+                _metric_card(mc3, "CPA (régua)",
                              (format_money(_cpa_crm) if _cpa_crm is not None else "—"), "#d97706")
                 _metric_card(mc4, "Ev. de lead", format_br(tot_leads), "#0891b2")
-                _metric_card(mc5, "CPL aprox.",
+                _metric_card(mc5, "CPL (régua)",
                              (format_money(_cpl_crm) if _cpl_crm is not None else "—"), "#7c3aed")
                 if _zen_msgs > 0:
-                    st.caption(f"💬 {format_br(_zen_msgs)} mensagens enviadas (Zenvia) no período.")
+                    st.caption(f"💬 {format_br(_zen_msgs)} disparos GT7 cobrados (Enviada + Entregue + Lida) no período.")
             st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
             # ---- chart ----
@@ -7690,9 +7730,9 @@ def _aba_tab8():
                        "(API Zenvia, exclui 'Não Entregue'); vendas = GA4 com `sessionSourceMedium` contendo "
                        "**mkt_direto** (`alex_crm_wpp_sms_vendas`). Validado contra a BD_CRM_V2: ago/26 = 1.152 vendas "
                        "e custo diário idêntico (o dia 31/08 está zerado só LÁ). Sem dependência de preenchimento manual. "
-                       "**Não confundir** com o bloco 'CRM & Mensageria' da aba 💰 Investimento: lá é a mensageria da empresa inteira "
-                       "(todos os remetentes, ~R$ 300 mil/mês, 90% relacionamento/engajamento com a base, cobrado pela Zenvia); aqui é "
-                       "só a Instância de Aquisição (templates GT7) na régua da BD_CRM — a ponte entre os dois está naquele bloco.")
+                       "O bloco 'CRM & Mensageria' da aba 💰 Investimento, o canal CRM da tabela de investimento e o card CRM da 📣 usam "
+                       "esta mesma régua desde 01/10 (R57); o total de mensageria da empresa (todos os remetentes, ~R$ 250–300 mil/mês, "
+                       "90% relacionamento/engajamento) aparece só na ponte daquele bloco.")
         else:
             _c8['gasto'] = _c8['gasto_zenvia']
             _c8['vendas'] = _c8['vendas_crm']
