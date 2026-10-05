@@ -344,8 +344,12 @@ GLOSSARIO = {
         o="Talkerchat", a="📞", s=["Tickets", "Usuários únicos"]),
     'Qualificado (CPF validado, não cliente)': dict(sec="WhatsApp (Talkerchat)",
         d="Usuário sem SAC cujo CPF foi lido nas mensagens e que não foi barrado como cliente (motivo do ticket fora de 'Transferido/Redirecionado para o SAC' e 'CPF já Cadastrado'). É o 'CPF validado como não cliente' pedido pelo time (01/10) — antes contava só quem informou o CPF.",
-        p="Piso: a carga só lê o CPF nos motivos Link enviado, Compra reportada, SAC e CPF já cadastrado; conversas da Lia fechadas por fim de expediente / sem interação / janela encerrada não têm CPF lido.",
+        p="Até 05/10 a carga só lia o CPF (nas mensagens) em 4 motivos — piso. Desde o Talkerchat.gs v1.4 o CPF vem do objeto de contato da API ('Dados pessoais') para todos os motivos, com backfill desde abr/26; a série sobe à medida que o backfill avança.",
         o="Talkerchat (leitura das mensagens) + motivo de fechamento", a="📞", s=["Qualificados", "Qualificado (com CPF)", "CPF validado"]),
+    'Fila Triagem / fila Televendas': dict(sec="WhatsApp (Talkerchat)",
+        d="Desde 30/09 a triagem da Lia roda na fila Triagem. Quem escolhe 'quero ser cliente' tem o ticket movido para a fila Televendas (mesmo ticket) — é a intenção de compra declarada, o topo do funil do time humano. Quem não escolhe fica na Triagem (Redirecionado para o SAC ou Inatividade). Outras filas: Pré-venda (automático), SAC Coleta NPS, TIM Reaquecimento.",
+        p="Válido de out/26 em diante; set/26 e antes usam a régua 'sem SAC' e não são comparáveis no topo.",
+        o="Talkerchat (queue)", a="📞", s=["Triagem", "Chegaram à fila Televendas", "intenção declarada", "quero ser cliente"]),
     'Usuário sem SAC': dict(sec="WhatsApp (Talkerchat)",
         d="Usuário único (tel-8) com ao menos um ticket no período fora dos motivos de SAC (Transferido/Redirecionado para o SAC) e de 'CPF já Cadastrado'. Quem só teve tickets desses motivos já é cliente e fica fora do funil (o volume aparece na nota do topo).",
         o="Talkerchat (close_reason_id 4, 174, 186, 5)", a="📞", s=["sem SAC", "só SAC", "Leads sem SAC"]),
@@ -5353,6 +5357,19 @@ def _aba_tab6():
         tl_ctn = _tv_val(S, 'leads_sem_sac_ctn'); tq_ctn = _tv_val(S, 'qualif_ctn'); th_ctn = _tv_val(S, 'humano_ctn')
         tl_ss_p = _tv_val(S, 'leads_sem_sac', meses=_tv_per_p); tq_nc_p = _tv_val(S, 'qualif_nao_cliente', meses=_tv_per_p)
         _r58 = tl_ss is not None
+        # R60 (05/10): métricas por fila (Triagem × Televendas), válidas de 30/09 em diante
+        tl_ftv = _tv_val(S, 'leads_fila_tv'); tl_ftv_h = _tv_val(S, 'leads_fila_tv_humano'); tl_ftv_q = _tv_val(S, 'leads_fila_tv_qualif')
+        tl_ftv_qh = _tv_val(S, 'leads_fila_tv_qualif_humano'); tl_ftv_ctn = _tv_val(S, 'leads_fila_tv_ctn'); tl_ftv_hctn = _tv_val(S, 'leads_fila_tv_humano_ctn')
+        tl_ftv_cli = _tv_val(S, 'leads_fila_tv_so_cliente'); tl_tri = _tv_val(S, 'leads_so_triagem'); tl_tri_sac = _tv_val(S, 'leads_so_triagem_sac')
+        tl_out = _tv_val(S, 'leads_outras_filas'); tk_tri = _tv_val(S, 'tickets_triagem'); tk_ftv_lia = _tv_val(S, 'tickets_fila_tv_lia')
+        tk_ftv_h = _tv_val(S, 'tickets_fila_tv_humano')
+        tl_ftv_p = _tv_val(S, 'leads_fila_tv', meses=_tv_per_p); tl_ftv_q_p = _tv_val(S, 'leads_fila_tv_qualif', meses=_tv_per_p)
+        _FILA_DESDE = pd.Timestamp('2026-09-30')   # fila Triagem existe desde 30/09: o funil por fila só vale para períodos que começam depois
+        try:
+            _fila_ini_ok = pd.Timestamp(min(_tv_per)) >= _FILA_DESDE
+        except Exception:
+            _fila_ini_ok = False
+        _fila_ok = bool(_r58 and tl_ftv is not None and tl and _fila_ini_ok and (tl_tri or 0) >= 0.3 * tl)   # fluxo com fila Triagem dominante
         _nv58_hum = _tv_val(S, 'nv_tv_humano'); _nv58_wpp = _tv_val(S, 'nv_tv_wpp'); _nv58_lia = _tv_val(S, 'nv_lia')
         _nv58_hum_p = _tv_val(S, 'nv_tv_humano', meses=_tv_per_p); _nv58_wpp_p = _tv_val(S, 'nv_tv_wpp', meses=_tv_per_p)
         tcrm_l = _tv_val(S, 'leads_cpf'); tcrm_c = _tv_val(S, 'com_contato_hs'); tcrm_d = _tv_val(S, 'com_deal_criado_no_mes'); tcrm_dq = _tv_val(S, 'com_deal_qualquer_epoca')
@@ -5403,12 +5420,21 @@ def _aba_tab6():
                 (f"{_tv_n(tk)} tickets {_tv_delta(tk, tk_p)} · " + f"{tk / tl:.2f}".replace('.', ',') + " por usuário"
                  + (f" · {_tv_n(tlc_id)} contatos (contact_id)" if tlc_id is not None else "")
                  + (f" · <b>sem SAC {_tv_n(tl_ss)}</b> {_tv_delta(tl_ss, tl_ss_p)} · só SAC/já cliente {_tv_n(tl_so)}" if _r58 else "")) if tk and tl else "")
-        if _r58:
+        if _fila_ok:
+            _tv_kpi(k2, "🪪", "Chegaram à fila Televendas · qualificados (CPF)", f"{_tv_pct(tl_ftv, tl)} {_tv_delta(tl_ftv, tl_ftv_p)} · {_tv_pct(tl_ftv_q, tl_ftv)}",
+                    f"{_tv_n(tl_ftv)} usuários disseram 'quero ser cliente' na triagem · {_tv_n(tl_ftv_q)} com CPF validado (não cliente) "
+                    f"{_tv_delta(tl_ftv_q, tl_ftv_q_p)} · {_tv_n(tl_ftv_cli)} barrados depois (CPF já cadastrado)")
+        elif _r58:
             _tv_kpi(k2, "🪪", "Qualificados (CPF validado, não cliente)", f"{_tv_pct(tq_nc, tl_ss)} {_tv_delta(tq_nc, tq_nc_p)}",
                     f"{_tv_n(tq_nc)} dos {_tv_n(tl_ss)} usuários sem SAC · CPF lido e não cadastrado · piso (ver nota 🧭)")
         else:
             _tv_kpi(k2, "🪪", "Qualificados (com CPF)", f"{_tv_pct(tcpf, tl)}", f"{_tv_n(tcpf)} usuários com CPF capturado nas mensagens")
-        if tk_sac is not None:  # agregado já traz a separação triagem → SAC × Lia vendas (18/09)
+        if _fila_ok:
+            _tv_kpi(k3, "🤖", "Triagem × Lia vendas × humano — tickets (por fila)",
+                    f"{_tv_pct(tk_tri, tk)} · {_tv_pct(tk_ftv_lia, tk)} · {_tv_pct(tk_ftv_h, tk)}",
+                    f"{_tv_n(tk_tri)} ficaram na fila Triagem · {_tv_n(tk_ftv_lia)} na fila Televendas só com a Lia · {_tv_n(tk_ftv_h)} com atendente · "
+                    f"usuários: {_tv_pct(tl_tri, tl)} ficaram na triagem ({_tv_pct(tl_tri_sac, tl_tri)} deles redirecionados ao SAC)", color="#2e8a4f")
+        elif tk_sac is not None:  # agregado já traz a separação triagem → SAC × Lia vendas (18/09)
             _tv_kpi(k3, "🤖", "Lia (vendas) × triagem → SAC × humano — tickets",
                     f"{_tv_pct(tk_lia, tk)} · {_tv_pct(tk_sac, tk)} · {_tv_pct(tk_h, tk)}",
                     f"{_tv_n(tk_lia)} Lia · {_tv_n(tk_sac)} triagem → SAC · {_tv_n(tk_h)} com atendente · "
@@ -5452,7 +5478,17 @@ def _aba_tab6():
         # ---- funil + série mensal + notas ----
         c1, c2 = st.columns([1.9, 1])
         with c1:
-            if _r58:
+            if _fila_ok:
+                _tv_funil("Funil Talkerchat — time humano (fila Televendas)", [
+                    ("💬", "Tickets", tk, f"conversas criadas no período · {_tv_n(tk_tri)} ficaram na fila Triagem"),
+                    ("👤", "Usuários únicos", tl, f"tel-8 · {_tv_n(tl_tri)} só na Triagem ({_tv_n(tl_tri_sac)} redirecionados ao SAC) · {_tv_n(tl_out)} em outras filas"),
+                    ("🎯", "Chegaram à fila Televendas", tl_ftv, "disseram 'quero ser cliente' na triagem — o ticket troca de fila (intenção de compra declarada)"),
+                    ("🪪", "Qualificados (CPF validado, não cliente)", tl_ftv_q, f"CPF lido e não cadastrado · {_tv_n(tl_ftv_cli)} barrados como 'CPF já cadastrado' · fatia dos que chegaram à fila", 2),
+                    ("🧑‍💼", "Chegaram a um humano", tl_ftv_h, "agent_id em algum ticket — fatia dos que chegaram à fila", 2),
+                    ("🏷️", "Vendas (CTN) — IDPVs humanos de Televendas", _nv58_hum, "NOMINAL por IDPV do vendedor, venda do dia · % lida sobre quem chegou à fila", 2),
+                    ("📱", "└ pelo IDPV WhatsApp", _nv58_wpp, "IDPV '… ATENDIMENTO WHATSAPP' · fatia das Vendas (CTN) humano", 5),
+                ], subtitle=f"{_tv_per_lbl} · fila Triagem desde 30/09 · venda por IDPV (pedido do Badaró) · Lia à parte, abaixo")
+            elif _r58:
                 _tv_funil("Funil Talkerchat — time humano (WhatsApp, sem SAC)", [
                     ("💬", "Tickets fora do SAC", tk_ss, f"de {_tv_n(tk)} tickets criados no período · fora: Transferido/Redirecionado para o SAC e 'CPF já Cadastrado'"),
                     ("👤", "Usuários únicos sem SAC", tl_ss, f"tel-8 com ao menos um ticket fora do SAC · {_tv_n(tl_so)} usuários só com SAC (já clientes) ficam fora"),
@@ -5476,7 +5512,13 @@ def _aba_tab6():
                              "Tickets por mês — Lia × triagem → SAC × humano" if tk_sac is not None else "Tickets por mês — bot × humano",
                              subtitle="close_reason 4 (Transferido para SAC) = triagem · agent_id = humano · resto = Lia" if tk_sac is not None else "attended_by_bot / agent_id da API",
                              stacked=True, rotulos=True, fonte="API Talkerchat (alex_talkerchat_api)")
-            if _r58:
+            if _fila_ok:
+                _tv_chart_mensal(_tv_long(S, ['leads_so_triagem', 'leads_fila_tv', 'leads_fila_tv_qualif', 'leads_fila_tv_humano'], meses=_mg7,
+                                          labels={'leads_so_triagem': 'Só na Triagem', 'leads_fila_tv': 'Chegaram à fila Televendas',
+                                                  'leads_fila_tv_qualif': 'Qualificados (CPF)', 'leads_fila_tv_humano': 'Chegaram a um humano'}),
+                                 "Funil por mês — por fila (desde 30/09)", subtitle="usuários únicos (tel-8) · meses anteriores a out/26 ficam em zero (a fila Triagem não existia)",
+                                 stacked=False, rotulos=True, fonte="API Talkerchat (alex_talkerchat_api) · queue")
+            elif _r58:
                 _tv_chart_mensal(_tv_long(S, ['leads_sem_sac', 'qualif_nao_cliente', 'leads_humano_sem_sac'], meses=_mg7,
                                           labels={'leads_sem_sac': 'Usuários sem SAC', 'qualif_nao_cliente': 'Qualificados (não cliente)',
                                                   'leads_humano_sem_sac': 'Chegaram a um humano'}),
@@ -5488,15 +5530,31 @@ def _aba_tab6():
                                  "Compras reportadas por mês — Lia × humano", subtitle="close_reason = 'Compra reportada'",
                                  stacked=True, rotulos=True, fonte="API Talkerchat (alex_talkerchat_api)")
         with c2:
-            if _r58:
+            if _fila_ok:
+                _tv_note(
+                    f"<b>Funil por fila (desde 30/09).</b> A triagem da Lia passou a rodar na fila <b>Triagem</b>: quem escolhe 'quero ser cliente' "
+                    f"tem o ticket movido para a fila <b>Televendas</b> (mesmo ticket); quem não escolhe fica na Triagem e fecha como "
+                    f"'Redirecionado para o SAC' (outros assuntos / já cliente) ou 'Inatividade'. Por isso o topo útil do funil é "
+                    f"<b>chegaram à fila Televendas</b> = intenção de compra declarada — não depende de o CPF ter sido lido. No período: "
+                    f"{_tv_n(tl_tri)} usuários ({_tv_pct(tl_tri, tl)}) ficaram na Triagem, {_tv_n(tl_tri_sac)} deles redirecionados ao SAC; "
+                    f"{_tv_n(tl_out)} ({_tv_pct(tl_out, tl)}) passaram só por outras filas (Pré-venda automático, NPS, TIM).<br><br>"
+                    f"<b>Qualificado</b> = CPF lido e não cadastrado (objeto de contato da API; backfill em andamento). "
+                    f"<b>Venda</b> = CTN por IDPV (pedido do Badaró), no dia. Referência pela régua do telefone (tel-8 × CTN no mesmo período): "
+                    f"<b>{_tv_n(tl_ftv_ctn)}</b> dos que chegaram à fila filiaram ({_tv_pct(tl_ftv_ctn, tl_ftv)}); dos que chegaram a um humano, "
+                    f"{_tv_n(tl_ftv_hctn)} ({_tv_pct(tl_ftv_hctn, tl_ftv_h)}). Dos usuários da fila Televendas, {_tv_pct(tl_ftv_h, tl_ftv)} "
+                    f"chegaram a um atendente — o resto ficou com a Lia (link de adesão). Set/26 e antes seguem a régua 'sem SAC' (R58): "
+                    f"os dois funis não são comparáveis no topo. Compra reportada e CPF ±3 d no expander 📋.",
+                    bg="#f0fdf4", icon="🧭")
+            elif _r58:
                 _tv_note(
                     f"<b>Régua nova (01/10, pedido do time de Televendas).</b> O funil parte dos usuários <b>sem SAC</b>: quem só teve tickets "
                     f"'Transferido/Redirecionado para o SAC' ou 'CPF já Cadastrado' já é cliente e fica fora ({_tv_n(tl_so)} usuários, "
                     f"{_tv_pct(tl_so, tl)} do total). <b>Qualificado</b> = CPF lido nas mensagens <i>e</i> motivo fora desses — o 'CPF validado "
                     f"como não cliente'. É um <b>piso</b>: a carga só lê o CPF nos motivos Link enviado, Compra reportada, SAC e CPF já "
                     f"cadastrado; a Lia não grava CPF nas conversas fechadas por fim de expediente, sem interação ou janela encerrada "
-                    f"(por isso {_tv_n(tq_h)} dos {_tv_n(tq_nc)} qualificados são de atendente humano). Para subir o piso: estender o "
-                    f"<code>CPF_ENRICH</code> do Talkerchat.gs a todos os motivos fora do SAC, ou pedir à D3 o campo CPF / as etiquetas na API.<br><br>"
+                    f"(por isso {_tv_n(tq_h)} dos {_tv_n(tq_nc)} qualificados são de atendente humano). <b>Em correção desde 05/10:</b> a API "
+                    f"passou a expor o objeto de contato (CPF estruturado) e o Talkerchat.gs v1.4 lê o CPF de lá para todos os motivos — o backfill "
+                    f"desde abr/26 está em andamento e os qualificados sobem a cada recarga.<br><br>"
                     f"<b>Venda</b> = CTN por IDPV (pedido do Badaró), no dia da filiação — inclui o que o operador fechou por telefone; a fatia "
                     f"'pelo IDPV WhatsApp' isola a superfície. Referência pela régua do <b>telefone</b> (tel-8 × CTN no mesmo período, a mesma "
                     f"do Escallo): <b>{_tv_n(tl_ctn)}</b> usuários sem SAC filiaram ({_tv_pct(tl_ctn, tl_ss)}); dos qualificados, {_tv_n(tq_ctn)} "
@@ -6275,14 +6333,36 @@ def _load_clevertap_raw():
     for c in ('eventos', 'usuarios'):
         ut[c] = pd.to_numeric(ut[c], errors='coerce')
     try:
-        sg = cquery("SELECT report_date AS dia, os, SUM(tracker_installs) AS installs FROM alex_singular_installs "
-                    "WHERE os IN ('Android', 'iOS') GROUP BY 1, 2", ttl=0)
+        # R61: Singular pelas views (sql/singular_views.sql, 05/10): installs = Σ tracker_installs (inclui Organic); pago = is_organic = 0
+        sg = cquery("SELECT dia, os, installs, organico, pago, google, meta, tiktok, jampp, outras_redes FROM vw_singular_downloads_dia", ttl=0)
         sg['dia'] = pd.to_datetime(sg['dia'])
         sg['mes'] = sg['dia'].dt.to_period('M').dt.to_timestamp()
-        sg['installs'] = pd.to_numeric(sg['installs'], errors='coerce')
+        for c in _SG_COLS:
+            sg[c] = pd.to_numeric(sg[c], errors='coerce')
     except Exception:
-        sg = pd.DataFrame(columns=['dia', 'os', 'installs', 'mes'])
+        sg = pd.DataFrame(columns=['dia', 'os'] + _SG_COLS + ['mes'])
     return ev, ut, sg
+
+
+_SG_COLS = ['installs', 'organico', 'pago', 'google', 'meta', 'tiktok', 'jampp', 'outras_redes']
+
+
+@st.cache_data(ttl=43200)
+def _load_singular_cpi_raw():
+    """R61: CPI por rede × mês × OS (vw_singular_cpi_mes): custo da campanha de Download ÷ tracker_installs (SDK);
+    google/meta/tiktok = adn_cost do Singular; jampp = spend_brl rateado. Custo Singular ≠ RESUMO (restatement, janela D-8)."""
+    d = cquery("SELECT mes, os, rede, installs, installs_rede, custo_brl, cpi, cpi_rede FROM vw_singular_cpi_mes", ttl=0)
+    d['mes'] = pd.to_datetime(d['mes'])
+    for c in ('installs', 'installs_rede', 'custo_brl', 'cpi', 'cpi_rede'):
+        d[c] = pd.to_numeric(d[c], errors='coerce')
+    return d
+
+
+def load_singular_cpi():
+    try:
+        return _load_singular_cpi_raw(), None
+    except Exception as e:
+        return pd.DataFrame(columns=['mes', 'os', 'rede', 'installs', 'installs_rede', 'custo_brl', 'cpi', 'cpi_rede']), f"{type(e).__name__}: {str(e)[:300]}"
 
 
 def load_clevertap():
@@ -6292,7 +6372,7 @@ def load_clevertap():
     except Exception as e:
         return (pd.DataFrame(columns=_CT_COLS + ['mes']),
                 pd.DataFrame(columns=['dia', 'plataforma', 'utm_source', 'utm_campaign', 'eventos', 'usuarios', 'mes']),
-                pd.DataFrame(columns=['dia', 'os', 'installs', 'mes']), f"{type(e).__name__}: {str(e)[:400]}")
+                pd.DataFrame(columns=['dia', 'os'] + _SG_COLS + ['mes']), f"{type(e).__name__}: {str(e)[:400]}")
 
 
 @_aba(tab7)
@@ -7569,7 +7649,7 @@ def _aba_tab7():
             f"comparação: {_ct_p_s:%d/%m/%Y} a {_ct_p_e:%d/%m/%Y}, mesmo trecho). Séries mensais: toggle abaixo. "
             "Fontes: API do CleverTap — `counts/trends` + `counts/top` (`alex_clevertap_eventos_dia`), export `events.json` de UTM Visited "
             "(`alex_clevertap_utm_dia`), Charged e Notification Clicked (`alex_clevertap_charged` / `_notif_click`), carga diária "
-            "`gt7 clevertap_export` às 10:20 (janela D-8 → D-1) — e installs do Singular (`alex_singular_installs`, GAS 09:30).")
+            "`gt7 clevertap_export` às 10:20 (janela D-8 → D-1) — e installs do Singular (`vw_singular_downloads_dia` / `vw_singular_cpi_mes` sobre `alex_singular_installs`, GAS 09:30).")
         _ct_h2.markdown(
             "<div style='border:1px solid #e2e8f0;border-radius:10px;padding:7px 12px;background:#fff;'>"
             "<div style='font-size:10.5px;color:#64748b;font-weight:600;'>CleverTap atualizado em</div>"
@@ -7718,6 +7798,52 @@ def _aba_tab7():
             _tv_chart_mensal(_ct_serie('App Launched', 'OS', ['Android', 'iOS']), "Aberturas do app por sistema (App Launched · eventos)",
                              "aberturas / mês", stacked=True, rotulos=True, subtitle="aberturas, não usuários: o DAU está no card; iOS ≈ 1/3 do uso",
                              fonte="alex_clevertap_eventos_dia (counts/top × OS, desde jun/26)")
+
+        # ---- 7a-bis · Singular pelas views (R61, 05/10): orgânico × pago e CPI por rede ----
+        if not _ctsg.empty and 'pago' in _ctsg.columns:
+            _sg_c1, _sg_c2 = st.columns(2)
+            with _sg_c1:
+                _sgm = _ctsg[_ctsg['mes'].isin(list(_ct_mg))]
+                _sg_op = (_sgm.groupby('mes', as_index=False)[['organico', 'pago']].sum()
+                          .melt(id_vars='mes', var_name='serie', value_name='valor'))
+                _sg_op['serie'] = _sg_op['serie'].map({'organico': 'Orgânico (sem mídia)', 'pago': 'Pago (atribuído a mídia)'})
+                _tv_chart_mensal(_sg_op, "Instalações do app (Singular) — orgânico × pago", "instalações / mês", stacked=True, rotulos=True,
+                                 subtitle="Android + iOS · pago = install com um toque de mídia na janela de atribuição",
+                                 fonte="vw_singular_downloads_dia (sobre alex_singular_installs)")
+                _sgp = _ct_jan(_ctsg, _ct_c_s, _ct_c_e)
+                if not _sgp.empty:
+                    _sg_tot = float(_sgp['installs'].sum()); _sg_pago = float(_sgp['pago'].sum())
+                    _sg_ios = _sgp[_sgp['os'] == 'iOS']
+                    _sg_redes = [('Google', 'google'), ('Meta', 'meta'), ('TikTok', 'tiktok'), ('Jampp', 'jampp'), ('outras redes', 'outras_redes')]
+                    st.caption(f"Período {_ct_c_s:%d/%m} a {_ct_c_e:%d/%m}: {_tv_n(_sg_tot)} instalações · pago {_tv_pct(_sg_pago, _sg_tot)} — "
+                               + " · ".join(f"{l} {_tv_n(float(_sgp[k].sum()))}" for l, k in _sg_redes)
+                               + (f" · iOS: pago {_tv_pct(float(_sg_ios['pago'].sum()), float(_sg_ios['installs'].sum()))} — o ATT joga o pago do iOS em orgânico"
+                                  if not _sg_ios.empty else ""))
+            with _sg_c2:
+                _sgc, _sgc_err = load_singular_cpi()
+                _tv_titulo("CPI por rede de mídia (Singular) — Android", "custo da campanha de Download ÷ instalações atribuídas pelo SDK · R$ por instalação", "A")
+                if _sgc_err:
+                    st.caption(f"vw_singular_cpi_mes indisponível: `{_sgc_err}`")
+                else:
+                    _sgc_m = _sgc[(_sgc['os'] == 'Android') & (_sgc['mes'].isin(list(_ct_mg)))]
+                    if _sgc_m.empty:
+                        st.caption("sem CPI para os meses do gráfico.")
+                    else:
+                        _sg_lbl = {'google': 'Google (UAC)', 'meta': 'Meta', 'tiktok': 'TikTok', 'jampp': 'Jampp'}
+                        _sgc_p = _sgc_m.pivot_table(index='rede', columns='mes', values='cpi', aggfunc='first').reindex(list(_sg_lbl))
+                        _sgc_i = _sgc_m.pivot_table(index='rede', columns='mes', values='installs', aggfunc='first').reindex(list(_sg_lbl))
+                        _sgc_p.columns = [f"{m:%m/%Y}" for m in _sgc_p.columns]; _sgc_i.columns = _sgc_p.columns
+                        _sgc_p.index = [_sg_lbl[r] for r in _sgc_p.index]; _sgc_i.index = _sgc_p.index
+                        _sg_fmt = lambda v: "—" if pd.isna(v) else ("R$ " + f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+                        _sgc_show = _sgc_p.copy()
+                        for c in _sgc_show.columns:
+                            _sgc_show[c] = [(_sg_fmt(v) + (f" · {_tv_n(n)}" if not pd.isna(n) else "")) for v, n in zip(_sgc_p[c], _sgc_i[c])]
+                        _sgc_show.index.name = 'rede'
+                        _st_df(_sgc_show, csv=_sgc_m[['mes', 'os', 'rede', 'installs', 'installs_rede', 'custo_brl', 'cpi', 'cpi_rede']],
+                               csv_nome="cpi_singular_por_rede", use_container_width=True)
+                        _tv_fonte("vw_singular_cpi_mes — CPI · instalações; custo = o que a rede reporta ao Singular (Google/Meta/TikTok, só campanhas de Download) "
+                                  "ou spend_brl do Jampp. Não é o investimento oficial (RESUMO_INVESTIMENTO_DIARIO): restatement e janela D-8 mudam o custo por alguns dias.")
+                st.caption("iOS fica de fora da tabela: com o ATT, a maior parte das instalações pagas cai em orgânico e o CPI iOS sai inflado (set/26: R$ 83 no Google).")
 
         # ---- 7b · push e in-app: funil e vendas assistidas ----
         _ct_f1, _ct_f2 = st.columns([1.9, 1])
