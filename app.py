@@ -343,16 +343,16 @@ GLOSSARIO = {
         d="Ticket = uma conversa aberta no Talkerchat, contada no dia de criação. Usuário único = um telefone com ao menos um ticket no período (a base das taxas, porque tickets repetem pessoas).",
         o="Talkerchat", a="📞", s=["Tickets", "Usuários únicos"]),
     'Qualificado (CPF validado, não cliente)': dict(sec="WhatsApp (Talkerchat)",
-        d="Usuário sem SAC cujo CPF foi lido nas mensagens e que não foi barrado como cliente (motivo do ticket fora de 'Transferido/Redirecionado para o SAC' e 'CPF já Cadastrado'). É o 'CPF validado como não cliente' pedido pelo time (01/10) — antes contava só quem informou o CPF.",
-        p="Até 05/10 a carga só lia o CPF (nas mensagens) em 4 motivos — piso. Desde o Talkerchat.gs v1.4 o CPF vem do objeto de contato da API ('Dados pessoais') para todos os motivos, com backfill desde abr/26; a série sobe à medida que o backfill avança.",
-        o="Talkerchat (leitura das mensagens) + motivo de fechamento", a="📞", s=["Qualificados", "Qualificado (com CPF)", "CPF validado"]),
+        d="Usuário sem SAC cujo CPF foi lido (objeto de contato 'Dados pessoais' da API; mensagens como reserva) e que não foi barrado como cliente (motivo do ticket fora de 'Transferido/Redirecionado para o SAC' e 'CPF já Cadastrado'). É o 'CPF validado como não cliente' pedido pelo time (01/10) — antes contava só quem informou o CPF.",
+        p="Cobertura: CPF pelo objeto de contato da API para todos os motivos de fechamento, histórico completo de abr/26 em diante (backfill concluído 07/10). Quem fecha a conversa sem informar os dados fica sem CPF — não é limite de leitura, é o que o cliente chegou a informar. Até 05/10 a carga só lia o CPF nas mensagens de 4 motivos (piso); recargas anteriores a essa data subestimavam a série.",
+        o="Talkerchat (objeto de contato da API + mensagens) + motivo de fechamento", a="📞", s=["Qualificados", "Qualificado (com CPF)", "CPF validado"]),
     'Fila Triagem / fila Televendas': dict(sec="WhatsApp (Talkerchat)",
-        d="Desde 30/09 a triagem da Lia roda na fila Triagem. Quem escolhe 'quero ser cliente' tem o ticket movido para a fila Televendas (mesmo ticket) — é a intenção de compra declarada, o topo do funil do time humano. Quem não escolhe fica na Triagem (Redirecionado para o SAC ou Inatividade). Outras filas: Pré-venda (automático), SAC Coleta NPS, TIM Reaquecimento.",
+        d="Desde 30/09 a triagem da Lia roda na fila Triagem. Quem escolhe 'quero ser cliente' tem o ticket movido para a fila Televendas (mesmo ticket) — é a intenção de compra declarada, o topo do funil do time humano. Quem não escolhe fica na Triagem (Inatividade) ou, desde 04/10, é movido para a fila SAC ('Informou que já é cliente' / 'Redirecionado para o SAC') — Triagem e SAC juntas são o 'ficou na triagem' do funil. Outras filas: Pré-venda (automático), SAC Coleta NPS, TIM Reaquecimento.",
         p="Válido de out/26 em diante; set/26 e antes usam a régua 'sem SAC' e não são comparáveis no topo.",
-        o="Talkerchat (queue)", a="📞", s=["Triagem", "Chegaram à fila Televendas", "intenção declarada", "quero ser cliente"]),
+        o="Talkerchat (queue)", a="📞", s=["Triagem", "fila SAC", "Chegaram à fila Televendas", "intenção declarada", "quero ser cliente"]),
     'Usuário sem SAC': dict(sec="WhatsApp (Talkerchat)",
-        d="Usuário único (tel-8) com ao menos um ticket no período fora dos motivos de SAC (Transferido/Redirecionado para o SAC) e de 'CPF já Cadastrado'. Quem só teve tickets desses motivos já é cliente e fica fora do funil (o volume aparece na nota do topo).",
-        o="Talkerchat (close_reason_id 4, 174, 186, 5)", a="📞", s=["sem SAC", "só SAC", "Leads sem SAC"]),
+        d="Usuário único (tel-8) com ao menos um ticket no período fora dos motivos de SAC/já cliente (Transferido/Redirecionado para o SAC, 'Informou que já é cliente' — desde 04/10 — e 'CPF já Cadastrado') e fora da fila SAC. Quem só teve tickets desses já é cliente e fica fora do funil (o volume aparece na nota do topo).",
+        o="Talkerchat (close_reason_id 4, 174, 186, 189, 5 ou queue = 'SAC')", a="📞", s=["sem SAC", "só SAC", "Leads sem SAC"]),
     'Compra reportada / confirmada': dict(sec="WhatsApp (Talkerchat)",
         d="Compra reportada = ticket fechado com esse motivo (o que o atendente ou o bot registrou). Confirmada = o CPF aparece no CTN com filiação até 3 dias antes ou depois do fechamento. Desde 01/10 é registro da operação (expander 📋), não etapa do funil: a venda do funil é a do CTN por IDPV, no dia.",
         o="Talkerchat × NOMINAL por CPF", a="📞", s=["Compras reportadas", "Confirmadas no CTN (CPF ±3 d)", "tabulação do atendente"]),
@@ -5363,6 +5363,7 @@ def _aba_tab6():
         tl_ftv_cli = _tv_val(S, 'leads_fila_tv_so_cliente'); tl_tri = _tv_val(S, 'leads_so_triagem'); tl_tri_sac = _tv_val(S, 'leads_so_triagem_sac')
         tl_out = _tv_val(S, 'leads_outras_filas'); tk_tri = _tv_val(S, 'tickets_triagem'); tk_ftv_lia = _tv_val(S, 'tickets_fila_tv_lia')
         tk_ftv_h = _tv_val(S, 'tickets_fila_tv_humano')
+        tk_fsac = _tv_val(S, 'tickets_fila_sac')   # R62: fila SAC (desde 04/10) — já clientes movidos pela triagem; conta em tk_tri
         tl_ftv_p = _tv_val(S, 'leads_fila_tv', meses=_tv_per_p); tl_ftv_q_p = _tv_val(S, 'leads_fila_tv_qualif', meses=_tv_per_p)
         _FILA_DESDE = pd.Timestamp('2026-09-30')   # fila Triagem existe desde 30/09: o funil por fila só vale para períodos que começam depois
         try:
@@ -5426,14 +5427,14 @@ def _aba_tab6():
                     f"{_tv_delta(tl_ftv_q, tl_ftv_q_p)} · {_tv_n(tl_ftv_cli)} barrados depois (CPF já cadastrado)")
         elif _r58:
             _tv_kpi(k2, "🪪", "Qualificados (CPF validado, não cliente)", f"{_tv_pct(tq_nc, tl_ss)} {_tv_delta(tq_nc, tq_nc_p)}",
-                    f"{_tv_n(tq_nc)} dos {_tv_n(tl_ss)} usuários sem SAC · CPF lido e não cadastrado · piso (ver nota 🧭)")
+                    f"{_tv_n(tq_nc)} dos {_tv_n(tl_ss)} usuários sem SAC · CPF lido (objeto de contato) e não cadastrado · ver nota 🧭")
         else:
             _tv_kpi(k2, "🪪", "Qualificados (com CPF)", f"{_tv_pct(tcpf, tl)}", f"{_tv_n(tcpf)} usuários com CPF capturado nas mensagens")
         if _fila_ok:
             _tv_kpi(k3, "🤖", "Triagem × Lia vendas × humano — tickets (por fila)",
                     f"{_tv_pct(tk_tri, tk)} · {_tv_pct(tk_ftv_lia, tk)} · {_tv_pct(tk_ftv_h, tk)}",
-                    f"{_tv_n(tk_tri)} ficaram na fila Triagem · {_tv_n(tk_ftv_lia)} na fila Televendas só com a Lia · {_tv_n(tk_ftv_h)} com atendente · "
-                    f"usuários: {_tv_pct(tl_tri, tl)} ficaram na triagem ({_tv_pct(tl_tri_sac, tl_tri)} deles redirecionados ao SAC)", color="#2e8a4f")
+                    f"{_tv_n(tk_tri)} ficaram na triagem (filas Triagem/SAC" + (f", {_tv_n(tk_fsac)} na SAC" if tk_fsac else "") + f") · {_tv_n(tk_ftv_lia)} na fila Televendas só com a Lia · "
+                    f"{_tv_n(tk_ftv_h)} com atendente · usuários: {_tv_pct(tl_tri, tl)} ficaram na triagem ({_tv_pct(tl_tri_sac, tl_tri)} deles já clientes / SAC)", color="#2e8a4f")
         elif tk_sac is not None:  # agregado já traz a separação triagem → SAC × Lia vendas (18/09)
             _tv_kpi(k3, "🤖", "Lia (vendas) × triagem → SAC × humano — tickets",
                     f"{_tv_pct(tk_lia, tk)} · {_tv_pct(tk_sac, tk)} · {_tv_pct(tk_h, tk)}",
@@ -5480,8 +5481,8 @@ def _aba_tab6():
         with c1:
             if _fila_ok:
                 _tv_funil("Funil Talkerchat — time humano (fila Televendas)", [
-                    ("💬", "Tickets", tk, f"conversas criadas no período · {_tv_n(tk_tri)} ficaram na fila Triagem"),
-                    ("👤", "Usuários únicos", tl, f"tel-8 · {_tv_n(tl_tri)} só na Triagem ({_tv_n(tl_tri_sac)} redirecionados ao SAC) · {_tv_n(tl_out)} em outras filas"),
+                    ("💬", "Tickets", tk, f"conversas criadas no período · {_tv_n(tk_tri)} ficaram na triagem (filas Triagem/SAC)"),
+                    ("👤", "Usuários únicos", tl, f"tel-8 · {_tv_n(tl_tri)} só na triagem ({_tv_n(tl_tri_sac)} já clientes / SAC) · {_tv_n(tl_out)} em outras filas"),
                     ("🎯", "Chegaram à fila Televendas", tl_ftv, "disseram 'quero ser cliente' na triagem — o ticket troca de fila (intenção de compra declarada)"),
                     ("🪪", "Qualificados (CPF validado, não cliente)", tl_ftv_q, f"CPF lido e não cadastrado · {_tv_n(tl_ftv_cli)} barrados como 'CPF já cadastrado' · fatia dos que chegaram à fila", 2),
                     ("🧑‍💼", "Chegaram a um humano", tl_ftv_h, "agent_id em algum ticket — fatia dos que chegaram à fila", 2),
@@ -5490,9 +5491,9 @@ def _aba_tab6():
                 ], subtitle=f"{_tv_per_lbl} · fila Triagem desde 30/09 · venda por IDPV (pedido do Badaró) · Lia à parte, abaixo")
             elif _r58:
                 _tv_funil("Funil Talkerchat — time humano (WhatsApp, sem SAC)", [
-                    ("💬", "Tickets fora do SAC", tk_ss, f"de {_tv_n(tk)} tickets criados no período · fora: Transferido/Redirecionado para o SAC e 'CPF já Cadastrado'"),
+                    ("💬", "Tickets fora do SAC", tk_ss, f"de {_tv_n(tk)} tickets criados no período · fora: Transferido/Redirecionado para o SAC, 'Informou que já é cliente', 'CPF já Cadastrado' e a fila SAC"),
                     ("👤", "Usuários únicos sem SAC", tl_ss, f"tel-8 com ao menos um ticket fora do SAC · {_tv_n(tl_so)} usuários só com SAC (já clientes) ficam fora"),
-                    ("🪪", "Qualificados (CPF validado, não cliente)", tq_nc, "CPF lido nas mensagens e motivo fora de SAC/já cadastrado · piso (nota 🧭)"),
+                    ("🪪", "Qualificados (CPF validado, não cliente)", tq_nc, "CPF lido (objeto de contato) e motivo fora de SAC/já cadastrado (nota 🧭)"),
                     ("🧑‍💼", "Chegaram a um humano", th_ss, "usuários sem SAC com agent_id em algum ticket — fatia dos usuários sem SAC", 1),
                     ("🏷️", "Vendas (CTN) — IDPVs humanos de Televendas", _nv58_hum, "NOMINAL por IDPV do vendedor, venda do dia · % lida sobre os usuários sem SAC", 1),
                     ("📱", "└ pelo IDPV WhatsApp", _nv58_wpp, "IDPV '… ATENDIMENTO WHATSAPP' · fatia das Vendas (CTN) humano", 4),
@@ -5510,7 +5511,7 @@ def _aba_tab6():
             _tv_chart_mensal(_tv_long(S, ['tickets_lia', 'tickets_sac', 'tickets_humano'] if tk_sac is not None else ['tickets_bot', 'tickets_humano'], meses=_mg7,
                                       labels={'tickets_lia': 'Lia (vendas)', 'tickets_sac': 'Triagem → SAC', 'tickets_bot': 'Só Lia (bot)', 'tickets_humano': 'Com atendente humano'}),
                              "Tickets por mês — Lia × triagem → SAC × humano" if tk_sac is not None else "Tickets por mês — bot × humano",
-                             subtitle="close_reason 4 (Transferido para SAC) = triagem · agent_id = humano · resto = Lia" if tk_sac is not None else "attended_by_bot / agent_id da API",
+                             subtitle="motivos SAC / já cliente (4, 174, 186, 189) ou fila SAC = triagem → SAC · agent_id = humano · resto = Lia" if tk_sac is not None else "attended_by_bot / agent_id da API",
                              stacked=True, rotulos=True, fonte="API Talkerchat (alex_talkerchat_api)")
             if _fila_ok:
                 _tv_chart_mensal(_tv_long(S, ['leads_so_triagem', 'leads_fila_tv', 'leads_fila_tv_qualif', 'leads_fila_tv_humano'], meses=_mg7,
@@ -5533,12 +5534,13 @@ def _aba_tab6():
             if _fila_ok:
                 _tv_note(
                     f"<b>Funil por fila (desde 30/09).</b> A triagem da Lia passou a rodar na fila <b>Triagem</b>: quem escolhe 'quero ser cliente' "
-                    f"tem o ticket movido para a fila <b>Televendas</b> (mesmo ticket); quem não escolhe fica na Triagem e fecha como "
-                    f"'Redirecionado para o SAC' (outros assuntos / já cliente) ou 'Inatividade'. Por isso o topo útil do funil é "
-                    f"<b>chegaram à fila Televendas</b> = intenção de compra declarada — não depende de o CPF ter sido lido. No período: "
-                    f"{_tv_n(tl_tri)} usuários ({_tv_pct(tl_tri, tl)}) ficaram na Triagem, {_tv_n(tl_tri_sac)} deles redirecionados ao SAC; "
+                    f"tem o ticket movido para a fila <b>Televendas</b> (mesmo ticket); quem não escolhe fica na Triagem ('Inatividade') ou, "
+                    f"desde 04/10, é movido para a fila <b>SAC</b> ('Informou que já é cliente' / 'Redirecionado para o SAC' — outros assuntos, já "
+                    f"cliente). Por isso o topo útil do funil é <b>chegaram à fila Televendas</b> = intenção de compra declarada — não depende "
+                    f"de o CPF ter sido lido. No período: {_tv_n(tl_tri)} usuários ({_tv_pct(tl_tri, tl)}) ficaram na triagem (Triagem + SAC), "
+                    f"{_tv_n(tl_tri_sac)} deles já clientes / SAC; "
                     f"{_tv_n(tl_out)} ({_tv_pct(tl_out, tl)}) passaram só por outras filas (Pré-venda automático, NPS, TIM).<br><br>"
-                    f"<b>Qualificado</b> = CPF lido e não cadastrado (objeto de contato da API; backfill em andamento). "
+                    f"<b>Qualificado</b> = CPF lido e não cadastrado (objeto de contato da API; histórico completo desde abr/26). "
                     f"<b>Venda</b> = CTN por IDPV (pedido do Badaró), no dia. Referência pela régua do telefone (tel-8 × CTN no mesmo período): "
                     f"<b>{_tv_n(tl_ftv_ctn)}</b> dos que chegaram à fila filiaram ({_tv_pct(tl_ftv_ctn, tl_ftv)}); dos que chegaram a um humano, "
                     f"{_tv_n(tl_ftv_hctn)} ({_tv_pct(tl_ftv_hctn, tl_ftv_h)}). Dos usuários da fila Televendas, {_tv_pct(tl_ftv_h, tl_ftv)} "
@@ -5548,13 +5550,12 @@ def _aba_tab6():
             elif _r58:
                 _tv_note(
                     f"<b>Régua nova (01/10, pedido do time de Televendas).</b> O funil parte dos usuários <b>sem SAC</b>: quem só teve tickets "
-                    f"'Transferido/Redirecionado para o SAC' ou 'CPF já Cadastrado' já é cliente e fica fora ({_tv_n(tl_so)} usuários, "
-                    f"{_tv_pct(tl_so, tl)} do total). <b>Qualificado</b> = CPF lido nas mensagens <i>e</i> motivo fora desses — o 'CPF validado "
-                    f"como não cliente'. É um <b>piso</b>: a carga só lê o CPF nos motivos Link enviado, Compra reportada, SAC e CPF já "
-                    f"cadastrado; a Lia não grava CPF nas conversas fechadas por fim de expediente, sem interação ou janela encerrada "
-                    f"(por isso {_tv_n(tq_h)} dos {_tv_n(tq_nc)} qualificados são de atendente humano). <b>Em correção desde 05/10:</b> a API "
-                    f"passou a expor o objeto de contato (CPF estruturado) e o Talkerchat.gs v1.4 lê o CPF de lá para todos os motivos — o backfill "
-                    f"desde abr/26 está em andamento e os qualificados sobem a cada recarga.<br><br>"
+                    f"'Transferido/Redirecionado para o SAC', 'Informou que já é cliente' (desde 04/10, fila SAC) ou 'CPF já Cadastrado' já é cliente e fica fora ({_tv_n(tl_so)} usuários, "
+                    f"{_tv_pct(tl_so, tl)} do total). <b>Qualificado</b> = CPF lido <i>e</i> motivo fora desses — o 'CPF validado "
+                    f"como não cliente'. O CPF vem do objeto de contato da API ('Dados pessoais', preenchido no fluxo da conversa; as mensagens "
+                    f"ficam como reserva) e vale para todos os motivos de fechamento — histórico completo de abr/26 em diante "
+                    f"(backfill concluído 07/10). Quem fecha a conversa sem informar os dados fica sem CPF: não é limite de leitura, é o que "
+                    f"o cliente chegou a informar. {_tv_n(tq_h)} dos {_tv_n(tq_nc)} qualificados passaram por atendente humano.<br><br>"
                     f"<b>Venda</b> = CTN por IDPV (pedido do Badaró), no dia da filiação — inclui o que o operador fechou por telefone; a fatia "
                     f"'pelo IDPV WhatsApp' isola a superfície. Referência pela régua do <b>telefone</b> (tel-8 × CTN no mesmo período, a mesma "
                     f"do Escallo): <b>{_tv_n(tl_ctn)}</b> usuários sem SAC filiaram ({_tv_pct(tl_ctn, tl_ss)}); dos qualificados, {_tv_n(tq_ctn)} "
