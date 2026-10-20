@@ -102,7 +102,7 @@ def format_money(num): return f"R$ {num:,.2f}".replace(",", "X").replace(".", ",
 # a oportunidade é "Negócio"; o 1º estágio da esteira (que o HubSpot chama de LEAD) é "entrou na esteira".
 _GL_SECOES = ["Como ler o dashboard", "Sistemas e fontes", "Vendas e canais", "Investimento e mídia",
               "Leads e jornada (HubSpot)", "Televendas (Escallo)", "WhatsApp (Talkerchat)", "App do Filiado",
-              "CRM WhatsApp/SMS (Zenvia)", "Site (checkout)"]
+              "CRM WhatsApp/SMS (Zenvia)", "Site (checkout)", "Retenção e pós-venda (Lake)"]
 GLOSSARIO = {
     # ---- Como ler ----
     'Lead': dict(sec="Como ler o dashboard",
@@ -318,8 +318,8 @@ GLOSSARIO = {
         d="Tabulação do operador no Escallo depois da conversa: agendamento (privado, público ou via HubSpot), 'confirmação de terceiros' (cliente precisa de outra pessoa para fechar), venda travada (pagamento no cartão não autorizado, erro de cadastro/pagamento no CTN) e a própria venda tabulada. Fatia das ligações qualificadas. Não é o estágio EM NEGOCIAÇÃO do HubSpot.",
         o="Escallo (REL086)", a="📞", s=["negociação", "agendado", "venda travada", "Fase de negociação"]),
     'Ligações recebidas / atendidas / abandono': dict(sec="Televendas (Escallo)",
-        d="Receptivo por ligação (REL002): recebida = chegou à fila/operador (a perna que fica só na URA não conta); atendida = um agente atendeu; abandono = o cliente desligou antes (não atendida, cancelada, indisponível) — fatia das recebidas. A conversão é lida sobre as atendidas.",
-        o="Escallo", a="📞", s=["Ligações recebidas", "Ligações atendidas", "Abandono", "pernas de URA", "Apropriação das não atendidas"]),
+        d="Receptivo por ligação (REL002): recebida (total) = tudo o que passou da URA (a perna que fica só na URA não conta); distribuída aos operadores = a recebida que chegou à fila dos operadores (fila 'xCall Center' no REL001) ou foi atendida por um agente — é a base das taxas; atendida = um operador atendeu (≈ 'Atendidas' do REL025 por agente); abandono na fila = o cliente desligou esperando na fila dos operadores — fatia das distribuídas. Ficam fora da base as ligações fora do expediente (fila 'Callback - Fora de horário': o sistema derruba e o discador ativo liga de volta) e as atendidas sem operador (tronco Televendas-SAC). A conversão é lida sobre as distribuídas (e, na nota, sobre as atendidas).",
+        o="Escallo", a="📞", s=["Ligações recebidas", "Distribuídas aos operadores", "Atendidas pelos operadores", "Abandono na fila", "Abandono", "fora do expediente", "pernas de URA", "Apropriação das não atendidas"]),
     'Classificado / venda tabulada': dict(sec="Televendas (Escallo)",
         d="Classificado = o operador registrou um estágio depois do alô; venda tabulada = marcou o resultado como 'venda'. É registro da operação, não filiação confirmada. Tudo o que se mede depois do alô é piso.",
         o="Escallo", a="📞", s=["tabulação", "Venda tabulada", "Classificados", "Gap qualificada × classificado"]),
@@ -375,6 +375,31 @@ GLOSSARIO = {
         p="Vendas Humano = todos os IDPVs humanos de Televendas (R58); o degrau 'pelo IDPV WhatsApp' é a fatia que o deck chama de 'Vendas Humano'. Voz = humano − WhatsApp. Mês cheio, com fins de semana (o deck usa dias úteis na tabela de transferência).",
         o="alex_tv_dash_mes · s7_talkerchat (Talkerchat × NOMINAL por IDPV)", a="📞",
         s=["Fechamento WhatsApp", "Oportunidades comerciais", "Sem qualificação", "Trabalhado pela Lia", "Transbordo humano", "Voz", "funil do deck"]),
+    'Retenção por pagamento (coorte × competência)': dict(sec="Retenção e pós-venda (Lake)",
+        d="Aba 🔁: dos filiados com venda nova no mês (coorte), quantos têm mensalidade arrecadada (QIA) na competência do mês da venda + k meses (M+1, M+3, M+6…). Lido por competência (mês de referência da mensalidade), nunca por data de baixa.",
+        p="É a única régua de qualidade da venda que mede dinheiro recebido: 'cliente ativo' no CTN não significa pagante (a desfiliação em massa chega meses depois). Uma competência só fecha ~45 dias depois do fim do mês — energia atrasa 1 mês e o cartão tem 15 dias de retentativa.",
+        o="Athena: fl_contagem_filiado ⋈ fl_base_qia (id_filiado) → alex_lake_proto · s1_coorte_pag", a="🔁",
+        s=["pagou M+1", "pagou M+3", "pagou M+6", "competência fechada", "maturando", "QIA", "fl_base_qia", "receita média"]),
+    'Venda nova × refiliação': dict(sec="Retenção e pós-venda (Lake)",
+        d="No Lake cada venda carrega a flag prospecção (filiado novo) ou refiliação (voltou depois de uma desfiliação). O NOMINAL conta as duas como venda.",
+        p="Separar novo de retorno muda a leitura de meta e CPA por filiado novo; em set/26 as refiliações foram 29 % das vendas (34 % no Porta a Porta).",
+        o="Athena: fl_contagem_filiado (prospeccao / refiliacao) → alex_lake_proto · s2_meio", a="🔁",
+        s=["refiliação", "prospecção", "venda nova", "voltaram"]),
+    'Desfiliação solicitada × em massa': dict(sec="Retenção e pós-venda (Lake)",
+        d="Solicitada = o filiado pediu para sair. Em massa = desligamento pela régua de inadimplência (meses sem pagar), feito em lote.",
+        p="A saída em massa é registrada meses depois da venda; por isso a coorte parece 'ativa' por muito tempo. Para qualidade da venda use o pagamento (retenção por competência), não o status.",
+        o="Athena: fl_churn (tipo_desfiliacao, dt_fim) → alex_lake_proto · s4_saida / s4_coorte", a="🔁",
+        s=["desfiliação em massa", "saíram a pedido", "cliente_ativo", "permanência média"]),
+    'Inadimplência da safra (foto)': dict(sec="Retenção e pós-venda (Lake)",
+        d="Estado atual (última referência da base de inadimplentes) dos filiados de cada coorte de venda: % inadimplente, % com a 1ª cobrança de cartão rejeitada (novo rejeitado), % na régua crítica, meses e R$ em atraso.",
+        p="Complementa a retenção: lá é 'pagou a competência', aqui é 'está devendo hoje'. Coortes recentes tiveram menos tempo para atrasar — comparar coortes da mesma idade.",
+        o="Athena: fl_inadimplentes (referência) ⋈ coorte → alex_lake_proto · s5_inad", a="🔁",
+        s=["cartão rejeitado", "novo rejeitado", "régua crítica", "inadimplentes hoje"]),
+    'Time-to-value (ativação em 30 dias)': dict(sec="Retenção e pós-venda (Lake)",
+        d="Dos filiados novos do mês, quantos ativaram o app, o cartão virtual e usaram algum produto (Amor Saúde, cashback, WebDental, Visão de Todos) nos 30 primeiros dias; 'nunca usou' = sem nenhuma utilização até hoje.",
+        p="Uso cedo anda junto com pagamento (sub-aba 1, bloco Hipótese) — correlação, não causa. O mês corrente ainda não completou 30 dias e fica fora da série.",
+        o="Athena: fl_venda_ttv (datas da 1ª utilização por produto, app_ativo, grupo_utilizacao) → alex_lake_proto · s6_ttv; MGM: fl_filiado_mgm (bônus do 2º/3º/4º mês do indicado) → s7_mgm", a="🔁",
+        s=["TTV", "usou em 30 dias", "app ativo", "nunca usou", "MGM bônus", "indicação", "custo pago por venda MGM"]),
     'Lia, Cris, Nora (bots)': dict(sec="WhatsApp (Talkerchat)",
         d="Os assistentes automáticos do WhatsApp. A Lia faz a triagem (pede CPF) e, para quem não é filiado, envia o link de adesão. Os bots têm IDPV de televendas: as vendas deles entram como tipo Televendas no CTN (~40% do canal).",
         o="Talkerchat / CTN", a="📞", s=["Lia", "bots", "triagem", "handover"]),
@@ -1850,14 +1875,34 @@ def load_crm_funil():
         return pd.DataFrame(columns=_FUNIL_COLS), f"{type(e).__name__}: {str(e)[:300]}"
 
 
+# R68 (20/10/2026): aba 🔁 Retenção (Lake) — agregado alex_lake_proto (pipeline gt7 run lake_proto: Athena → MySQL).
+_LK_COLS = ['mes', 'secao', 'dim', 'metrica', 'valor', 'atualizado_em']
+
+
+@st.cache_data(ttl=43200)
+def _load_lake_proto_raw():
+    d = cquery("SELECT mes, secao, dim, metrica, valor, atualizado_em FROM alex_lake_proto", ttl=0)
+    d['mes'] = pd.to_datetime(d['mes'])
+    d['valor'] = pd.to_numeric(d['valor'], errors='coerce')
+    return d
+
+
+def load_lake_proto():
+    try:
+        return _load_lake_proto_raw(), None
+    except Exception as e:
+        return pd.DataFrame(columns=_LK_COLS), f"{type(e).__name__}: {str(e)[:400]}"
+
+
 # R42: abas por perfil. _ABAS é a ordem canônica; _ABAS_PERFIL diz quais existem fora do perfil analista.
 _ABAS = [("tab1", "📈 Desempenho de Vendas"), ("tab2", "🗺️ Mapa Regional (UF)"), ("tab3", "💰 Investimento"),
          ("tab4", "📣 Campanhas"), ("tab5", "🌐 Site"), ("tab6", "📞 Televendas"), ("tab7", "📱 App"),
-         ("tab8", "📨 CRM"), ("tab10", "🧲 Aquisição"), ("tab11", "🧭 Funil Ponta a Ponta")]
+         ("tab8", "📨 CRM"), ("tab10", "🧲 Aquisição"), ("tab11", "🧭 Funil Ponta a Ponta"),
+         ("tab12", "🔁 Retenção (Lake)")]
 _ABAS_PERFIL = {"televendas": {"tab6"}}
 _abas_vis = [(v, r) for v, r in _ABAS if _PERFIL_FULL or v in _ABAS_PERFIL.get(_PERFIL, set())]
 _abas_obj = dict(zip([v for v, _ in _abas_vis], st.tabs([r for _, r in _abas_vis])))
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab10, tab11 = (_abas_obj.get(v) for v, _ in _ABAS)
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab10, tab11, tab12 = (_abas_obj.get(v) for v, _ in _ABAS)
 
 
 def _aba(tab):
@@ -4030,7 +4075,7 @@ def _aba_tab5():
 #
 # Seções (sub-abas):
 #   1 Escallo · Ativo      discados → ligação qualificada ≥10s → (em negociação, tabulação) → Vendas (CTN) [R45]
-#   2 Escallo · Receptivo  ligações recebidas → atendidas → (abandono) → Vendas (CTN) sobre atendidas + apropriação [R45]
+#   2 Escallo · Receptivo  recebidas (total) → distribuídas aos operadores → atendidas → (abandono na fila) → Vendas (CTN); taxas sobre as distribuídas [R45/R66] + apropriação
 #   3 Ganhos por porta     Negócio GANHO: tabulação (porta 1) × checkout (porta 2) × outros
 #   4 Três réguas          GANHO × Contato (CTN) × NOMINAL_VENDAS — como ler
 #   5 Pipeline CRM         LEAD → EM NEGOCIAÇÃO → CONTATO SEM SUCESSO → PERDIDO → GANHO + auditoria
@@ -4874,50 +4919,111 @@ def _aba_tab6():
         ab_ret = _tv_val(S10, 'ab_retorno_ativo'); ab_alo = _tv_val(S10, 'ab_retorno_alo')
         ab_hs = _tv_val(S10, 'ab_contato_hs'); ab_v = _tv_val(S10, 'ab_venda_ctn')
         lg_rec_p = _tv_val(S10, 'recebidas', meses=_tv_per_p); v10_p = _tv_val(S10, 'vendas_ctn', meses=_tv_per_p)
+        # R66 (20/10): "Distribuídas aos operadores" = recebida que chegou à fila dos operadores (REL001 'xCall Center') ou foi atendida
+        # por um agente — base das taxas. Fora: fila 'Callback - Fora de horário' (fora do expediente; o sistema derruba e o ativo
+        # liga de volta) e 'Atendido' sem agente (tronco Televendas-SAC). Recebidas segue como total de referência (REL025: atendidas_ag).
+        lg_dist = _tv_val(S10, 'distribuidas'); lg_atd_ag = _tv_val(S10, 'atendidas_ag'); lg_ab_fila = _tv_val(S10, 'abandono_fila')
+        lg_atd_ag10 = _tv_val(S10, 'atendidas_ag_10s'); lg_fh = _tv_val(S10, 'fora_horario'); lg_outras = _tv_val(S10, 'nao_dist_outras')
+        tl_dist = _tv_val(S10, 'tel_distribuidos'); tl_atd_ag = _tv_val(S10, 'tel_atendidos_ag')
+        lg_dist_p = _tv_val(S10, 'distribuidas', meses=_tv_per_p)
+        _r66 = lg_dist is not None
+        if _r66:
+            _rec_decomp = (f"= {_tv_n(lg_dist)} distribuídas aos operadores + {_tv_n(lg_fh)} fora do expediente (fila de callback) "
+                           f"+ {_tv_n(lg_outras)} sem operador (tronco SAC / sem fila)")
         k1, k2, k3, k4 = st.columns(4)
-        _tv_kpi(k1, "📲", "Ligações recebidas", f"{_tv_n(lg_rec)} {_tv_delta(lg_rec, lg_rec_p)}",
-                f"{_tv_n(tl_rec)} telefones · chegaram à fila/operador (REL002); {_tv_n(lg_ura)} pernas de URA fora da conta")
-        _tv_kpi(k2, "✅", "Ligações atendidas", f"{_tv_pct(lg_atd, lg_rec)}",
-                f"{_tv_n(lg_atd)} ligações · {_tv_n(lg_atd10)} com conversa ≥ 10 s · {_tv_n(tl_atd)} telefones")
-        _tv_kpi(k3, "🚫", "Abandono", f"{_tv_pct(lg_ab, lg_rec)}",
-                f"{_tv_n(lg_ab)} não atendidas / canceladas · {_tv_n(tl_ab)} telefones só com abandono no período", color="#b45309")
-        if _r63r:
-            _tv_kpi(k4, "🛒", "Vendas (CTN) atribuídas", f"{_tv_pct(v10_atrib, lg_atd)} {_tv_delta(v10_atrib, v10_atrib_p)}",
-                    f"{_tv_n(v10_atrib)} telefones atendidos filiaram pelo IDPV de um operador no dia de uma ligação atendida "
-                    f"({_tv_pct(v10_atrib, tl_atd)} dos telefones atendidos) · {_tv_n(v10_assist)} assistidas")
+        if _r66:
+            _tv_kpi(k1, "📲", "Ligações recebidas (total)", f"{_tv_n(lg_rec)} {_tv_delta(lg_rec, lg_rec_p)}",
+                    f"{_tv_n(tl_rec)} telefones · tudo o que passou da URA (REL002) · {_rec_decomp} · {_tv_n(lg_ura)} pernas de URA fora da conta")
+            _tv_kpi(k2, "🎧", "Distribuídas aos operadores", f"{_tv_n(lg_dist)} {_tv_delta(lg_dist, lg_dist_p)}",
+                    f"{_tv_pct(lg_dist, lg_rec)} das recebidas · chegaram à fila dos operadores (xCall Center) ou a um operador · "
+                    f"{_tv_n(tl_dist)} telefones · base das taxas de atendimento, abandono e conversão")
+            _tv_kpi(k3, "✅", "Atendidas pelos operadores", f"{_tv_pct(lg_atd_ag, lg_dist)}",
+                    f"{_tv_n(lg_atd_ag)} ligações · {_tv_n(lg_atd_ag10)} com conversa ≥ 10 s · {_tv_n(tl_atd_ag)} telefones · "
+                    f"abandono na fila {_tv_n(lg_ab_fila)} ({_tv_pct(lg_ab_fila, lg_dist)} das distribuídas)")
+            if _r63r:
+                _tv_kpi(k4, "🛒", "Vendas (CTN) atribuídas", f"{_tv_pct(v10_atrib, lg_dist)} {_tv_delta(v10_atrib, v10_atrib_p)}",
+                        f"% das distribuídas · {_tv_n(v10_atrib)} telefones atendidos filiaram pelo IDPV de um operador no dia de uma ligação "
+                        f"atendida · {_tv_pct(v10_atrib, lg_atd_ag)} das atendidas · {_tv_pct(v10_atrib, tl_atd_ag)} dos telefones atendidos · "
+                        f"{_tv_n(v10_assist)} assistidas")
+            else:
+                _tv_kpi(k4, "🛒", "Vendas (CTN) — atribuídas + assistidas", f"{_tv_pct(v10, lg_dist)} {_tv_delta(v10, v10_p)}",
+                        f"% das distribuídas · {_tv_n(v10)} telefones atendidos com filiação no NOMINAL no período ({_tv_pct(v10, lg_atd_ag)} das "
+                        f"atendidas) · {_tv_n(v10_tv)} tipo Televendas · separação atribuída × assistida indisponível neste período")
         else:
-            _tv_kpi(k4, "🛒", "Vendas (CTN) — atribuídas + assistidas", f"{_tv_pct(v10, lg_atd)} {_tv_delta(v10, v10_p)}",
-                    f"{_tv_n(v10)} telefones atendidos com filiação no NOMINAL no período ({_tv_pct(v10, tl_atd)} dos telefones atendidos) · "
-                    f"{_tv_n(v10_tv)} tipo Televendas · separação atribuída × assistida indisponível neste período")
+            _tv_kpi(k1, "📲", "Ligações recebidas", f"{_tv_n(lg_rec)} {_tv_delta(lg_rec, lg_rec_p)}",
+                    f"{_tv_n(tl_rec)} telefones · chegaram à fila/operador (REL002); {_tv_n(lg_ura)} pernas de URA fora da conta")
+            _tv_kpi(k2, "✅", "Ligações atendidas", f"{_tv_pct(lg_atd, lg_rec)}",
+                    f"{_tv_n(lg_atd)} ligações · {_tv_n(lg_atd10)} com conversa ≥ 10 s · {_tv_n(tl_atd)} telefones")
+            _tv_kpi(k3, "🚫", "Abandono", f"{_tv_pct(lg_ab, lg_rec)}",
+                    f"{_tv_n(lg_ab)} não atendidas / canceladas · {_tv_n(tl_ab)} telefones só com abandono no período", color="#b45309")
+            if _r63r:
+                _tv_kpi(k4, "🛒", "Vendas (CTN) atribuídas", f"{_tv_pct(v10_atrib, lg_atd)} {_tv_delta(v10_atrib, v10_atrib_p)}",
+                        f"{_tv_n(v10_atrib)} telefones atendidos filiaram pelo IDPV de um operador no dia de uma ligação atendida "
+                        f"({_tv_pct(v10_atrib, tl_atd)} dos telefones atendidos) · {_tv_n(v10_assist)} assistidas")
+            else:
+                _tv_kpi(k4, "🛒", "Vendas (CTN) — atribuídas + assistidas", f"{_tv_pct(v10, lg_atd)} {_tv_delta(v10, v10_p)}",
+                        f"{_tv_n(v10)} telefones atendidos com filiação no NOMINAL no período ({_tv_pct(v10, tl_atd)} dos telefones atendidos) · "
+                        f"{_tv_n(v10_tv)} tipo Televendas · separação atribuída × assistida indisponível neste período")
 
         c1, c2 = st.columns([1.9, 1])
         with c1:
-            _tv_funil("Funil Escallo · receptivo", [
-                ("📲", "Ligações recebidas", lg_rec, "ligações que chegaram à fila/operador no período (REL002, sem as pernas de URA)"),
-                ("✅", "Ligações atendidas", lg_atd, "statusFormatado = Atendido (agente + conversa)"),
-                ("🚫", "↳ Abandono", lg_ab, f"ligações não atendidas · canceladas · indisponíveis — fatia das recebidas (quem abandona não segue); "
-                                          f"= {_tv_n((tl_ab or 0) + (tl_ab_rec or 0)) if tl_ab is not None else '—'} telefones, porque um telefone pode abandonar mais de uma vez", 0),
-            ] + ([
-                ("🛒", "Vendas (CTN) atribuídas", v10_atrib, f"telefones atendidos que filiaram com tipo Televendas pelo IDPV de um operador humano, no dia "
-                                                             f"de uma ligação atendida · seq. = % das ligações atendidas · {_tv_pct(v10_atrib, tl_atd)} dos telefones atendidos", 1),
-                ("🤝", "Vendas assistidas", v10_assist, "atendidos que filiaram no período por outro canal, por bot ou em outro dia (tel-8 × NOMINAL) · seq. = % das atendidas", 1),
-            ] if _r63r else [
-                ("🛒", "Vendas (CTN) — atribuídas + assistidas", v10, f"telefones atendidos com filiação no NOMINAL no mesmo período (tel-8, qualquer canal) · "
-                                          f"separação atribuída × assistida indisponível neste período · seq. = % das ligações atendidas · {_tv_pct(v10, tl_atd)} dos telefones atendidos", 1),
-                ("📞", "└ com tipo Televendas (CTN) — inclui bots e vendas em outro dia", v10_tv, "seq. = % das vendas", 3),
-            ]), subtitle=_tv_per_lbl)
-            st.caption("Fonte: Televendas_REL002 (uma linha por ligação recebida; carga da TI) × NOMINAL_VENDAS por tel-8 + IDPV. "
-                       + ("'Atribuídas' (R63): filiação com tipo Televendas pelo IDPV de um operador humano no dia de uma ligação atendida; "
-                          "'assistidas' = filiou no período por outro canal, bot ou outro dia. " if _r63r else
-                          "'Vendas (CTN) — atribuídas + assistidas': o Televendas_REL002 só guarda o mês corrente, então neste período não dá para "
-                          "separar a atribuída (IDPV de operador humano, no dia de uma ligação atendida) da assistida — fica a régua do relatório "
-                          "(filiação no período, qualquer canal, tel-8). ")
-                       + "Uma ligação que fica só na URA (sem fila, sem agente) não conta como recebida pela operação; o volume aparece "
-                       "no KPI para conferência. Vendas por telefone porque o CTN não sabe qual ligação vendeu.")
+            if _r66:
+                _tv_funil("Funil Escallo · receptivo — base: ligações distribuídas aos operadores", [
+                    ("🎧", "Distribuídas aos operadores", lg_dist,
+                     f"ligações que chegaram à fila dos operadores (xCall Center) ou a um operador no período · das {_tv_n(lg_rec)} recebidas, "
+                     f"ficam fora {_tv_n(lg_fh)} fora do expediente (fila de callback) e {_tv_n(lg_outras)} sem operador"),
+                    ("✅", "Atendidas pelos operadores", lg_atd_ag, "statusFormatado = Atendido com agente (REL002) — ≈ 'Atendidas' do REL025 por agente"),
+                    ("🚫", "↳ Abandono na fila", lg_ab_fila, "o cliente desligou esperando na fila dos operadores — fatia das distribuídas "
+                                                          "(fora do expediente não entra aqui: ninguém podia atender)", 0),
+                ] + ([
+                    ("🛒", "Vendas (CTN) atribuídas", v10_atrib, f"telefones atendidos que filiaram com tipo Televendas pelo IDPV de um operador humano, "
+                                                                 f"no dia de uma ligação atendida · seq. = % das atendidas · do topo = % das distribuídas · "
+                                                                 f"{_tv_pct(v10_atrib, tl_atd_ag)} dos telefones atendidos", 1),
+                    ("🤝", "Vendas assistidas", v10_assist, "atendidos que filiaram no período por outro canal, por bot ou em outro dia (tel-8 × NOMINAL) · seq. = % das atendidas", 1),
+                ] if _r63r else [
+                    ("🛒", "Vendas (CTN) — atribuídas + assistidas", v10, f"telefones atendidos com filiação no NOMINAL no mesmo período (tel-8, qualquer canal) · "
+                                              f"separação atribuída × assistida indisponível neste período · seq. = % das atendidas · do topo = % das distribuídas", 1),
+                    ("📞", "└ com tipo Televendas (CTN) — inclui bots e vendas em outro dia", v10_tv, "seq. = % das vendas", 3),
+                ]), subtitle=_tv_per_lbl)
+                st.caption("Fonte: Televendas_REL002 (uma linha por ligação recebida; carga da TI) × Televendas_REL001 (fila) × NOMINAL_VENDAS por tel-8 + IDPV. "
+                           f"Ligações recebidas (total) = {_tv_n(lg_rec)} {_rec_decomp}. As taxas são lidas sobre as distribuídas: "
+                           "uma ligação que chega fora do expediente cai na fila 'Callback - Fora de horário', o sistema derruba e o discador ativo "
+                           "liga de volta (ver apropriação abaixo) — contá-la como abandono inflava a taxa (set/26: 13 % → ~1 %). "
+                           + ("'Atribuídas' (R63): filiação com tipo Televendas pelo IDPV de um operador humano no dia de uma ligação atendida; "
+                              "'assistidas' = filiou no período por outro canal, bot ou outro dia. " if _r63r else
+                              "'Vendas (CTN) — atribuídas + assistidas': neste período não dá para separar a atribuída (IDPV de operador humano, no dia "
+                              "de uma ligação atendida) da assistida — fica a régua do relatório (filiação no período, qualquer canal, tel-8). ")
+                           + "Uma ligação que fica só na URA (sem fila, sem agente) não conta como recebida; o volume aparece no KPI para conferência. "
+                           "Vendas por telefone porque o CTN não sabe qual ligação vendeu.")
+            else:
+                _tv_funil("Funil Escallo · receptivo", [
+                    ("📲", "Ligações recebidas", lg_rec, "ligações que chegaram à fila/operador no período (REL002, sem as pernas de URA)"),
+                    ("✅", "Ligações atendidas", lg_atd, "statusFormatado = Atendido (agente + conversa)"),
+                    ("🚫", "↳ Abandono", lg_ab, f"ligações não atendidas · canceladas · indisponíveis — fatia das recebidas (quem abandona não segue); "
+                                              f"= {_tv_n((tl_ab or 0) + (tl_ab_rec or 0)) if tl_ab is not None else '—'} telefones, porque um telefone pode abandonar mais de uma vez", 0),
+                ] + ([
+                    ("🛒", "Vendas (CTN) atribuídas", v10_atrib, f"telefones atendidos que filiaram com tipo Televendas pelo IDPV de um operador humano, no dia "
+                                                                 f"de uma ligação atendida · seq. = % das ligações atendidas · {_tv_pct(v10_atrib, tl_atd)} dos telefones atendidos", 1),
+                    ("🤝", "Vendas assistidas", v10_assist, "atendidos que filiaram no período por outro canal, por bot ou em outro dia (tel-8 × NOMINAL) · seq. = % das atendidas", 1),
+                ] if _r63r else [
+                    ("🛒", "Vendas (CTN) — atribuídas + assistidas", v10, f"telefones atendidos com filiação no NOMINAL no mesmo período (tel-8, qualquer canal) · "
+                                              f"separação atribuída × assistida indisponível neste período · seq. = % das ligações atendidas · {_tv_pct(v10, tl_atd)} dos telefones atendidos", 1),
+                    ("📞", "└ com tipo Televendas (CTN) — inclui bots e vendas em outro dia", v10_tv, "seq. = % das vendas", 3),
+                ]), subtitle=_tv_per_lbl)
+                st.caption("Fonte: Televendas_REL002 (uma linha por ligação recebida; carga da TI) × NOMINAL_VENDAS por tel-8 + IDPV. "
+                           + ("'Atribuídas' (R63): filiação com tipo Televendas pelo IDPV de um operador humano no dia de uma ligação atendida; "
+                              "'assistidas' = filiou no período por outro canal, bot ou outro dia. " if _r63r else
+                              "'Vendas (CTN) — atribuídas + assistidas': o Televendas_REL002 só guarda o mês corrente, então neste período não dá para "
+                              "separar a atribuída (IDPV de operador humano, no dia de uma ligação atendida) da assistida — fica a régua do relatório "
+                              "(filiação no período, qualquer canal, tel-8). ")
+                           + "Uma ligação que fica só na URA (sem fila, sem agente) não conta como recebida pela operação; o volume aparece "
+                           "no KPI para conferência. Vendas por telefone porque o CTN não sabe qual ligação vendeu.")
             _tv_funil("Apropriação das não atendidas — o que aconteceu com quem só abandonou", [
                 ("🚫", "Telefones só com abandono no período", tl_ab,
-                 f"telefones (tel-8), não ligações: as {_tv_n(lg_ab)} ligações de abandono acima são destes {_tv_n(tl_ab)} telefones + outros "
-                 f"{_tv_n(tl_ab_rec)} que abandonaram e foram atendidos depois (ligaram de novo) — um telefone pode abandonar mais de uma vez"),
+                 f"telefones (tel-8), não ligações: as {_tv_n(lg_ab)} ligações não atendidas do período"
+                 + (" (na fila dos operadores e fora do expediente)" if _r66 else " acima") + f" são destes {_tv_n(tl_ab)} telefones + outros "
+                 f"{_tv_n(tl_ab_rec)} que abandonaram e foram atendidos depois (ligaram de novo) — um telefone pode abandonar mais de uma vez"
+                 + (f" · inclui quem ligou fora do expediente ({_tv_n(lg_fh)} ligações na fila de callback)" if _r66 else "")),
                 ("📞", "↳ receberam ligação ativa depois", ab_ret, "o discador (REL003) ligou para o número após o abandono, no mesmo período", 0),
                 ("🗣️", "↳ … e conversaram (≥ 10 s)", ab_alo, "retorno ativo com conversa ≥ 10 s", 0),
                 ("👤", "↳ existem como Contato no HubSpot", ab_hs, "tel-8 × telefone do Contato (alex_tv_contato_tel)", 0),
@@ -4966,10 +5072,31 @@ def _aba_tab6():
                 f"não é movido pela ligação (Bloco 7 da Jornada: o receptivo não cria nem movimenta Negócio).",
                 bg="#fff7ed", icon="⚠️")
         _mg2 = _tv_meses_grafico('t6_s2_ano')
-        _tv_chart_mensal(_tv_long(S10, ['recebidas', 'atendidas', 'abandono', 'vendas_atrib' if _r63r else 'vendas_ctn'], meses=_mg2,
-                                  labels={'recebidas': 'Ligações recebidas', 'atendidas': 'Ligações atendidas', 'abandono': 'Abandono',
-                                          'vendas_ctn': 'Vendas (CTN) — atribuídas + assistidas', 'vendas_atrib': 'Vendas (CTN) atribuídas'}),
-                         "Série mensal — receptivo", stacked=False, rotulos=True, fonte="Televendas_REL002 × NOMINAL (tel-8)")
+        if _r66:
+            _tv_chart_mensal(_tv_long(S10, ['recebidas', 'distribuidas', 'atendidas_ag', 'abandono_fila', 'vendas_atrib' if _r63r else 'vendas_ctn'],
+                                      meses=_mg2,
+                                      labels={'recebidas': 'Ligações recebidas (total)', 'distribuidas': 'Distribuídas aos operadores',
+                                              'atendidas_ag': 'Atendidas pelos operadores', 'abandono_fila': 'Abandono na fila',
+                                              'vendas_ctn': 'Vendas (CTN) — atribuídas + assistidas', 'vendas_atrib': 'Vendas (CTN) atribuídas'}),
+                             "Série mensal — receptivo", stacked=False, rotulos=True, fonte="Televendas_REL002 × REL001 (fila) × NOMINAL (tel-8)")
+            # % mensal sobre as distribuídas (R66)
+            _s10 = _tv_serie(S10, 'distribuidas', meses=_mg2).rename(columns={'valor': 'distribuidas'})
+            for m_ in ['atendidas_ag', 'abandono_fila', 'vendas_atrib' if _r63r else 'vendas_ctn']:
+                _x = _tv_serie(S10, m_, meses=_mg2).rename(columns={'valor': m_})
+                _s10 = _s10.merge(_x, on='mes', how='left')
+            _pl = []
+            for m_, lbl_ in [('atendidas_ag', '% atendidas pelos operadores'), ('abandono_fila', '% abandono na fila'),
+                             ('vendas_atrib' if _r63r else 'vendas_ctn', '% Vendas (CTN) atribuídas' if _r63r else '% Vendas (CTN)')]:
+                if m_ in _s10.columns:
+                    _t = _s10[['mes']].copy(); _t['serie'] = lbl_; _t['valor'] = (_s10[m_] / _s10['distribuidas'] * 100).round(2)
+                    _pl.append(_t)
+            if _pl:
+                _tv_linhas_mensal(pd.concat(_pl), "Taxas do receptivo por mês — sobre as ligações distribuídas aos operadores (%)", pct=True, rotulos=True)
+        else:
+            _tv_chart_mensal(_tv_long(S10, ['recebidas', 'atendidas', 'abandono', 'vendas_atrib' if _r63r else 'vendas_ctn'], meses=_mg2,
+                                      labels={'recebidas': 'Ligações recebidas', 'atendidas': 'Ligações atendidas', 'abandono': 'Abandono',
+                                              'vendas_ctn': 'Vendas (CTN) — atribuídas + assistidas', 'vendas_atrib': 'Vendas (CTN) atribuídas'}),
+                             "Série mensal — receptivo", stacked=False, rotulos=True, fonte="Televendas_REL002 × NOMINAL (tel-8)")
 
     # =================================================================
     # 6 · GANHOS POR PORTA
@@ -10663,3 +10790,549 @@ def _aba_tab11():
         "jornada resolve a pessoa por CPF (tabela alex_contato_resolucao). (4) 'Regional' e 'Ruptura' ainda não "
         "têm definição oficial de elegibilidade — por isso a definição aqui é uma <b>seleção explícita</b>, e a "
         "barra cinza mostra sempre o que ficou de fora.", bg="#fefce8", icon="⚠️")
+
+
+# =====================================================================
+# TAB 12: 🔁 RETENÇÃO (LAKE) — R68 (20/10/2026) — aba 🔁 Retenção (Lake)
+#   Porta o protótipo proto_lake_v1.py (métricas 1–8 do mapeamento do Athena de 15/10). Fonte única: alex_lake_proto
+#   (gt7 run lake_proto; 1 leitura da fl_base_qia por rodada — nunca Athena ao vivo). Unidade = Filiado (titular no CTN,
+#   1 venda = 1 filiado, a mesma régua do NOMINAL por canal), nunca Contato/Negócio. Pagamento por COMPETÊNCIA, nunca dt_baixa.
+#   Seções: s1_coorte_pag (coorte × pagou M+k, vam) · s2_meio / s2_voucher · s4_coorte / s4_saida (fl_churn) ·
+#           s5_inad (foto fl_inadimplentes) · s6_ttv (fl_venda_ttv) · s7_mgm / s7_cash (fl_filiado_mgm)
+# =====================================================================
+@_aba(tab12)
+def _aba_tab12():
+    import plotly.graph_objects as _lk_go
+    _LK_GREENS = ['#166534', '#2e8a4f', '#57a86f', '#8cc79e', '#c8e3cf']
+    _LK_AMBER, _LK_GREY = '#b45309', '#94a3b8'
+    _LK_INK, _LK_MUTED, _LK_LINE = '#0f172a', '#64748b', '#e2e8f0'
+    _LK_MESES_PT = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro',
+                    'Novembro', 'Dezembro']
+    _LK_MESES_AB = ['', 'jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
+    _LK_NACIONAIS = ['WEBSITE', 'APP DO FILIADO', 'TELEVENDAS', 'MGM', 'DIGITAL B2B2C']
+    _LK_FRANQUIAS = ['PORTA A PORTA', 'LINK DO VENDEDOR', 'APP DO VENDEDOR']
+    _LK_CANAL_LBL = {'WEBSITE': 'Site', 'APP DO FILIADO': 'App do Filiado', 'TELEVENDAS': 'Televendas', 'MGM': 'MGM',
+                     'DIGITAL B2B2C': 'B2B2C (TIM)', 'PORTA A PORTA': 'Porta a Porta', 'LINK DO VENDEDOR': 'Link do Vendedor',
+                     'APP DO VENDEDOR': 'App do Vendedor'}
+    _LK_KMAX = 12
+    _LK_MATURACAO = 45   # competência "fechada" = 45 dias depois do fim do mês (energia +1 mês, cartão +15 d de retentativa)
+
+    def _lk_fmt(n, nd=0):
+        if n is None or (isinstance(n, float) and pd.isna(n)):
+            return "—"
+        if nd:
+            return f"{n:,.{nd}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"{int(round(n)):,}".replace(",", ".")
+
+    def _lk_brl(n):
+        return "—" if n is None or pd.isna(n) else "R$ " + _lk_fmt(n, 2)
+
+    def _lk_pct(a, b, nd=0):
+        if a is None or b is None or pd.isna(a) or pd.isna(b) or b <= 0:
+            return "—"
+        return f"{a / b * 100:.{nd}f}%".replace(".", ",")
+
+    def _lk_ratio(a, b):
+        if a is None or b is None or pd.isna(a) or pd.isna(b) or b <= 0:
+            return None
+        return a / b
+
+    def _lk_m_ab(ts):
+        return f"{_LK_MESES_AB[ts.month]}/{ts.year % 100:02d}"
+
+    def _lk_m_nome(ts):
+        return f"{_LK_MESES_PT[ts.month]} {ts.year}"
+
+    def _lk_canal(c):
+        return _LK_CANAL_LBL.get(c, c.title() if isinstance(c, str) else str(c))
+
+    def _lk_header(title, subtitle="", style="A"):
+        if _CDT_THEME:
+            st.markdown(cdt_theme.header(title, subtitle, style), unsafe_allow_html=True)
+        else:
+            st.markdown(f"**{title}**  \n<span style='color:{_LK_MUTED};font-size:12px'>{subtitle}</span>", unsafe_allow_html=True)
+
+    def _lk_fonte(texto):
+        st.markdown(cdt_theme.fonte(texto) if _CDT_THEME else f"<div style='font-size:10.5px;color:{_LK_MUTED};'>Fonte: {texto}</div>",
+                    unsafe_allow_html=True)
+
+    def _lk_nota(texto, cor=_LK_MUTED):
+        st.markdown(f"<div style='font-size:12px;color:{cor};line-height:1.45;margin:2px 0 8px;'>{texto}</div>", unsafe_allow_html=True)
+
+    def _lk_kpi(col, label, value, sub=""):
+        col.markdown(f"<div style='border:1px solid {_LK_LINE};border-radius:12px;padding:10px 12px;background:#fff;'>"
+                     f"<div style='font-size:11px;color:{_LK_MUTED};font-weight:600;letter-spacing:.3px;'>{label}</div>"
+                     f"<div style='font-size:24px;font-weight:800;color:{_LK_GREENS[0]};line-height:1.2;'>{value}</div>"
+                     f"<div style='font-size:11px;color:{_LK_MUTED};'>{sub}</div></div>", unsafe_allow_html=True)
+
+    def _lk_fig(fig, height=300, template='cdt_a', legend=True):
+        fig.update_layout(height=height, margin=dict(l=8, r=48, t=20, b=30), showlegend=legend)
+        if _CDT_THEME:
+            fig.update_layout(template=template)
+        return fig
+
+    def _lk_tab(df, nome):
+        _st_df(df, use_container_width=True, hide_index=True, csv_nome=nome)
+
+    def _lk_split(df, names):
+        d = df.copy()
+        parts = d['dim'].str.split('|', n=len(names) - 1, expand=True)
+        for i, nm in enumerate(names):
+            d[nm] = parts[i] if i in parts else None
+        return d
+
+    # ---------------- dados ----------------
+    st.markdown("## Retenção e pós-venda — o que o Lake (Athena) acrescenta")
+    _lkd, _lk_err = load_lake_proto()
+    _lk_atual = _lkd['atualizado_em'].max() if not _lkd.empty else None
+    _lk_h1, _lk_h2 = st.columns([3, 1.2])
+    _lk_h1.caption("Unidade de tudo nesta aba: **Filiado** (titular no CTN, 1 venda = 1 filiado — a mesma régua do NOMINAL por canal), nunca "
+                   "Contato ou Negócio do HubSpot. Pagamento lido por **competência** (QIA), nunca por data de baixa. Fontes (Athena): "
+                   "fl_contagem_filiado · fl_base_qia · fl_churn · fl_venda_ttv · fl_inadimplentes · fl_filiado_mgm, agregadas em "
+                   "`alex_lake_proto` pelo pipeline `gt7 run lake_proto`.")
+    _lk_h2.markdown(
+        "<div style='border:1px solid #e2e8f0;border-radius:10px;padding:7px 12px;background:#fff;'>"
+        "<div style='font-size:10.5px;color:#64748b;font-weight:600;'>Agregado atualizado em</div>"
+        f"<div style='font-size:13px;color:#0f172a;font-weight:700;'>🗓️ {pd.Timestamp(_lk_atual).strftime('%d/%m/%Y %H:%M') if _lk_atual is not None else '—'}</div>"
+        "</div>", unsafe_allow_html=True)
+    if _lk_err:
+        st.error(f"⚠️ Falha ao ler `alex_lake_proto` — a query levantou: `{_lk_err}`.")
+        return
+    if _lkd.empty:
+        st.warning("⚠️ A tabela `alex_lake_proto` ainda não existe ou está vazia. Rode `gt7 run lake_proto` (claude-toolkit; ≈ 5 GB lidos "
+                   "no Athena, ~US$ 0,03) e recarregue os dados.")
+        return
+
+    def _lk_sec(secao):
+        d = _lkd[_lkd['secao'] == secao]
+        if d.empty:
+            return pd.DataFrame()
+        return d.pivot_table(index=['mes', 'dim'], columns='metrica', values='valor', aggfunc='sum').reset_index()
+
+    _lkS1, _lkS2M, _lkS2V, _lkS4C, _lkS4S, _lkS5, _lkS6, _lkS7, _lkS7C = (
+        _lk_sec(s) for s in ('s1_coorte_pag', 's2_meio', 's2_voucher', 's4_coorte', 's4_saida', 's5_inad', 's6_ttv', 's7_mgm', 's7_cash'))
+
+    def _lk_painel(df, metrica):
+        if df.empty or 'painel' not in set(df['dim']):
+            return None
+        r = df[df['dim'] == 'painel']
+        return None if r.empty or metrica not in r else float(r[metrica].iloc[-1])
+
+    _lk_hoje = datetime.date.today()
+    _lk_mes_corrente = pd.Timestamp(_lk_hoje.year, _lk_hoje.month, 1)
+    _lk_meses = sorted(pd.Timestamp(m) for m in _lkd['mes'].unique() if pd.Timestamp(m) <= _lk_mes_corrente)
+
+    def _lk_comp_fechada(comp):
+        fim = (comp + pd.offsets.MonthBegin(1)).date()
+        return (_lk_hoje - fim).days >= _LK_MATURACAO
+
+    def _lk_k_disp(coorte):
+        ult = _lk_mes_corrente - pd.offsets.MonthBegin(1)
+        return min(_LK_KMAX, (ult.year - coorte.year) * 12 + (ult.month - coorte.month))
+
+    def _lk_k_fechado(coorte):
+        best = -1
+        for k in range(_LK_KMAX + 1):
+            if _lk_comp_fechada(coorte + pd.offsets.MonthBegin(k)):
+                best = k
+        return best
+
+    # ---------------- controles da aba ----------------
+    _lk_c1, _lk_c2, _lk_c3 = st.columns([1.4, 1.6, 1.2])
+    _lk_opts = list(reversed(_lk_meses))
+    _lk_tvf = globals().get('_tv_m_fim')
+    _lk_def = pd.Timestamp(_lk_tvf) if (_lk_tvf is not None and pd.Timestamp(_lk_tvf) in _lk_opts) else _lk_opts[0]
+    _lk_mes = _lk_c1.selectbox("Mês de referência (coorte / mês da venda)", _lk_opts, index=_lk_opts.index(_lk_def),
+                               format_func=_lk_m_nome, key=f"t12_mes_{_lk_def:%Y%m}",   # R68b: a chave segue o período → o padrão acompanha os Controles Globais
+                               help="Padrão = último mês tocado pelos Controles Globais. Para retenção, prefira coortes com ≥ 3 competências fechadas.")
+    _lk_grupo = _lk_c2.radio("Canais", ["Nacionais", "Franquias", "Todos"], index=0, horizontal=True, key="t12_grupo",
+                             help="Nacionais = Site, App do Filiado, Televendas, MGM, B2B2C · Franquias = Porta a Porta, Link e App do Vendedor")
+    _lk_canais = {"Nacionais": _LK_NACIONAIS, "Franquias": _LK_FRANQUIAS, "Todos": _LK_NACIONAIS + _LK_FRANQUIAS}[_lk_grupo]
+    _lk_fech = _lk_c3.toggle("Só competências fechadas (≥ 45 dias)", value=False, key="t12_fech",
+                             help="Esconde as competências ainda em maturação (energia +1 mês, cartão +15 dias de retentativa).")
+    _lk_obs = st.text_area("Observações do analista (entram no rodapé de cada sub-aba)", height=68, key="t12_obs")
+    _lk_mc = _lk_painel(_lkS1, 'max_comp_idx')
+    st.caption((f"fl_base_qia com competências até {int(_lk_mc - 1) % 12 + 1:02d}/{int((_lk_mc - 1) // 12)} · " if _lk_mc else "")
+               + f"competência fechada = {_LK_MATURACAO} dias depois do fim do mês · M+0 é a competência da própria venda (pró-rata/adesão).")
+    if _lk_mes >= _lk_mes_corrente:
+        st.warning(f"⏳ {_lk_m_nome(_lk_mes)} ainda está em curso — números parciais.")
+
+    def _lk_rodape():
+        if _lk_obs.strip():
+            _lk_nota("<b>Observações:</b> " + " · ".join(x.strip() for x in _lk_obs.splitlines() if x.strip()), _LK_INK)
+
+    _lk_t1, _lk_t2, _lk_t3, _lk_t4 = st.tabs(["💳 1 · Retenção por pagamento", "🧾 2 · Vendas: meio, voucher, refiliação, dependentes",
+                                              "🚪 3 · Churn e inadimplência", "🚀 4 · Ativação (TTV) e MGM"])
+
+    def _lk_s1_rows(mes, prefix):
+        d = _lkS1[(_lkS1['mes'] == mes) & (_lkS1['dim'].str.startswith(prefix))].copy()
+        d['chave'] = d['dim'].str.split(':', n=1).str[1]
+        return d
+
+    def _lk_curva(row, kmax):
+        n = row.get('n')
+        return [_lk_ratio(row.get(f'pag_k{k}'), n) for k in range(kmax + 1)]
+
+    # ---------------- 1 · retenção por pagamento ----------------
+    with _lk_t1:
+        if _lkS1.empty:
+            st.info("Seção s1_coorte_pag ausente — rode `gt7 run lake_proto --arg only=s1`.")
+        else:
+            _kf = _lk_k_fechado(_lk_mes)
+            _kd = _lk_k_disp(_lk_mes)
+            _kmax = _kf if _lk_fech else min(_kd, max(_kf, 0) + 2)
+            _kmax = max(min(_kmax, _kd), 0)
+            _tot = _lkS1[(_lkS1['mes'] == _lk_mes) & (_lkS1['dim'] == 'TOTAL')]
+            _can = _lk_s1_rows(_lk_mes, 'canal:')
+            _can = _can[_can['chave'].isin(_lk_canais)]
+            _lk_header("Coorte de vendas novas × pagamento por competência",
+                       f"coorte = filiados com venda nova (prospecção) em {_lk_m_ab(_lk_mes)} · pagou M+k = tem QIA na competência {_lk_m_ab(_lk_mes)} + k meses · "
+                       f"competências fechadas até M+{_kf if _kf >= 0 else '—'}")
+            if not _tot.empty:
+                _r = _tot.iloc[0]
+                _n = _r['n']
+                _c = st.columns(5)
+                _lk_kpi(_c[0], "FILIADOS NA COORTE", _lk_fmt(_n), "vendas novas (prospecção), todos os canais")
+                for _i, _k in enumerate((1, 3, 6)):
+                    if _k > _kd:
+                        _lk_kpi(_c[_i + 1], f"PAGOU M+{_k}", "—", "competência ainda não chegou")
+                    else:
+                        _lk_kpi(_c[_i + 1], f"PAGOU M+{_k}", _lk_pct(_r.get(f'pag_k{_k}'), _n),
+                                ("competência fechada" if _k <= _kf else "⏳ ainda maturando"))
+                _vam = sum(float(_r.get(f'vam_k{k}') or 0) for k in range(0, _kf + 1)) if _kf >= 0 else None
+                _lk_kpi(_c[4], f"RECEITA MÉDIA ATÉ M+{max(_kf, 0)}", _lk_brl(_lk_ratio(_vam, _n)) if _vam else "—",
+                        "⚠️ vam do Lake cai 35 % desde mai/26 — conferir com o gestor")
+            if not _can.empty:
+                _fig = _lk_go.Figure()
+                for _, _r in _can.sort_values('n', ascending=False).iterrows():
+                    _ys = [None if v is None else v * 100 for v in _lk_curva(_r, _kmax)]
+                    _fig.add_trace(_lk_go.Scatter(x=list(range(_kmax + 1)), y=_ys, mode='lines+markers', name=_lk_canal(_r['chave']),
+                                                  line=dict(width=2.5), hovertemplate='M+%{x}: %{y:.1f}%<extra>' + _lk_canal(_r['chave']) + '</extra>'))
+                _fig.update_xaxes(title_text='meses após a venda (k)', tickmode='linear', dtick=1)
+                _fig.update_yaxes(ticksuffix='%', rangemode='tozero')
+                if 0 <= _kf < _kmax:
+                    _fig.add_vrect(x0=_kf + 0.5, x1=_kmax + 0.5, fillcolor='#f1f5f9', opacity=0.6, line_width=0,
+                                   annotation_text="maturando", annotation_position="top left", annotation_font_color=_LK_MUTED)
+                st.plotly_chart(_lk_fig(_fig, 360, 'cdt_a', legend=True), use_container_width=True, config=dict(displayModeBar=False))
+                _lk_fonte("alex_lake_proto · s1_coorte_pag (fl_contagem_filiado ⋈ fl_base_qia por id_filiado; competência, não dt_baixa)")
+                _rows = []
+                for _, _r in _can.sort_values('n', ascending=False).iterrows():
+                    _n = _r['n']
+                    _vam = sum(float(_r.get(f'vam_k{k}') or 0) for k in range(0, max(_kf, 0) + 1))
+                    _rows.append({'Canal': _lk_canal(_r['chave']), 'Filiados (coorte)': int(_n),
+                                  **{f'M+{k}': _lk_pct(_r.get(f'pag_k{k}'), _n) for k in (1, 3, 6, 9, 12) if k <= _kmax},
+                                  f'Receita média até M+{max(_kf, 0)}': _lk_brl(_lk_ratio(_vam, _n))})
+                _lk_tab(pd.DataFrame(_rows), f"lake_retencao_pag_{_lk_mes:%Y%m}")
+            _lk_header("Coortes mês a mês — % que pagou M+k", "linhas = mês da venda nova (todos os canais) · cinza = competência ainda maturando", "A")
+            _hm = _lkS1[_lkS1['dim'] == 'TOTAL'].sort_values('mes')
+            _hm = _hm[_hm['mes'].isin(_lk_meses)]
+            if not _hm.empty:
+                _z, _txt, _ys = [], [], []
+                for _, _r in _hm.iterrows():
+                    _kfr, _kdr = _lk_k_fechado(_r['mes']), _lk_k_disp(_r['mes'])
+                    _cur = _lk_curva(_r, _LK_KMAX)
+                    _oc = lambda k, v, kfr=_kfr, kdr=_kdr: v is None or k > kdr or (_lk_fech and k > kfr)
+                    _z.append([None if _oc(k, v) else v * 100 for k, v in enumerate(_cur)])
+                    _txt.append(["" if _oc(k, v) else (f"{v * 100:.0f}" + ("" if k <= _kfr else "·")) for k, v in enumerate(_cur)])
+                    _ys.append(_lk_m_ab(_r['mes']))
+                _fig = _lk_go.Figure(_lk_go.Heatmap(z=_z, x=[f"M+{k}" for k in range(_LK_KMAX + 1)], y=_ys, text=_txt, texttemplate='%{text}',
+                                                    colorscale=[[0, '#f8fafc'], [0.5, _LK_GREENS[3]], [1, _LK_GREENS[0]]], zmin=40, zmax=100,
+                                                    showscale=False, hovertemplate='%{y} · %{x}: %{z:.1f}%<extra></extra>', xgap=2, ygap=2))
+                _fig.update_yaxes(autorange='reversed', side='left')
+                _lk_fig(_fig, 30 * len(_ys) + 80, 'cdt_a', legend=False)
+                _fig.update_layout(margin=dict(l=8, r=8, t=10, b=30))
+                st.plotly_chart(_fig, use_container_width=True, config=dict(displayModeBar=False))
+                _lk_nota("Valores com <b>·</b> são competências ainda em maturação (podem subir). M+0 é a competência da própria venda "
+                         "(pró-rata / adesão — não comparar com os demais).")
+            _d1, _d2 = st.columns(2, gap="large")
+            with _d1:
+                _lk_header("Por meio de pagamento na venda", f"coorte {_lk_m_ab(_lk_mes)} · todos os canais", "A")
+                _me = _lk_s1_rows(_lk_mes, 'meio:')
+                if not _me.empty:
+                    _rows = [{'Meio de pagamento': _r['chave'].title(), 'Filiados': int(_r['n']),
+                              **{f'M+{k}': _lk_pct(_r.get(f'pag_k{k}'), _r['n']) for k in (1, 3, 6) if k <= _kmax}}
+                             for _, _r in _me.sort_values('n', ascending=False).iterrows() if _r['n'] >= 200]
+                    _lk_tab(pd.DataFrame(_rows), f"lake_retencao_meio_{_lk_mes:%Y%m}")
+                    _lk_nota("Energia (concessionária) aparece baixa em M+0/M+1 por desenho: a baixa chega ~1 mês depois da competência — "
+                             "ler só competências fechadas.")
+            with _d2:
+                _lk_header("Hipótese: usou algum produto nos 30 primeiros dias → paga mais?", f"coorte {_lk_m_ab(_lk_mes)} · todos os canais", "A")
+                _us = _lk_s1_rows(_lk_mes, 'uso30:')
+                if not _us.empty:
+                    _lbl = {'sim': 'Usou em ≤ 30 d', 'nao': 'Não usou em 30 d', 'sem_ttv': 'Sem registro no TTV'}
+                    _rows = [{'Grupo': _lbl.get(_r['chave'], _r['chave']), 'Filiados': int(_r['n']),
+                              **{f'M+{k}': _lk_pct(_r.get(f'pag_k{k}'), _r['n']) for k in (1, 3, 6) if k <= _kmax}}
+                             for _, _r in _us.sort_values('n', ascending=False).iterrows()]
+                    _lk_tab(pd.DataFrame(_rows), f"lake_retencao_uso30_{_lk_mes:%Y%m}")
+                    _lk_nota("Uso = 1ª utilização de cashback (nacional/local/campanha/online), cashout, Amor Saúde, WebDental ou Visão de Todos "
+                             "até 30 dias após a venda (fl_venda_ttv). Correlação, não causa: quem usa também é quem já pagou a 1ª mensalidade.")
+            _lk_rodape()
+
+    # ---------------- 2 · vendas: meio, voucher, refiliação, dependentes ----------------
+    with _lk_t2:
+        if _lkS2M.empty:
+            st.info("Seção s2_meio ausente — rode `gt7 run lake_proto --arg only=s2`.")
+        else:
+            _m = _lk_split(_lkS2M, ['canal', 'meio'])
+            _m = _m[_m['canal'].isin(_lk_canais) & _m['mes'].isin(_lk_meses)]
+            _mm = _m[_m['mes'] == _lk_mes]
+            _mp = _m[_m['mes'] == (_lk_mes - pd.offsets.MonthBegin(1))]
+            _c = st.columns(4)
+            _v = _mm['vendas'].sum()
+            _vp = _mp['vendas'].sum() if not _mp.empty else None
+            _chip = _tv_delta(_v, _vp, f"vs {_lk_m_ab(_lk_mes - pd.offsets.MonthBegin(1))}") if (_vp and '_tv_delta' in globals()) else ""
+            _lk_kpi(_c[0], "VENDAS NO MÊS (FILIADOS)", _lk_fmt(_v), f"{_lk_grupo.lower()} · = NOMINAL por canal {_chip}")
+            _lk_kpi(_c[1], "VENDAS NOVAS (PROSPECÇÃO)", _lk_pct(_mm['prospeccao'].sum(), _v), f"{_lk_fmt(_mm['prospeccao'].sum())} filiados")
+            _lk_kpi(_c[2], "REFILIAÇÕES", _lk_pct(_mm['refiliacao'].sum(), _v), f"{_lk_fmt(_mm['refiliacao'].sum())} voltaram")
+            _lk_kpi(_c[3], "DEPENDENTES POR VENDA", _lk_fmt(_lk_ratio(_mm['dependentes'].sum(), _v), 2),
+                    f"{_lk_fmt(_mm['dependentes'].sum())} dependentes informados na venda")
+            _d1, _d2 = st.columns(2, gap="large")
+            with _d1:
+                _lk_header("Vendas por meio de pagamento", f"{_lk_grupo} · mês a mês · unidade: filiado", "A")
+                _g = _m.groupby(['mes', 'meio'])['vendas'].sum().reset_index()
+                _top = _g.groupby('meio')['vendas'].sum().sort_values(ascending=False).index.tolist()
+                _g['meio'] = _g['meio'].where(_g['meio'].isin(_top[:5]), 'OUTROS')
+                _g = _g.groupby(['mes', 'meio'])['vendas'].sum().reset_index()
+                _fig = _lk_go.Figure()
+                _cols = [_LK_GREENS[0], _LK_GREENS[1], _LK_AMBER, _LK_GREENS[3], _LK_GREY, _LK_INK]
+                for _i, _meio in enumerate(_top[:5] + ['OUTROS']):
+                    _gg = _g[_g['meio'] == _meio]
+                    if _gg.empty:
+                        continue
+                    _fig.add_trace(_lk_go.Bar(x=[_lk_m_ab(x) for x in _gg['mes']], y=_gg['vendas'], name=_meio.title(), marker_color=_cols[_i % len(_cols)],
+                                              hovertemplate='%{x} · ' + _meio.title() + ': %{y:,.0f}<extra></extra>'))
+                _fig.update_layout(barmode='stack', legend=dict(orientation='h', y=-0.25, yanchor='top', x=0))
+                st.plotly_chart(_lk_fig(_fig, 320), use_container_width=True, config=dict(displayModeBar=False))
+                _lk_fonte("alex_lake_proto · s2_meio (fl_contagem_filiado.meio_arrecadacao na venda)")
+            with _d2:
+                _lk_header("Mix de meio de pagamento por canal", f"{_lk_m_ab(_lk_mes)} · % das vendas do canal", "A")
+                _piv = _mm.pivot_table(index='canal', columns='meio', values='vendas', aggfunc='sum').fillna(0)
+                if not _piv.empty:
+                    _tc = _piv.sum(axis=1)
+                    _piv = _piv[[c_ for c_ in _top if c_ in _piv.columns][:6]]
+                    _out = pd.DataFrame({'Canal': [_lk_canal(x) for x in _piv.index], 'Vendas': _tc.astype(int).values})
+                    for _col in _piv.columns:
+                        _out[_col.title()] = [_lk_pct(_piv.loc[i, _col], _tc[i]) for i in _piv.index]
+                    _lk_tab(_out.sort_values('Vendas', ascending=False), f"lake_meio_canal_{_lk_mes:%Y%m}")
+            st.divider()
+            _d1, _d2 = st.columns(2, gap="large")
+            with _d1:
+                _lk_header("Vendas novas × refiliações", f"{_lk_grupo} · mês a mês · hoje o NOMINAL conta tudo como venda", "A")
+                _g = _m.groupby('mes')[['prospeccao', 'refiliacao']].sum().reset_index()
+                _fig = _lk_go.Figure()
+                _fig.add_trace(_lk_go.Bar(x=[_lk_m_ab(x) for x in _g['mes']], y=_g['prospeccao'], name='Venda nova (prospecção)', marker_color=_LK_GREENS[0]))
+                _fig.add_trace(_lk_go.Bar(x=[_lk_m_ab(x) for x in _g['mes']], y=_g['refiliacao'], name='Refiliação', marker_color=_LK_AMBER))
+                _fig.update_layout(barmode='stack')
+                st.plotly_chart(_lk_fig(_fig, 300), use_container_width=True, config=dict(displayModeBar=False))
+                _lk_fonte("alex_lake_proto · s2_meio (flags prospeccao / refiliacao do fl_contagem_filiado)")
+            with _d2:
+                _lk_header("Refiliação por canal", f"{_lk_m_ab(_lk_mes)} · % das vendas do canal que são voltas", "A")
+                _g = _mm.groupby('canal')[['vendas', 'prospeccao', 'refiliacao', 'dependentes']].sum().reset_index().sort_values('vendas', ascending=False)
+                _out = pd.DataFrame({'Canal': [_lk_canal(x) for x in _g['canal']], 'Vendas': _g['vendas'].astype(int),
+                                     'Novas': _g['prospeccao'].astype(int), 'Refiliações': _g['refiliacao'].astype(int),
+                                     '% refiliação': [_lk_pct(a, b) for a, b in zip(_g['refiliacao'], _g['vendas'])],
+                                     'Dep./venda': [_lk_fmt(_lk_ratio(a, b), 2) for a, b in zip(_g['dependentes'], _g['vendas'])]})
+                _lk_tab(_out, f"lake_refiliacao_canal_{_lk_mes:%Y%m}")
+                _lk_nota("Meta e CPA hoje são por venda total; separar <b>venda nova</b> de <b>retorno</b> muda a leitura do custo por filiado novo. "
+                         "Dependentes = <code>numero_dependentes</code> informado na venda (receita potencial, não contagem de vidas ativas).")
+            st.divider()
+            _lk_header("Vouchers / promoções na venda", f"{_lk_grupo} · {_lk_m_ab(_lk_mes)} · campanha do voucher de mensalidade (campanhas < 200 vendas/mês = OUTRAS)", "A")
+            if not _lkS2V.empty:
+                _vv = _lk_split(_lkS2V, ['canal', 'campanha'])
+                _vv = _vv[_vv['canal'].isin(_lk_canais) & (_vv['mes'] == _lk_mes)]
+                _g = _vv.groupby('campanha')[['vendas', 'prospeccao', 'refiliacao']].sum().reset_index().sort_values('vendas', ascending=False)
+                _tv_ = _g['vendas'].sum()
+                _sem = _g.loc[_g['campanha'] == 'SEM VOUCHER', 'vendas'].sum()
+                _gc = _g[~_g['campanha'].isin(['SEM VOUCHER', 'OUTRAS'])]
+                _top_nome, _top_v = (_gc.iloc[0]['campanha'], _gc.iloc[0]['vendas']) if not _gc.empty else ('—', None)
+                _c = st.columns(3)
+                _lk_kpi(_c[0], "VENDAS COM VOUCHER DE MENSALIDADE", _lk_pct(_tv_ - _sem, _tv_), f"{_lk_fmt(_tv_ - _sem)} de {_lk_fmt(_tv_)}")
+                _lk_kpi(_c[1], "CAMPANHAS ATIVAS NO MÊS", _lk_fmt(len(_gc)), "com ≥ 200 vendas")
+                _lk_kpi(_c[2], "MAIOR CAMPANHA", _top_nome, _lk_pct(_top_v, _tv_) + " das vendas")
+                _out = pd.DataFrame({'Campanha (voucher)': _g['campanha'], 'Vendas': _g['vendas'].astype(int), '% do mês': [_lk_pct(x, _tv_) for x in _g['vendas']],
+                                     'Novas': _g['prospeccao'].astype(int), 'Refiliações': _g['refiliacao'].astype(int)})
+                _lk_tab(_out.head(15), f"lake_voucher_{_lk_mes:%Y%m}")
+                _lk_fonte("alex_lake_proto · s2_voucher (fl_contagem_filiado.voucher_campanha_mensalidade) — permite cruzar com a dim_calendario sem inferir a promoção pelo dia")
+            _lk_rodape()
+
+    # ---------------- 3 · churn e inadimplência ----------------
+    with _lk_t3:
+        if _lkS4S.empty and _lkS5.empty:
+            st.info("Seções s4/s5 ausentes — rode `gt7 run lake_proto --arg only=s4,s5`.")
+        if not _lkS4S.empty:
+            _s = _lk_split(_lkS4S, ['canal', 'tipo'])
+            _s = _s[_s['canal'].isin(_lk_canais) & _s['mes'].isin(_lk_meses)]
+            _sm = _s[_s['mes'] == _lk_mes]
+            _lk_header("Saídas (desfiliações) no mês — solicitada × em massa", f"{_lk_grupo} · mês = mês do fim do ciclo (dt_fim) · unidade: filiado", "A")
+            _c = st.columns(4)
+            _ns = _sm.loc[_sm['tipo'] == 'DESFILIAÇÃO SOLICITADA', 'n'].sum()
+            _nm = _sm.loc[_sm['tipo'] == 'DESFILIAÇÃO EM MASSA', 'n'].sum()
+            _lk_kpi(_c[0], "DESFILIAÇÕES NO MÊS", _lk_fmt(_sm['n'].sum()), f"{_lk_grupo.lower()}")
+            _lk_kpi(_c[1], "SOLICITADAS", _lk_pct(_ns, _sm['n'].sum()), f"{_lk_fmt(_ns)} pediram para sair")
+            _lk_kpi(_c[2], "EM MASSA (INADIMPLÊNCIA)", _lk_pct(_nm, _sm['n'].sum()), f"{_lk_fmt(_nm)} desligados pela régua")
+            _lk_kpi(_c[3], "PERMANÊNCIA MÉDIA", f"{_lk_fmt(_lk_ratio(_sm['dias_perm_soma'].sum(), _sm['n'].sum()))} d", "dias entre entrada e saída")
+            _d1, _d2 = st.columns(2, gap="large")
+            with _d1:
+                _g = _s.groupby(['mes', 'tipo'])['n'].sum().reset_index()
+                _fig = _lk_go.Figure()
+                for _tipo, _cor in (('DESFILIAÇÃO SOLICITADA', _LK_GREENS[0]), ('DESFILIAÇÃO EM MASSA', _LK_AMBER)):
+                    _gg = _g[_g['tipo'] == _tipo]
+                    _fig.add_trace(_lk_go.Bar(x=[_lk_m_ab(x) for x in _gg['mes']], y=_gg['n'], name=_tipo.title(), marker_color=_cor))
+                _fig.update_layout(barmode='stack')
+                st.plotly_chart(_lk_fig(_fig, 300), use_container_width=True, config=dict(displayModeBar=False))
+                _lk_fonte("alex_lake_proto · s4_saida (fl_churn, cliente_ativo = 0, tipo_desfiliacao)")
+            with _d2:
+                _g = _sm.groupby('canal')[['n', 'dias_perm_soma', 'qia_soma', 'valor_qia_soma']].sum().reset_index()
+                _g2 = _sm[_sm['tipo'] == 'DESFILIAÇÃO EM MASSA'].groupby('canal')['n'].sum()
+                _g = _g.sort_values('n', ascending=False)
+                _out = pd.DataFrame({'Canal de entrada': [_lk_canal(x) for x in _g['canal']], 'Saídas': _g['n'].astype(int),
+                                     '% em massa': [_lk_pct(_g2.get(cn, 0), nn) for cn, nn in zip(_g['canal'], _g['n'])],
+                                     'Permanência média (d)': [_lk_fmt(_lk_ratio(a, b)) for a, b in zip(_g['dias_perm_soma'], _g['n'])],
+                                     'QIA pagos antes de sair (média)': [_lk_fmt(_lk_ratio(a, b), 1) for a, b in zip(_g['qia_soma'], _g['n'])],
+                                     'R$ médio pago antes de sair': [_lk_brl(_lk_ratio(a, b)) for a, b in zip(_g['valor_qia_soma'], _g['n'])]})
+                _lk_tab(_out, f"lake_saidas_canal_{_lk_mes:%Y%m}")
+                _lk_nota("Quem sai pelo <b>Porta a Porta</b> sai depois de mais tempo; a desfiliação <b>em massa</b> é a régua de inadimplência "
+                         "(meses sem pagar) e chega meses depois da venda — por isso <code>cliente_ativo</code> do Lake não serve como 'pagante'. "
+                         "<code>qtd_qia_desfiliacao</code> vem preenchido em poucas linhas (média ≈ 0,1) — semântica a confirmar com o gestor do Lake.")
+        if not _lkS4C.empty:
+            st.divider()
+            _lk_header("Coorte do mês — quanto já saiu",
+                       f"filiados com ciclo iniciado em {_lk_m_ab(_lk_mes)} (venda nova + refiliação) · estado em {pd.Timestamp(_lk_atual):%d/%m}" if _lk_atual is not None else "", "A")
+            _cc = _lk_split(_lkS4C, ['canal', 'tipo'])
+            _cc = _cc[_cc['canal'].isin(_lk_canais) & (_cc['mes'] == _lk_mes)]
+            _g = _cc.groupby('canal')[['n', 'ativos', 'desf_solic', 'desf_massa', 'usou_algo', 'ativou_app']].sum().reset_index().sort_values('n', ascending=False)
+            _out = pd.DataFrame({'Canal': [_lk_canal(x) for x in _g['canal']], 'Filiados': _g['n'].astype(int),
+                                 '"Ativos" (CTN)': [_lk_pct(a, b) for a, b in zip(_g['ativos'], _g['n'])],
+                                 'Saíram a pedido': [_lk_pct(a, b) for a, b in zip(_g['desf_solic'], _g['n'])],
+                                 'Saíram em massa': [_lk_pct(a, b) for a, b in zip(_g['desf_massa'], _g['n'])],
+                                 'Ativaram o app': [_lk_pct(a, b) for a, b in zip(_g['ativou_app'], _g['n'])],
+                                 'Usaram algo': [_lk_pct(a, b) for a, b in zip(_g['usou_algo'], _g['n'])]})
+            _lk_tab(_out, f"lake_coorte_churn_{_lk_mes:%Y%m}")
+            _lk_nota("⚠️ <b>\"Ativo\" ≠ pagante</b>: a coorte de mar/26 estava 93–97 % \"ativa\" em 15/10, mas só 65–76 % pagou a competência de set/26. "
+                     "A leitura de qualidade da venda é a sub-aba 1 (pagamento), não esta coluna.")
+        if not _lkS5.empty:
+            st.divider()
+            _ref = _lk_painel(_lkS5, 'ref_idx')
+            _ref_txt = f"{int(_ref - 1) % 12 + 1:02d}/{int((_ref - 1) // 12)}" if _ref else "—"
+            _lk_header("Inadimplência da safra — foto da base", f"coortes de venda nova × estado na referência {_ref_txt} da fl_inadimplentes · unidade: filiado", "A")
+            _d5 = _lkS5[_lkS5['dim'].str.startswith('canal:') & _lkS5['mes'].isin(_lk_meses)].copy()
+            _d5['canal'] = _d5['dim'].str.split(':', n=1).str[1]
+            _d5 = _d5[_d5['canal'].isin(_lk_canais)]
+            _dm = _d5[_d5['mes'] == _lk_mes].sort_values('n', ascending=False)
+            if not _dm.empty:
+                _out = pd.DataFrame({'Canal': [_lk_canal(x) for x in _dm['canal']], 'Filiados (coorte)': _dm['n'].astype(int),
+                                     'Inadimplentes hoje': [_lk_pct(a, b) for a, b in zip(_dm['inadimplentes'], _dm['n'])],
+                                     'Cartão rejeitado (novo)': [_lk_pct(a, b) for a, b in zip(_dm['novo_rejeitado'], _dm['n'])],
+                                     'Régua crítica': [_lk_pct(a, b) for a, b in zip(_dm['regua_critica'], _dm['n'])],
+                                     'Meses em atraso (média dos inad.)': [_lk_fmt(_lk_ratio(a, b), 1) for a, b in zip(_dm['meses_inad_soma'], _dm['inadimplentes'])],
+                                     'R$ devido (média dos inad.)': [_lk_brl(_lk_ratio(a, b)) for a, b in zip(_dm['vam_inad_soma'], _dm['inadimplentes'])]})
+                _lk_tab(_out, f"lake_inad_safra_{_lk_mes:%Y%m}")
+            _t5 = _lkS5[(_lkS5['dim'] == 'TOTAL') & _lkS5['mes'].isin(_lk_meses)].sort_values('mes')
+            if not _t5.empty:
+                _fig = _lk_go.Figure()
+                _fig.add_trace(_lk_go.Scatter(x=[_lk_m_ab(x) for x in _t5['mes']], y=[(_lk_ratio(a, b) or 0) * 100 for a, b in zip(_t5['inadimplentes'], _t5['n'])],
+                                              mode='lines+markers', name='Inadimplentes', line=dict(color=_LK_AMBER, width=2.5)))
+                _fig.add_trace(_lk_go.Scatter(x=[_lk_m_ab(x) for x in _t5['mes']], y=[(_lk_ratio(a, b) or 0) * 100 for a, b in zip(_t5['novo_rejeitado'], _t5['n'])],
+                                              mode='lines+markers', name='Cartão rejeitado', line=dict(color=_LK_GREY, width=2)))
+                _fig.update_yaxes(ticksuffix='%', rangemode='tozero')
+                _lk_fig(_fig, 280, 'cdt_b', legend=False)
+                if _CDT_THEME:
+                    cdt_theme.rotular_pontas(_fig)
+                st.plotly_chart(_fig, use_container_width=True, config=dict(displayModeBar=False))
+                _lk_fonte("alex_lake_proto · s5_inad (fl_inadimplentes na última referência ⋈ coorte do fl_contagem_filiado) · coortes recentes têm menos tempo para atrasar")
+                _lk_nota("<b>Cartão rejeitado (novo)</b> = <code>novo_rejeitado</code>: a 1ª cobrança não passou — venda que ainda não virou pagante. "
+                         "Leitura complementar à sub-aba 1: lá é 'pagou', aqui é 'está devendo hoje'.")
+        _lk_rodape()
+
+    # ---------------- 4 · ativação (TTV) e MGM ----------------
+    with _lk_t4:
+        if not _lkS6.empty:
+            _d6 = _lkS6[_lkS6['dim'].str.startswith('canal:') & _lkS6['mes'].isin(_lk_meses)].copy()
+            _d6['canal'] = _d6['dim'].str.split(':', n=1).str[1]
+            _d6 = _d6[_d6['canal'].isin(_lk_canais)]
+            _dm = _d6[_d6['mes'] == _lk_mes].sort_values('n', ascending=False)
+            _lk_header("Ativação nos 30 primeiros dias (time-to-value)", f"vendas novas de {_lk_m_ab(_lk_mes)} · {_lk_grupo} · unidade: filiado", "A")
+            if not _dm.empty:
+                _n = _dm['n'].sum()
+                _c = st.columns(5)
+                _lk_kpi(_c[0], "ATIVARAM O APP", _lk_pct(_dm['app_ativo'].sum(), _n), "app_ativo (fl_venda_ttv)")
+                _lk_kpi(_c[1], "USARAM ALGO EM ≤ 30 D", _lk_pct(_dm['usou_30d'].sum(), _n), "qualquer produto")
+                _lk_kpi(_c[2], "AMOR SAÚDE ≤ 30 D", _lk_pct(_dm['amor_saude_30d'].sum(), _n), "consulta / exame")
+                _lk_kpi(_c[3], "CASHBACK ≤ 30 D", _lk_pct(_dm['cashback_30d'].sum(), _n), "nacional, local, campanha ou online")
+                _lk_kpi(_c[4], "NUNCA USARAM NADA", _lk_pct(_dm['nenhum_uso'].sum(), _n), "grupo_utilizacao = 00000000 (até hoje)")
+                _out = pd.DataFrame({'Canal': [_lk_canal(x) for x in _dm['canal']], 'Filiados': _dm['n'].astype(int),
+                                     'App ativo': [_lk_pct(a, b) for a, b in zip(_dm['app_ativo'], _dm['n'])],
+                                     'Cartão virtual ativado': [_lk_pct(a, b) for a, b in zip(_dm['pl_ativada'], _dm['n'])],
+                                     'Usou ≤ 30 d': [_lk_pct(a, b) for a, b in zip(_dm['usou_30d'], _dm['n'])],
+                                     'Amor Saúde ≤ 30 d': [_lk_pct(a, b) for a, b in zip(_dm['amor_saude_30d'], _dm['n'])],
+                                     'Cashback ≤ 30 d': [_lk_pct(a, b) for a, b in zip(_dm['cashback_30d'], _dm['n'])],
+                                     'WebDental ≤ 30 d': [_lk_pct(a, b) for a, b in zip(_dm['webdental_30d'], _dm['n'])],
+                                     'Nunca usou': [_lk_pct(a, b) for a, b in zip(_dm['nenhum_uso'], _dm['n'])]})
+                _lk_tab(_out, f"lake_ttv_canal_{_lk_mes:%Y%m}")
+            _t6 = _d6[_d6['mes'] < _lk_mes_corrente].groupby('mes')[['n', 'usou_30d', 'app_ativo', 'amor_saude_30d', 'cashback_30d']].sum().reset_index().sort_values('mes')
+            if not _t6.empty:
+                _fig = _lk_go.Figure()
+                for _col, _nm, _cor in (('usou_30d', 'Usou algo ≤ 30 d', _LK_GREENS[0]), ('amor_saude_30d', 'Amor Saúde ≤ 30 d', _LK_GREENS[2]),
+                                        ('cashback_30d', 'Cashback ≤ 30 d', _LK_AMBER), ('app_ativo', 'App ativo', _LK_GREY)):
+                    _fig.add_trace(_lk_go.Scatter(x=[_lk_m_ab(x) for x in _t6['mes']], y=[(_lk_ratio(a, b) or 0) * 100 for a, b in zip(_t6[_col], _t6['n'])],
+                                                  mode='lines+markers', name=_nm, line=dict(color=_cor, width=2.5)))
+                _fig.update_yaxes(ticksuffix='%', rangemode='tozero')
+                _lk_fig(_fig, 300, 'cdt_b', legend=False)
+                if _CDT_THEME:
+                    cdt_theme.rotular_pontas(_fig)
+                st.plotly_chart(_fig, use_container_width=True, config=dict(displayModeBar=False))
+                _lk_fonte("alex_lake_proto · s6_ttv (fl_venda_ttv: datas da 1ª utilização por produto; app_ativo) · o mês corrente fica fora da série (ainda não completou 30 dias)")
+                _lk_nota("Cruzamento com pagamento (usou em 30 d × pagou M+3) está na sub-aba 1, bloco 'Hipótese'.")
+        else:
+            st.info("Seção s6_ttv ausente — rode `gt7 run lake_proto --arg only=s6`.")
+        st.divider()
+        if not _lkS7.empty:
+            _lk_header("MGM — indicações que viraram bônus pago", "vendas pelo canal MGM × cashin de indicação (fl_filiado_mgm) · bônus por ciclo: o indicado pagar o 2º, 3º e 4º mês", "A")
+            _d7 = _lkS7[_lkS7['mes'].isin(_lk_meses)].sort_values('mes')
+            _r7 = _d7[_d7['mes'] == _lk_mes]
+            if not _r7.empty:
+                _r = _r7.iloc[0]
+                _c = st.columns(5)
+                _lk_kpi(_c[0], "VENDAS MGM NO MÊS", _lk_fmt(_r['vendas_mgm']), "filiados com canal MGM")
+                _lk_kpi(_c[1], "BÔNUS DO 2º MÊS PAGO", _lk_pct(_r['com_bonus_c2'], _r['vendas_mgm']), f"{_lk_fmt(_r['com_bonus_c2'])} indicados")
+                _lk_kpi(_c[2], "BÔNUS DO 3º MÊS PAGO", _lk_pct(_r['com_bonus_c3'], _r['vendas_mgm']), f"{_lk_fmt(_r['com_bonus_c3'])}")
+                _lk_kpi(_c[3], "BÔNUS DO 4º MÊS PAGO", _lk_pct(_r['com_bonus_c4'], _r['vendas_mgm']), f"{_lk_fmt(_r['com_bonus_c4'])}")
+                _lk_kpi(_c[4], "CUSTO PAGO POR VENDA MGM", _lk_brl(_lk_ratio(_r['valor_pago'], _r['vendas_mgm'])), f"{_lk_brl(_r['valor_pago'])} autorizados até hoje")
+            _fig = _lk_go.Figure()
+            _fig.add_trace(_lk_go.Bar(x=[_lk_m_ab(x) for x in _d7['mes']], y=_d7['vendas_mgm'], name='Vendas MGM', marker_color=_LK_GREENS[3]))
+            for _col, _nm, _cor in (('com_bonus_c2', 'Bônus 2º mês pago', _LK_GREENS[0]), ('com_bonus_c3', 'Bônus 3º mês', _LK_GREENS[1]), ('com_bonus_c4', 'Bônus 4º mês', _LK_AMBER)):
+                _fig.add_trace(_lk_go.Scatter(x=[_lk_m_ab(x) for x in _d7['mes']], y=_d7[_col], mode='lines+markers', name=_nm, line=dict(color=_cor, width=2.5)))
+            st.plotly_chart(_lk_fig(_fig, 320), use_container_width=True, config=dict(displayModeBar=False))
+            _lk_fonte("alex_lake_proto · s7_mgm (fl_contagem_filiado canal MGM ⋈ fl_filiado_mgm por cpf_indicado; status authorized) · coortes recentes ainda não chegaram ao 2º/3º/4º mês")
+            _lk_nota("O bônus é pago quando o <b>indicado</b> paga o 2º, 3º e 4º mês — o custo do MGM só se realiza para indicados que permanecem. "
+                     "<code>com_pendente</code> = bônus gerado e ainda não autorizado; a diferença para 100 % são vendas MGM sem cashin de indicação "
+                     "(indicador sem cartão virtual ativo, voucher inválido, ou ainda sem 2º mês).")
+            if not _lkS7C.empty:
+                _sc = _lk_split(_lkS7C, ['ciclo', 'status'])
+                _sc = _sc[_sc['mes'].isin(_lk_meses)]
+                _g = _sc.groupby(['mes', 'status'])[['n', 'valor']].sum().reset_index()
+                _piv = _g.pivot_table(index='mes', columns='status', values='valor', aggfunc='sum').fillna(0)
+                _out = pd.DataFrame({'Mês do cashin': [_lk_m_ab(x) for x in _piv.index]})
+                for _col in _piv.columns:
+                    _out[f'R$ {_col}'] = [_lk_brl(x) for x in _piv[_col]]
+                _lk_tab(_out, "lake_mgm_cashin_mes")
+                _lk_fonte("alex_lake_proto · s7_cash (fl_filiado_mgm por mês do dt_cashin e status) — R$ de bônus gerados por mês: pagos (authorized), pendentes e falhos")
+        else:
+            st.info("Seção s7_mgm ausente — rode `gt7 run lake_proto --arg only=s7`.")
+        _lk_rodape()
+
+    with st.expander("📐 Réguas desta aba (tabelas do Lake, unidade e cuidados)"):
+        st.markdown("""
+| Bloco | Unidade | Fonte (Athena → `alex_lake_proto`) | Régua | Cuidado |
+|---|---|---|---|---|
+| 1 · Retenção por pagamento | Filiado | `fl_contagem_filiado` (venda nova) ⋈ `pdgt_cartaodetodos_bi.fl_base_qia` por `id_filiado` | pagou M+k = tem QIA na **competência** mês da venda + k | competência fecha ~45 d depois do mês (energia +1 mês, cartão +15 d); `vam` (R$) cai 35 % desde mai/26 sem explicação — usar como contagem |
+| 1 · Uso em 30 d × pagamento | Filiado | + `fl_venda_ttv` (1ª utilização por produto) | usou algo até 30 d após a venda | correlação, não causa |
+| 2 · Meio de pagamento / voucher | Filiado | `fl_contagem_filiado` (`meio_arrecadacao`, `voucher_campanha_mensalidade`) | na venda | campanhas < 200 vendas/mês = OUTRAS |
+| 2 · Venda nova × refiliação | Filiado | `fl_contagem_filiado` (`prospeccao`, `refiliacao`) | venda = nova + refiliação (= NOMINAL por canal, ±1) | — |
+| 2 · Dependentes por venda | Dependente informado | `numero_dependentes` na venda | soma ÷ vendas | não é vida ativa |
+| 3 · Saídas solicitada × massa | Filiado | `fl_churn` (`cliente_ativo = 0`, `tipo_desfiliacao`, `dt_fim`) | mês do fim do ciclo | em massa = régua de inadimplência, chega meses depois |
+| 3 · Coorte "ativos" | Filiado | `fl_churn` por `dt_inicio` | estado hoje | **ativo ≠ pagante** |
+| 3 · Inadimplência da safra | Filiado | `fl_inadimplentes` (última referência) ⋈ coorte | foto: inadimplente, cartão rejeitado, régua crítica | coortes novas tiveram menos tempo para atrasar |
+| 4 · Time-to-value | Filiado | `fl_venda_ttv` | 1ª utilização ≤ 30 d; `app_ativo`; `grupo_utilizacao` | mês corrente incompleto |
+| 4 · MGM | Filiado / R$ | `fl_contagem_filiado` (MGM) ⋈ `fl_filiado_mgm` (`cpf_indicado`, ciclo 2/3/4, `status`) | bônus pago = `authorized` | coortes recentes ainda sem 2º–4º mês |
+""")
