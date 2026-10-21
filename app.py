@@ -1757,6 +1757,21 @@ days_elapsed = (ref_datetime - c_s).days
 p_partial = min(p_s + pd.DateOffset(days=days_elapsed), p_e)
 l_partial = min(l_s + pd.DateOffset(days=days_elapsed), l_e)
 
+# ---- R73 (21/10/2026): "mesma janela do mês anterior" = a régua MoM do RMA quinzenal (os mesmos dias do período, 1 mês antes;
+# dia limitado ao fim do mês; mês fechado compara com o mês anterior inteiro). Diferente do "Anterior (Parcial)", que é o período
+# imediatamente anterior de mesma duração (01–15/10 → 16–30/09). Só para períodos de até 31 dias e fora de "Ano Atual".
+MJ_COL = "vs Mês anterior (mesma janela)"
+MJ_ATIVO = view_option != "Ano Atual" and (c_e - c_s).days < 31
+if MJ_ATIVO:
+    mj_s = c_s - pd.DateOffset(months=1)
+    mj_e = min(ref_datetime - pd.DateOffset(months=1), mj_s + pd.offsets.MonthEnd(0))
+    if ref_datetime == c_e and (c_e + pd.DateOffset(days=1)).day == 1:   # mês fechado → mês anterior inteiro
+        mj_e = mj_s + pd.offsets.MonthEnd(0)
+    MJ_LBL = f"{mj_s:%d/%m}–{mj_e:%d/%m}"
+else:
+    mj_s = mj_e = None
+    MJ_LBL = ""
+
 def get_period_stats(start_d, end_d_partial, end_d_full):
     total_days = (end_d_full - start_d).days + 1
     elapsed_days = (end_d_partial - start_d).days + 1
@@ -1836,7 +1851,37 @@ def load_crm_cpa():
         return pd.DataFrame(columns=['dia', 'gasto', 'vendas', 'leads', 'gasto_bd', 'gasto_zenvia', 'vendas_ga', 'vendas_bd']), f"{type(e).__name__}: {str(e)[:300]}"
 
 
-_FUNIL_COLS = ['dia', 'canal', 'gt7', 'numero', 'enviadas', 'entregues', 'lidas', 'nao_disparadas', 'custo']  # R70 (20/10/2026): numero
+# R71 (21/10/2026): gasto do CRM de Aquisição (templates GT7) por dia × NÚMERO de origem — mesma régua de _load_crm_cpa_raw,
+# aberta por channel_number (crawler GT7_WhatsApp v6). Base dos pré-filtros de número do topo da aba 📨.
+_CPA_NUM_COLS = ['dia', 'num_tel', 'numero', 'gasto_zenvia', 'gasto_bd']
+
+
+@st.cache_data(ttl=43200)
+def _load_crm_cpa_num_raw():
+    d = cquery("""SELECT report_date AS dia,
+                         COALESCE(channel_number, channel_name, '(sem canal)') AS num_tel,
+                         COALESCE(channel_name, '(sem canal - antes de 2026)') AS numero,
+                         ROUND(SUM(total_cost), 2) AS gasto_zenvia,
+                         ROUND(SUM(CASE WHEN status IN ('Enviada','Entregue','Lida') THEN total_messages ELSE 0 END) * 0.32, 2) AS gasto_bd
+                  FROM alex_zenvia_template_status
+                  WHERE UPPER(template_name) LIKE '%%GT7%%'
+                  GROUP BY 1, 2, 3""", ttl=0)
+    for c in ['gasto_zenvia', 'gasto_bd']:
+        d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0.0)
+    d['num_tel'] = d['num_tel'].astype(str)
+    d['numero'] = d['numero'].astype(str)
+    d['dia'] = pd.to_datetime(d['dia'])
+    return d.sort_values('dia')
+
+
+def load_crm_cpa_num():
+    try:
+        return _load_crm_cpa_num_raw()
+    except Exception:
+        return pd.DataFrame(columns=_CPA_NUM_COLS)
+
+
+_FUNIL_COLS = ['dia', 'canal', 'gt7', 'numero', 'num_tel', 'enviadas', 'entregues', 'lidas', 'nao_disparadas', 'custo']  # R70 numero · R71 num_tel
 
 
 @st.cache_data(ttl=43200)
@@ -1854,18 +1899,20 @@ def _load_crm_funil_raw():
                          CASE WHEN template_name LIKE '%%SMS%%' THEN 'SMS' ELSE 'WhatsApp' END AS canal,
                          CASE WHEN UPPER(template_name) LIKE '%%GT7%%' THEN 1 ELSE 0 END AS gt7,
                          COALESCE(channel_name, '(sem canal - antes de 2026)') AS numero,
+                         COALESCE(channel_number, channel_name, '(sem canal)') AS num_tel,
                          SUM(CASE WHEN status_code IN (2, 3, 4, 6) THEN total_messages ELSE 0 END) AS enviadas,
                          SUM(CASE WHEN status_code IN (3, 4) THEN total_messages ELSE 0 END) AS entregues,
                          SUM(CASE WHEN status_code = 4 THEN total_messages ELSE 0 END) AS lidas,
                          SUM(CASE WHEN status_code IN (1, 5, 8) THEN total_messages ELSE 0 END) AS nao_disparadas,
                          SUM(total_cost) AS custo
                   FROM alex_zenvia_template_status
-                  GROUP BY 1, 2, 3, 4""", ttl=0)
+                  GROUP BY 1, 2, 3, 4, 5""", ttl=0)
     for c in ['enviadas', 'entregues', 'lidas', 'nao_disparadas', 'custo']:
         d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0).astype(float)
     d['gt7'] = pd.to_numeric(d['gt7'], errors='coerce').fillna(0).astype(int)
     d['canal'] = d['canal'].astype(str)
     d['numero'] = d['numero'].astype(str)   # R70: número de origem (channel_name do middleware; v6 do crawler)
+    d['num_tel'] = d['num_tel'].astype(str)  # R71: só o número (channel_number) — chave dos pré-filtros; 'SMS'/'RCS' para os canais
     d['dia'] = pd.to_datetime(d['dia'])
     return d.sort_values('dia')
 
@@ -1949,6 +1996,9 @@ def _aba_tab1():
     agg_pf = get_agg_sums(df_slice_pf)
     agg_lp = get_agg_sums(df_slice_lp)
     agg_lf = get_agg_sums(df_slice_lf)
+    df_slice_mj = df[(df['data_venda'] >= mj_s) & (df['data_venda'] <= mj_e)] if MJ_ATIVO else df.iloc[0:0]   # R73
+    agg_mj = get_agg_sums(df_slice_mj)
+    ch_mj = get_channel_sums(df_slice_mj)
     
     ch_c = get_channel_sums(df_slice_c)
     ch_pp = get_channel_sums(df_slice_pp)
@@ -2019,6 +2069,7 @@ def _aba_tab1():
             'Meta (Total)': fmt_goal(agg_c[grupo], meta_tot),
             'vs Anterior (Parcial)': fmt_val_delta(agg_c[grupo], agg_pp[grupo]),
             'vs Anterior (Total)': fmt_val_delta(agg_c[grupo], agg_pf[grupo]),
+            MJ_COL: fmt_val_delta(agg_c[grupo], agg_mj[grupo]) if MJ_ATIVO else '—',
             'vs Ano Passado (Parcial)': fmt_val_delta(agg_c[grupo], agg_lp[grupo]),
             'vs Ano Passado (Total)': fmt_val_delta(agg_c[grupo], agg_lf[grupo]),
         }
@@ -2052,6 +2103,7 @@ def _aba_tab1():
                     'Meta (Total)': fmt_goal(v_c, ch_m_tot),
                     'vs Anterior (Parcial)': fmt_val_delta(v_c, v_pp),
                     'vs Anterior (Total)': fmt_val_delta(v_c, v_pf),
+                    MJ_COL: fmt_val_delta(v_c, ch_mj.get(ch, 0)) if MJ_ATIVO else '—',
                     'vs Ano Passado (Parcial)': fmt_val_delta(v_c, v_lp),
                     'vs Ano Passado (Total)': fmt_val_delta(v_c, v_lf),
                 }
@@ -2061,12 +2113,17 @@ def _aba_tab1():
                 rows.append(ch_dict)
                 
     display_cols = ['Grupo', 'Atual', 'Meta (Parcial)', 'Meta (Total)', 'vs Anterior (Parcial)', 'vs Anterior (Total)']
+    if MJ_ATIVO:
+        display_cols.append(MJ_COL)   # R73
     if view_option != "Ano Atual":
         display_cols.extend(['vs Ano Passado (Parcial)', 'vs Ano Passado (Total)'])
     if mostrar_previsao:
         display_cols.extend(['Previsão (Faltante)', 'Previsão (Total Projetado)'])
 
     _st_mt(rows, display_cols)
+    if MJ_ATIVO:
+        st.caption(f"**{MJ_COL}** = {MJ_LBL}: os mesmos dias do período, um mês antes — a régua MoM do Relatório Mensal de Aquisição (quinzenal). "
+                   f"**vs Anterior (Parcial)** = {p_s:%d/%m}–{p_partial:%d/%m}, o período imediatamente anterior de mesma duração.")
 
     col_pie, col_trend = st.columns([1, 2])
     
@@ -2958,8 +3015,9 @@ def _aba_tab3():
             
         return tot_inv, cpl, cpa, v_leads
 
-    def compute_row(label, df_c, df_pp, df_pf, df_lp, df_lf, metric_idx, df_global=None, cat=None, goal_col=None, is_sub=False):
+    def compute_row(label, df_c, df_pp, df_pf, df_lp, df_lf, metric_idx, df_global=None, cat=None, goal_col=None, is_sub=False, df_mj=None):
         m_c = get_inv_metrics(df_c, cat)[metric_idx]
+        m_mj = get_inv_metrics(df_mj, cat)[metric_idx] if (MJ_ATIVO and df_mj is not None) else None   # R73
         m_pp = get_inv_metrics(df_pp, cat)[metric_idx]
         m_pf = get_inv_metrics(df_pf, cat)[metric_idx]
         m_lp = get_inv_metrics(df_lp, cat)[metric_idx]
@@ -2991,6 +3049,7 @@ def _aba_tab3():
             'Meta (Total)': pct_t,
             'vs Anterior (Parcial)': fmt_val_delta_money(m_c, m_pp) if is_money else fmt_val_delta(m_c, m_pp),
             'vs Anterior (Total)': fmt_val_delta_money(m_c, m_pf) if is_money else fmt_val_delta(m_c, m_pf),
+            MJ_COL: ('—' if m_mj is None else (fmt_val_delta_money(m_c, m_mj) if is_money else fmt_val_delta(m_c, m_mj))),
             'vs Ano Passado (Parcial)': fmt_val_delta_money(m_c, m_lp) if is_money else fmt_val_delta(m_c, m_lp),
             'vs Ano Passado (Total)': fmt_val_delta_money(m_c, m_lf) if is_money else fmt_val_delta(m_c, m_lf),
             '_val_c': m_c,
@@ -3031,6 +3090,7 @@ def _aba_tab3():
     df_pf_inv = filter_inv_date(df_inv_filt, p_s, p_e)
     df_lp_inv = filter_inv_date(df_inv_filt, l_s, l_partial)
     df_lf_inv = filter_inv_date(df_inv_filt, l_s, l_e)
+    df_mj_inv = filter_inv_date(df_inv_filt, mj_s, mj_e) if MJ_ATIVO else df_inv_filt.iloc[0:0]   # R73
 
     metrics = [
         (0, '💸 Total Investido', 'Investimento Total'), 
@@ -3041,7 +3101,7 @@ def _aba_tab3():
     rows_inv = []
 
     for m_idx, m_name, m_goal in metrics:
-        row_parent = compute_row(m_name, df_c_inv, df_pp_inv, df_pf_inv, df_lp_inv, df_lf_inv, m_idx, df_global=df_c_global, goal_col=m_goal)
+        row_parent = compute_row(m_name, df_c_inv, df_pp_inv, df_pf_inv, df_lp_inv, df_lf_inv, m_idx, df_global=df_c_global, goal_col=m_goal, df_mj=df_mj_inv)
         row_parent['_level'] = 0
         rows_inv.append(row_parent)
 
@@ -3052,14 +3112,14 @@ def _aba_tab3():
                 p_df_pf = df_pf_inv[df_pf_inv['plataforma'] == plat]
                 p_df_lp = df_lp_inv[df_lp_inv['plataforma'] == plat]
                 p_df_lf = df_lf_inv[df_lf_inv['plataforma'] == plat]
-                row_p = compute_row(str(plat), p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, df_c_global, is_sub=True)
+                row_p = compute_row(str(plat), p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, df_c_global, is_sub=True, df_mj=df_mj_inv[df_mj_inv['plataforma'] == plat])
                 if row_p['_val_c'] == 0 and row_p['_val_pf'] == 0 and row_p['_val_lf'] == 0: continue
                 row_p['_level'] = 1
                 rows_inv.append(row_p)
 
         elif detalhe_tipo and not detalhe_plat:
             for cat in cat_cols:
-                row_c = compute_row(cat.title(), df_c_inv, df_pp_inv, df_pf_inv, df_lp_inv, df_lf_inv, m_idx, df_c_global, cat=cat, is_sub=True)
+                row_c = compute_row(cat.title(), df_c_inv, df_pp_inv, df_pf_inv, df_lp_inv, df_lf_inv, m_idx, df_c_global, cat=cat, is_sub=True, df_mj=df_mj_inv)
                 if row_c['_val_c'] == 0 and row_c['_val_pf'] == 0 and row_c['_val_lf'] == 0: continue
                 row_c['_level'] = 1
                 rows_inv.append(row_c)
@@ -3071,17 +3131,19 @@ def _aba_tab3():
                 p_df_pf = df_pf_inv[df_pf_inv['plataforma'] == plat]
                 p_df_lp = df_lp_inv[df_lp_inv['plataforma'] == plat]
                 p_df_lf = df_lf_inv[df_lf_inv['plataforma'] == plat]
-                row_p = compute_row(str(plat), p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, df_c_global, is_sub=True)
+                row_p = compute_row(str(plat), p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, df_c_global, is_sub=True, df_mj=df_mj_inv[df_mj_inv['plataforma'] == plat])
                 if row_p['_val_c'] == 0 and row_p['_val_pf'] == 0 and row_p['_val_lf'] == 0: continue
                 row_p['_level'] = 1
                 rows_inv.append(row_p)
                 for cat in cat_cols:
-                    row_c = compute_row(cat.title(), p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, df_c_global, cat=cat, is_sub=True)
+                    row_c = compute_row(cat.title(), p_df_c, p_df_pp, p_df_pf, p_df_lp, p_df_lf, m_idx, df_c_global, cat=cat, is_sub=True, df_mj=df_mj_inv[df_mj_inv['plataforma'] == plat])
                     if row_c['_val_c'] == 0 and row_c['_val_pf'] == 0 and row_c['_val_lf'] == 0: continue
                     row_c['_level'] = 2
                     rows_inv.append(row_c)
     
     display_cols_inv = ['Métrica', 'Atual', 'Meta (Parcial)', 'Meta (Total)', 'vs Anterior (Parcial)', 'vs Anterior (Total)']
+    if MJ_ATIVO:
+        display_cols_inv.append(MJ_COL)   # R73
     if view_option != "Ano Atual":
         display_cols_inv.extend(['vs Ano Passado (Parcial)', 'vs Ano Passado (Total)'])
 
@@ -3267,21 +3329,29 @@ def _aba_tab3():
                 _gt7_zen_c, _gt7_zen_p = float(_c8i_c['gasto_zenvia'].sum()), float(_c8i_p['gasto_zenvia'].sum())
                 _gt7_bd_c, _gt7_bd_p = float(_c8i_c['gasto_bd'].sum()), float(_c8i_p['gasto_bd'].sum())
                 _gt7_v_c, _gt7_v_p = float(_c8i_c['vendas_ga'].sum()), float(_c8i_p['vendas_ga'].sum())
+                # R73: mesma janela do mês anterior (régua MoM do RMA) para gasto régua, vendas mkt direto e CPA
+                _c8i_m = _c8i[(_c8i['dia'] >= mj_s) & (_c8i['dia'] <= mj_e)] if MJ_ATIVO else _c8i.iloc[0:0]
+                _gt7_bd_m, _gt7_v_m = float(_c8i_m['gasto_bd'].sum()), float(_c8i_m['vendas_ga'].sum())
+                _mj_bd = fmt_val_delta_money(_gt7_bd_c, _gt7_bd_m) if MJ_ATIVO else '—'
+                _mj_v = fmt_val_delta(_gt7_v_c, _gt7_v_m) if MJ_ATIVO else '—'
+                _mj_cpa = (fmt_val_delta_money(_gt7_bd_c / _gt7_v_c if _gt7_v_c else 0.0, _gt7_bd_m / _gt7_v_m if _gt7_v_m else 0.0)
+                           if MJ_ATIVO else '—')
                 rows_ponte = [
                     {'Métrica': '🏢 Mensageria da empresa — todos os remetentes (cobrado pela Zenvia)', '_level': 0, '_is_eff': True,
                      'Atual': format_money(_emp_cost_c), 'vs Anterior (Parcial)': fmt_val_delta_money(_emp_cost_c, _emp_cost_p)},
                     {'Métrica': 'Instância de Aquisição — templates GT7, cobrado (inclui Não Entregue)', '_level': 1, '_is_eff': True,
                      'Atual': format_money(_gt7_zen_c), 'vs Anterior (Parcial)': fmt_val_delta_money(_gt7_zen_c, _gt7_zen_p)},
                     {'Métrica': 'Instância de Aquisição — régua da aba 📨 CRM (Enviada+Entregue+Lida × R$ 0,32)', '_level': 1, '_is_eff': True,
-                     'Atual': format_money(_gt7_bd_c), 'vs Anterior (Parcial)': fmt_val_delta_money(_gt7_bd_c, _gt7_bd_p)},
+                     'Atual': format_money(_gt7_bd_c), 'vs Anterior (Parcial)': fmt_val_delta_money(_gt7_bd_c, _gt7_bd_p), MJ_COL: _mj_bd},
                     {'Métrica': '🛒 Vendas mkt direto (GA4 · sessionSourceMedium contém mkt_direto) — régua da aba 📨', '_level': 0, '_is_eff': False,
-                     'Atual': format_br(_gt7_v_c), 'vs Anterior (Parcial)': fmt_val_delta(_gt7_v_c, _gt7_v_p)},
+                     'Atual': format_br(_gt7_v_c), 'vs Anterior (Parcial)': fmt_val_delta(_gt7_v_c, _gt7_v_p), MJ_COL: _mj_v},
                     {'Métrica': '🎯 CPA do CRM de Aquisição (régua da aba 📨)', '_level': 0, '_is_eff': True,
                      'Atual': format_money(_gt7_bd_c / _gt7_v_c if _gt7_v_c else 0.0),
-                     'vs Anterior (Parcial)': fmt_val_delta_money(_gt7_bd_c / _gt7_v_c if _gt7_v_c else 0.0, _gt7_bd_p / _gt7_v_p if _gt7_v_p else 0.0)},
+                     'vs Anterior (Parcial)': fmt_val_delta_money(_gt7_bd_c / _gt7_v_c if _gt7_v_c else 0.0, _gt7_bd_p / _gt7_v_p if _gt7_v_p else 0.0),
+                     MJ_COL: _mj_cpa},
                 ]
                 st.markdown("**Ponte com a aba 📨 CRM (mesmo período):**")
-                _st_mt(rows_ponte, ['Métrica', 'Atual', 'vs Anterior (Parcial)'])
+                _st_mt(rows_ponte, ['Métrica', 'Atual', 'vs Anterior (Parcial)'] + ([MJ_COL] if MJ_ATIVO else []))
                 st.markdown(
                     "<div style='border-radius:12px;padding:12px 14px;background:#f8fafc;font-size:12.5px;color:#0f172a;line-height:1.5;'>"
                     "<b>Mesma régua da aba 📨 CRM e do RMA (R57, 01/10).</b> As linhas acima, o canal <b>CRM</b> da tabela de investimento, "
@@ -8693,6 +8763,63 @@ def _aba_tab8():
                                "sessionSourceMedium contendo mkt_direto — 100% fonte própria, mesma régua da Mesa. "
                                "Recorte antigo: custo cobrado pela Zenvia (inclui 'Não Entregue') e vendas GA4 só das "
                                "campanhas com 'crm' no nome.")
+        # ---- R71 (21/10/2026): filtros do topo — números de origem (gasto Zenvia) e UTM campaign (GA4: leads/vendas) ----
+        _NUM_PRESETS = {
+            "Todos os números": None,
+            "Aquisição – s/ Lia · 9713 + 5818": ['9713', '5818'],
+            "Aquisição – c/ Lia · 9713 + 5818 + 3535": ['9713', '5818', '3535'],
+            "Escolher…": 'custom',
+        }
+        _cn8 = load_crm_cpa_num()
+        _cl8, _cv8 = load_crm_wpp_sms()
+        _fx1, _fx2 = st.columns([1.15, 1])
+        with _fx1:
+            _num_grp = st.radio("Números de origem (custo Zenvia):", list(_NUM_PRESETS.keys()), index=0, horizontal=True, key='t8_num_grp',
+                                help="Pré-filtros do time (21/10/2026): 4003-9713 'CDT Relacionamento' = campanhas de mkt direto; 4003-5818 "
+                                     "'Nacional Mídias' = televendas; 3535 'Lia Disparos' = disparos feitos para a Lia. Filtra o GASTO (templates "
+                                     "GT7 por número de origem, mesma régua do critério acima) — o número vem do canal do middleware GT7/Zenvia. "
+                                     "Vendas e leads do GA4 não têm número: para eles use o filtro de UTM ao lado.")
+            _nums_sel = _NUM_PRESETS[_num_grp]
+            if _nums_sel == 'custom':
+                _num_opts = (_cn8[_cn8['dia'] >= pd.Timestamp(reference_date) - pd.DateOffset(months=12)]
+                             .groupby(['num_tel', 'numero'])['gasto_zenvia'].sum().sort_values(ascending=False).reset_index()) if not _cn8.empty else pd.DataFrame(columns=['num_tel', 'numero'])
+                _num_lbls = {r['num_tel']: f"{r['num_tel']} · {r['numero']}" for _, r in _num_opts.iterrows()}
+                _nums_sel = st.multiselect("Escolha os números:", list(_num_lbls.keys()), default=[], key='t8_num_sel',
+                                           format_func=lambda k: _num_lbls.get(k, k),
+                                           help="Números com custo GT7 nos últimos 12 meses, do maior para o menor. Vazio = todos.")
+                _nums_sel = _nums_sel or None
+            _num_lbl = ("todos os números" if _nums_sel is None else
+                        (_num_grp.split(" · ")[0] if _num_grp != "Escolher…" else " + ".join(_nums_sel)))
+        with _fx2:
+            _utm_base = pd.concat([_cv8[['date', 'session_campaign_name', 'event_count']].assign(k='v'),
+                                   _cl8[['date', 'session_campaign_name', 'event_count']].assign(k='l')], ignore_index=True) if not (_cv8.empty and _cl8.empty) else pd.DataFrame(columns=['date', 'session_campaign_name', 'event_count', 'k'])
+            _utm_rank = (_utm_base[(_utm_base['date'] >= pd.Timestamp(reference_date) - pd.DateOffset(months=12)) & (_utm_base['k'] == 'v')]
+                         .groupby('session_campaign_name')['event_count'].sum().sort_values(ascending=False)) if not _utm_base.empty else pd.Series(dtype=float)
+            _utm_opts = [u for u in _utm_rank.index if u and u != '(not set)'] + sorted({u for u in _utm_base['session_campaign_name'].unique() if u and u != '(not set)'} - set(_utm_rank.index))
+            _utm_sel = st.multiselect("UTM campaign (GA4 — leads e vendas):", _utm_opts, default=[], key='t8_utm_sel',
+                                      help="utm_campaign dos links clicados (session_campaign_name das alex_crm_wpp_sms_vendas/leads, já no recorte "
+                                           "mkt_direto). Ordenado pelas vendas dos últimos 12 meses. Vazio = todas. Filtra VENDAS e LEADS; o custo não "
+                                           "tem UTM (o relatório da Zenvia só traz template e número) — combine com o filtro de número se as UTMs "
+                                           "forem as das campanhas disparadas por esses números.")
+        if _nums_sel is not None and not _cn8.empty:
+            _gz0, _gb0 = _c8['gasto_zenvia'].copy(), _c8['gasto_bd'].copy()
+            _g8 = _cn8[_cn8['num_tel'].isin(_nums_sel)].groupby('dia')[['gasto_zenvia', 'gasto_bd']].sum()
+            _c8['gasto_zenvia'] = _c8['dia'].map(_g8['gasto_zenvia']).fillna(0.0)
+            _c8['gasto_bd'] = _c8['dia'].map(_g8['gasto_bd']).fillna(0.0)
+            if not (_c8['gasto_bd'] > 0).any():
+                st.warning(f"Nenhum custo de templates GT7 para **{_num_lbl}** — voltando para todos os números.")
+                _c8['gasto_zenvia'], _c8['gasto_bd'] = _gz0, _gb0
+                _nums_sel, _num_lbl = None, "todos os números"
+        if _utm_sel:
+            _vv = _cv8[_cv8['session_campaign_name'].isin(_utm_sel)]
+            _ll = _cl8[_cl8['session_campaign_name'].isin(_utm_sel)]
+            _c8['vendas_ga'] = _c8['dia'].map(_vv.groupby('date')['event_count'].sum()).fillna(0.0)
+            _c8['vendas_crm'] = _c8['dia'].map(_vv[_vv['session_campaign_name'].str.contains('crm', case=False, na=False)].groupby('date')['event_count'].sum()).fillna(0.0)
+            _c8['leads'] = _c8['dia'].map(_ll.groupby('date')['event_count'].sum()).fillna(0.0)
+        if _nums_sel is not None or _utm_sel:
+            st.caption(f"🔎 Filtros ativos — gasto: **{_num_lbl}**" + (f" · vendas/leads: **{len(_utm_sel)} UTM campaign** ({', '.join(_utm_sel[:4])}{'…' if len(_utm_sel) > 4 else ''})" if _utm_sel else "")
+                       + ". Gasto vem do número de origem (Zenvia) e vendas/leads vêm da UTM do link (GA4): são populações diferentes — o CPA/CPL "
+                       "com os dois filtros só faz sentido quando as UTMs escolhidas são as das campanhas disparadas por esses números.")
         if _crit8 == _CRIT_BD:
             _c8['gasto'] = _c8['gasto_bd']
             _c8['vendas'] = _c8['vendas_ga']
@@ -8758,6 +8885,27 @@ def _aba_tab8():
         _tv_kpi(k4, "🧲", f"Leads e CPL — {_lbl_a} 1–{_dlim}", f"{format_br(_la)} · {format_money(_cpl_a) if _cpl_a else '—'}",
                 f"{_lbl_p} 1–{_dlim}: {format_br(_lp)} · {format_money(_cpl_p) if _cpl_p else '—'} · leads GA4 CRM",
                 color="#b45309")
+
+        # ---- R71: vendas e leads por UTM campaign (GA4), mês atual 1–D × comparação ----
+        if not _cv8.empty or not _cl8.empty:
+            with st.expander(f"Por UTM campaign (GA4) — {_lbl_a} 1–{_dlim} × {_lbl_p} 1–{_dlim}"):
+                def _utm_jan(df, m):
+                    f = df[(df['date'] >= m) & (df['date'] < m + pd.DateOffset(months=1)) & (df['date'].dt.day <= _dlim)]
+                    if _utm_sel:
+                        f = f[f['session_campaign_name'].isin(_utm_sel)]
+                    if _crit8 != _CRIT_BD:
+                        f = f[f['session_campaign_name'].str.contains('crm', case=False, na=False)]
+                    return f.groupby('session_campaign_name')['event_count'].sum()
+                _ut = pd.DataFrame({'Vendas ' + _lbl_a: _utm_jan(_cv8, _m_atu), 'Leads ' + _lbl_a: _utm_jan(_cl8, _m_atu),
+                                    'Vendas ' + _lbl_p: _utm_jan(_cv8, _m_ant), 'Leads ' + _lbl_p: _utm_jan(_cl8, _m_ant)}).fillna(0.0)
+                _ut = _ut.sort_values('Vendas ' + _lbl_a, ascending=False)
+                _ut.index.name = 'UTM campaign'
+                _ut_show = _ut.reset_index().copy()
+                for c in _ut.columns:
+                    _ut_show[c] = _ut_show[c].map(lambda v: format_br(v))
+                _st_df(_ut_show, use_container_width=True, hide_index=True, csv=_ut.reset_index(), csv_nome="crm_por_utm_campaign")
+                st.caption("GA4 (`alex_crm_wpp_sms_vendas/leads`, recorte mkt_direto): vendas = purchase, leads = generate_lead, pela utm_campaign do link. "
+                           "Sem custo nesta tabela — o relatório da Zenvia não carrega UTM; a ligação template ↔ UTM depende da convenção de nome.")
 
         _BUCKETS = [("Sem 1", 1, 7), ("Sem 2", 8, 14), ("Sem 3", 15, 21), ("Sem 4", 22, 31)]
 
@@ -8842,19 +8990,13 @@ def _aba_tab8():
             _fb = _f8 if _esc8 == _ESC_ALL else _f8[_f8['gt7'] == 1]
             if _can8 != "Total":
                 _fb = _fb[_fb['canal'] == _can8]
-            # ---- R70 (20/10/2026): número de origem = canal do middleware GT7/Zenvia (channel_name), crawler GT7_WhatsApp v6 ----
+            # ---- R70/R71: número de origem = canal do middleware (channel_number); o funil segue o filtro de números do TOPO da aba ----
             _NUM_TODOS = "Todos os números"
             _fb_all = _fb                                   # recorte canal/escopo, antes do filtro de número (tabela por número)
-            _num_ops = (_fb[_fb['dia'] >= (_m_atu - pd.DateOffset(months=11)).to_period('M').to_timestamp()]
-                        .groupby('numero')['custo'].sum().sort_values(ascending=False))
-            _num_ops = [str(n) for n in _num_ops.index if str(n)]
-            _num8 = st.selectbox("Número de origem:", [_NUM_TODOS] + _num_ops, index=0, key='t8_fun_num',
-                                 help="Número (remetente) que disparou a mensagem — ex.: 4003-9713 'CDT Relacionamento', 4003-7537 "
-                                      "'CDT Nacional'. Vem do channelId do relatório do middleware GT7/Zenvia (crawler v6; 2026 inteiro "
-                                      "carregado em 20/10/2026). 'SMS' e 'RCS' são canais sem número de WhatsApp. Lista ordenada pelo "
-                                      "custo dos últimos 12 meses dentro do canal/escopo escolhidos; KPIs, funis e séries seguem a escolha.")
-            if _num8 != _NUM_TODOS:
-                _fb = _fb[_fb['numero'] == _num8]
+            _num8 = _NUM_TODOS if _nums_sel is None else _num_lbl
+            if _nums_sel is not None:
+                _fb = _fb[_fb['num_tel'].isin(_nums_sel)]
+            st.caption(f"Números de origem: **{_num_lbl}** (filtro do topo da aba) · a tabela 'Por número de origem' abaixo mostra todos os números do canal/escopo.")
             _sub8 = _esc8 + ("" if _num8 == _NUM_TODOS else f" · {_num8}")
             _FMET = ['enviadas', 'entregues', 'lidas', 'nao_disparadas', 'custo']
 
