@@ -1836,7 +1836,7 @@ def load_crm_cpa():
         return pd.DataFrame(columns=['dia', 'gasto', 'vendas', 'leads', 'gasto_bd', 'gasto_zenvia', 'vendas_ga', 'vendas_bd']), f"{type(e).__name__}: {str(e)[:300]}"
 
 
-_FUNIL_COLS = ['dia', 'canal', 'gt7', 'enviadas', 'entregues', 'lidas', 'nao_disparadas', 'custo']
+_FUNIL_COLS = ['dia', 'canal', 'gt7', 'numero', 'enviadas', 'entregues', 'lidas', 'nao_disparadas', 'custo']  # R70 (20/10/2026): numero
 
 
 @st.cache_data(ttl=43200)
@@ -1853,17 +1853,19 @@ def _load_crm_funil_raw():
     d = cquery("""SELECT report_date AS dia,
                          CASE WHEN template_name LIKE '%%SMS%%' THEN 'SMS' ELSE 'WhatsApp' END AS canal,
                          CASE WHEN UPPER(template_name) LIKE '%%GT7%%' THEN 1 ELSE 0 END AS gt7,
+                         COALESCE(channel_name, '(sem canal - antes de 2026)') AS numero,
                          SUM(CASE WHEN status_code IN (2, 3, 4, 6) THEN total_messages ELSE 0 END) AS enviadas,
                          SUM(CASE WHEN status_code IN (3, 4) THEN total_messages ELSE 0 END) AS entregues,
                          SUM(CASE WHEN status_code = 4 THEN total_messages ELSE 0 END) AS lidas,
                          SUM(CASE WHEN status_code IN (1, 5, 8) THEN total_messages ELSE 0 END) AS nao_disparadas,
                          SUM(total_cost) AS custo
                   FROM alex_zenvia_template_status
-                  GROUP BY 1, 2, 3""", ttl=0)
+                  GROUP BY 1, 2, 3, 4""", ttl=0)
     for c in ['enviadas', 'entregues', 'lidas', 'nao_disparadas', 'custo']:
         d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0).astype(float)
     d['gt7'] = pd.to_numeric(d['gt7'], errors='coerce').fillna(0).astype(int)
     d['canal'] = d['canal'].astype(str)
+    d['numero'] = d['numero'].astype(str)   # R70: número de origem (channel_name do middleware; v6 do crawler)
     d['dia'] = pd.to_datetime(d['dia'])
     return d.sort_values('dia')
 
@@ -7169,6 +7171,50 @@ def _aba_tab7():
         comp_app_p = _ap_val(S, 'compras_com_app_ate_venda', meses=_ap_meses_p)
         comp_sem_app = (comp - comp_app) if (comp is not None and comp_app is not None) else None
 
+        # ---- R69 (20/10/2026): grão DIÁRIO — seção s1_dia (gt7 run app_dash --arg only=s1d): os KPIs abaixo seguem o Período
+        # de Análise dos Controles Globais dia a dia (c_s → ref_datetime; comparação p_s → p_partial, mesmo trecho), como a 📡 7.
+        # Instalações (Singular, tracker_installs) = régua OFICIAL de Installs/Downloads nos relatórios (decisão do Álex, 20/10/2026).
+        _apd_d = _apd[_apd['secao'] == 's1_dia'] if not _apd.empty else _apd
+
+        def _ap_dia(metrica, ini, fim):
+            d = _apd_d[(_apd_d['metrica'] == metrica) & (_apd_d['mes'] >= pd.Timestamp(ini).normalize())
+                       & (_apd_d['mes'] <= pd.Timestamp(fim).normalize())]
+            return None if d.empty else float(d['valor'].sum(skipna=True))
+
+        if not _apd_d.empty:
+            _ap_dmax = _apd_d['mes'].max()
+            st.markdown(f"**Período dia a dia:** {pd.Timestamp(c_s):%d/%m/%Y} a {pd.Timestamp(ref_datetime):%d/%m/%Y} · "
+                        f"comparação {pd.Timestamp(p_s):%d/%m/%Y} a {pd.Timestamp(p_partial):%d/%m/%Y} (mesmo trecho) · "
+                        f"dados diários até {pd.Timestamp(_ap_dmax):%d/%m/%Y}")
+            _dk = {}
+            for _m_ in ('installs_singular', 'installs_pago', 'downloads', 'downloads_sem_cpf', 'cadastros', 'cadastros_freemium', 'vendas_app'):
+                _dk[_m_] = _ap_dia(_m_, c_s, ref_datetime)
+                _dk[_m_ + '_p'] = _ap_dia(_m_, p_s, p_partial)
+            _dl_cpf = (None if _dk['downloads'] is None or _dk['downloads_sem_cpf'] is None else _dk['downloads'] - _dk['downloads_sem_cpf'])
+            _dl_cpf_p = (None if _dk['downloads_p'] is None or _dk['downloads_sem_cpf_p'] is None else _dk['downloads_p'] - _dk['downloads_sem_cpf_p'])
+            _d1, _d2, _d3, _d4 = st.columns(4)
+            _tv_kpi(_d1, "📲", "Instalações (Singular · régua oficial)",
+                    f"{_tv_n(_dk['installs_singular'])} {_tv_delta(_dk['installs_singular'], _dk['installs_singular_p'], trecho=True)}",
+                    f"{_tv_pct(_dk['installs_pago'], _dk['installs_singular'])} pagas (atribuídas a mídia) · 1ª abertura num device novo, orgânico + pago")
+            _tv_kpi(_d2, "⬇️", "1º login no app (lake)",
+                    f"{_tv_n(_dk['downloads'])} {_tv_delta(_dk['downloads'], _dk['downloads_p'], trecho=True)}",
+                    f"{_tv_pct(_dk['downloads_sem_cpf'], _dk['downloads'])} sem CPF · com CPF {_tv_n(_dl_cpf)} {_tv_delta(_dl_cpf, _dl_cpf_p, trecho=True)}",
+                    color="#475569")
+            _tv_kpi(_d3, "📝", "Cadastros no app",
+                    f"{_tv_n(_dk['cadastros'])} {_tv_delta(_dk['cadastros'], _dk['cadastros_p'], trecho=True)}",
+                    f"{_tv_pct(_dk['cadastros_freemium'], _dk['cadastros'])} entraram como freemium", color="#2e8a4f")
+            _tv_kpi(_d4, "🛒", "Vendas App do Filiado (CTN)",
+                    f"{_tv_n(_dk['vendas_app'])} {_tv_delta(_dk['vendas_app'], _dk['vendas_app_p'], trecho=True)}",
+                    f"{_tv_pct(_dk['vendas_app'], _dk['installs_singular'])} das instalações · {_tv_pct(_dk['vendas_app'], _dl_cpf)} dos 1ºs logins com CPF",
+                    color="#0f172a")
+            st.caption("Grão diário (`s1_dia`): instalações = Singular `tracker_installs` (orgânico + pago, Android + iOS; no iOS o pago é "
+                       "subestimado pelo ATT) — régua oficial de Installs/Downloads nos relatórios; 1º login = `fl_data_login` do lake (chega com "
+                       "atraso e, desde 28/09/2026, recebe logins sem CPF em massa — ler a fatia com CPF); vendas = NOMINAL tipo App do Filiado. "
+                       "Os cartões e o funil abaixo continuam no grão mensal (meses tocados pelo período; mês corrente = parcial até a última rodada).")
+        else:
+            st.info("Grão diário ainda não calculado — rode `gt7 run app_dash --arg only=s1d` no claude-toolkit.")
+        st.markdown("###### Grão mensal (meses tocados pelo período)")
+
         k1, k2, k3, k4 = st.columns(4)
         _tv_kpi(k1, "⬇️", "Downloads (1º login no app)", f"{_tv_n(dl)} {_tv_delta(dl, dl_p)}",
                 f"{_tv_pct(dl_scpf, dl)} sem CPF (ficam fora dos cruzamentos)")
@@ -7182,7 +7228,10 @@ def _aba_tab7():
 
         c1, c2 = st.columns([1.9, 1])
         with c1:
-            _tv_funil("Funil do app · download → cadastro → compra", [
+            _sg_m = _ap_dia('installs_singular', _ap_meses[0], (_ap_meses[-1] + pd.offsets.MonthEnd(0))) if not _apd_d.empty else None
+            _tv_funil("Funil do app · instalação → 1º login → cadastro → compra", ([
+                ("📲", "Instalações (Singular)", _sg_m, "tracker_installs (orgânico + pago) nos meses tocados — régua oficial de Installs"),
+            ] if _sg_m else []) + [
                 ("⬇️", "Downloads (1º login)", dl, "fl_data_login.data_app no mês — 1 linha por usuário"),
                 ("📝", "Cadastros", cad, "fl_plano_usuario.dt_criacao no mês"),
                 ("🛒", "Compras com o app", comp_app, "filiações de titulares no mês de CPFs com cadastro no app até 1 dia após a venda"),
@@ -8793,6 +8842,20 @@ def _aba_tab8():
             _fb = _f8 if _esc8 == _ESC_ALL else _f8[_f8['gt7'] == 1]
             if _can8 != "Total":
                 _fb = _fb[_fb['canal'] == _can8]
+            # ---- R70 (20/10/2026): número de origem = canal do middleware GT7/Zenvia (channel_name), crawler GT7_WhatsApp v6 ----
+            _NUM_TODOS = "Todos os números"
+            _fb_all = _fb                                   # recorte canal/escopo, antes do filtro de número (tabela por número)
+            _num_ops = (_fb[_fb['dia'] >= (_m_atu - pd.DateOffset(months=11)).to_period('M').to_timestamp()]
+                        .groupby('numero')['custo'].sum().sort_values(ascending=False))
+            _num_ops = [str(n) for n in _num_ops.index if str(n)]
+            _num8 = st.selectbox("Número de origem:", [_NUM_TODOS] + _num_ops, index=0, key='t8_fun_num',
+                                 help="Número (remetente) que disparou a mensagem — ex.: 4003-9713 'CDT Relacionamento', 4003-7537 "
+                                      "'CDT Nacional'. Vem do channelId do relatório do middleware GT7/Zenvia (crawler v6; 2026 inteiro "
+                                      "carregado em 20/10/2026). 'SMS' e 'RCS' são canais sem número de WhatsApp. Lista ordenada pelo "
+                                      "custo dos últimos 12 meses dentro do canal/escopo escolhidos; KPIs, funis e séries seguem a escolha.")
+            if _num8 != _NUM_TODOS:
+                _fb = _fb[_fb['numero'] == _num8]
+            _sub8 = _esc8 + ("" if _num8 == _NUM_TODOS else f" · {_num8}")
             _FMET = ['enviadas', 'entregues', 'lidas', 'nao_disparadas', 'custo']
 
             def _fjan(m):
@@ -8832,9 +8895,38 @@ def _aba_tab8():
 
             _fa1, _fa2 = st.columns(2)
             with _fa1:
-                _tv_funil(f"{_can8} · {_lbl_a} 1–{_dlim}", _fstages(_sa), subtitle=_esc8)
+                _tv_funil(f"{_can8} · {_lbl_a} 1–{_dlim}", _fstages(_sa), subtitle=_sub8)
             with _fa2:
-                _tv_funil(f"{_can8} · {_lbl_p} 1–{_dlim}", _fstages(_sp), subtitle="mês de comparação")
+                _tv_funil(f"{_can8} · {_lbl_p} 1–{_dlim}", _fstages(_sp), subtitle="mês de comparação" + ("" if _num8 == _NUM_TODOS else f" · {_num8}"))
+
+            # ---- R70: tabela por número de origem (canal/escopo escolhidos; ignora o seletor de número de propósito) ----
+            def _fjan_all(m):
+                return _fb_all[(_fb_all['dia'] >= m) & (_fb_all['dia'] < m + pd.DateOffset(months=1)) & (_fb_all['dia'].dt.day <= _dlim)]
+
+            _na = _fjan_all(_m_atu).groupby('numero')[_FMET].sum()
+            _np_ = _fjan_all(_m_ant).groupby('numero')[_FMET].sum()
+            if not _na.empty or not _np_.empty:
+                _nt = _na.join(_np_, how='outer', rsuffix='_p').fillna(0.0).sort_values('custo', ascending=False)
+                _rows_n = []
+                for _n_, r in _nt.iterrows():
+                    _rows_n.append({'Número de origem': _n_,
+                                    f'Enviadas {_lbl_a} 1–{_dlim}': format_br(r['enviadas']),
+                                    'Taxa de entrega': _tv_pct(r['entregues'], r['enviadas']),
+                                    'Taxa de leitura': ('—' if str(_n_) in ('SMS', 'RCS') else _tv_pct(r['lidas'], r['entregues'])),
+                                    f'Custo {_lbl_a} 1–{_dlim}': format_money(r['custo']),
+                                    'Custo por entregue': (format_money(r['custo'] / r['entregues']) if r['entregues'] else '—'),
+                                    f'Custo {_lbl_p} 1–{_dlim}': format_money(r['custo_p']),
+                                    'Δ custo': (f"{(r['custo'] / r['custo_p'] - 1) * 100:+.1f}%".replace('.', ',') if r['custo_p'] else '—'),
+                                    '% do custo': _tv_pct(r['custo'], float(_nt['custo'].sum()))})
+                _tv_titulo("Por número de origem — quem disparou e quanto custou",
+                           f"{_can8} · {_esc8} · dias 1–{_dlim} · ordenado pelo custo de {_lbl_a}", "B")
+                _st_df(pd.DataFrame(_rows_n), use_container_width=True, hide_index=True,
+                       csv=_nt.reset_index(), csv_nome="crm_funil_por_numero")
+                st.caption("**Número de origem** = o remetente (canal) de onde a mensagem saiu — 4003-9713 'CDT Relacionamento', 4003-7537 "
+                           "'CDT Nacional', 4003-5790 'Tim/Tutti', (31) 7357-0612 'Energia de Todos' etc.; 'SMS' e 'RCS' são canais sem número de "
+                           "WhatsApp. Não confundir com a **instância** (conta do middleware que fez o disparo): o mesmo número dispara por várias "
+                           "instâncias — o 9713, por exemplo, pelas instâncias 3 (Hubspot Instância Aquisição), 9, 14 e 21. Custo = cobrado pela "
+                           "Zenvia (`total_cost`), conciliado ao centavo com a cobrança por remetente em todos os dias de 2026.")
 
             # ---- série mensal (meses completos): taxas e volume por canal ----
             _fm0 = (_m_atu - pd.DateOffset(months=11)).to_period('M').to_timestamp()
@@ -8859,8 +8951,8 @@ def _aba_tab8():
                     _dfv = _fmm.groupby(['mes', 'canal'], as_index=False)['enviadas'].sum().rename(columns={'canal': 'serie', 'enviadas': 'valor'})
                     _tv_chart_mensal(_dfv, "Enviadas mês a mês", stacked=True, rotulos=True,
                                      subtitle="volume que saiu da plataforma, por canal" if _can8 == "Total" else f"volume que saiu da plataforma · {_can8}")
-            _tv_fonte("alex_zenvia_template_status (status final × template × dia; recarga: gt7 run zenvia_sheet_load) · "
-                      "canal pelo nome do template · escopo GT7 = nome contém 'GT7'")
+            _tv_fonte("alex_zenvia_template_status (status final × template × dia × número de origem; crawler GT7_WhatsApp v6 → "
+                      "uploadZenviaToMySQL, diário) · canal pelo nome do template · escopo GT7 = nome contém 'GT7' · número = channel_name")
             _tv_note(
                 "<b>Como ler.</b> Cada mensagem entra uma vez, no seu <b>status final</b> — por isso o funil é cumulativo: "
                 "<b>enviadas</b> = Enviada + Entregue + Lida + Não Entregue (tudo que saiu da plataforma); <b>entregues</b> = "
@@ -8868,8 +8960,9 @@ def _aba_tab8():
                 "do funil — aparecem como 'não disparadas' no 1º cartão. <b>SMS</b> não tem confirmação de leitura: o funil "
                 "dele termina em entregues e, na visão Total, a taxa de leitura usa só as entregues do WhatsApp. "
                 "<b>Canal</b> é identificado pelo nome do template (todo template SMS tem zero Lida, o que valida a regra); "
-                "no <code>sender_name</code> o SMS só aparece em rótulos compostos ('SMS | CDT Relacionamento - 9713'), "
-                "porque divide o sender_id com números de WhatsApp. <b>Custo</b> aqui é o cobrado pela Zenvia "
+                "desde 20/10/2026 cada linha traz o <b>número de origem</b> (<code>channel_name</code>/<code>channel_number</code>, "
+                "o canal do middleware GT7/Zenvia): a <b>instância</b> (<code>sender_id</code>) é a conta que disparou, o número é o "
+                "remetente, e o mesmo número dispara por várias instâncias (o 9713 pelas 3, 9, 14 e 21). <b>Custo</b> aqui é o cobrado pela Zenvia "
                 "(<code>total_cost</code>: ~R$ 0,32 por WhatsApp, ~R$ 0,06 por SMS) — diferente da régua BD_CRM do topo da "
                 "aba, que precifica tudo a R$ 0,32. No recorte GT7 só houve SMS em jan–abr/2026; o SMS corrente "
                 "(QualificadoCEP_*_SMS) não tem 'GT7' no nome e só aparece em 'Todos os templates'.", bg="#f8fafc", icon="ℹ️")
