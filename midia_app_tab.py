@@ -23,7 +23,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-VERSAO = "R75 · 23/10/2026"
+VERSAO = "R75b · 26/10/2026 (bloco E · coortes)"
 
 CLASSE_LBL = {
     'download': 'Download (app)', 'retargeting': 'Retargeting (Jampp RTGT)', 'site_venda': 'Site · Venda', 'site_lead': 'Site · Lead',
@@ -78,6 +78,22 @@ def _load_resumo_app(_cquery):
     d['dia'] = pd.to_datetime(d['dia'])
     d['mes'] = d['dia'].dt.to_period('M').dt.to_timestamp()
     d['venda'] = pd.to_numeric(d['venda'], errors='coerce')
+    return d
+
+
+_COLS_COH = ['dia', 'rede', 'os', 'source', 'campanha', 'installs', 'cadastros_1d', 'cadastros_7d', 'cadastros_30d', 'cadastros_ltv',
+             'compras_7d', 'compras_30d', 'compras_ltv', 'receita_compra_7d', 'receita_compra_30d', 'receita_compra_ltv', 'sessoes_7d', 'sessoes_30d',
+             'retidos_1d', 'retidos_3d', 'retidos_7d', 'retidos_14d', 'retidos_30d', 'logins_7d', 'receita_total_ltv']
+
+
+@st.cache_data(ttl=43200)
+def _load_cohort(_cquery):
+    """Fase 2 (26/10): coortes por dia de instalação × OS × rede × campanha (vw_singular_cohort_campanha_dia sobre alex_singular_cohort)."""
+    d = _cquery("SELECT " + ", ".join(_COLS_COH) + " FROM vw_singular_cohort_campanha_dia", ttl=0)
+    d['dia'] = pd.to_datetime(d['dia'])
+    d['mes'] = d['dia'].dt.to_period('M').dt.to_timestamp()
+    for c in _COLS_COH[5:]:
+        d[c] = pd.to_numeric(d[c], errors='coerce')
     return d
 
 
@@ -459,3 +475,117 @@ def render(H):
             st.caption("⚠️ Campanhas de Download **com instalação e sem custo** no período: "
                        + " · ".join(f"{r['rede']} — {str(r['campanha'])[:50]} ({_num(r['installs'])})" for _, r in sem_custo.head(5).iterrows())
                        + ". Jampp: nome da campanha não casa com a alex_jampp_campaigns; Google/Meta/TikTok: conta sem data connector de custo na Singular.")
+
+
+    # ==================================================================================================================
+    # E · coortes (fase 2, 26/10): o que a instalação vira — cadastro, compra, sessões, retenção — por rede e campanha
+    # ==================================================================================================================
+    coh, err5 = _safe(_load_cohort, cquery, cols=_COLS_COH + ['mes'])
+    titulo("E · O que a instalação vira — cadastro, compra, sessões e retenção por rede e campanha (coortes Singular)",
+           "coorte = quem instalou no dia; 7d/30d = fez o evento até 7/30 dias depois · só coortes maduras entram nas taxas", "A")
+    if err5 or coh.empty:
+        st.caption("Coortes ainda indisponíveis: " + (f"`{err5}`" if err5 else "`vw_singular_cohort_campanha_dia` sem linhas") +
+                   " — fase 2 da Singular (`gas/singular_cohort.gs` → `alex_singular_cohort`, carga 09:45 e backfill desde abr/25).")
+        return
+    ult_c = coh['dia'].max()
+    mat7, mat30 = min(c_e, ult_c - pd.Timedelta(days=7)), min(c_e, ult_c - pd.Timedelta(days=30))
+    cp_k = camp.groupby(['dia', 'rede', 'campanha', 'classe'], as_index=False)[['installs', 'custo']].sum()
+
+    def _janela(df, a, b):
+        return df[(df['dia'] >= a) & (df['dia'] <= b)] if not df.empty else df
+
+    def _taxas(chave):
+        """Tabela por `chave` (rede ou campanha): installs maduros, % cadastro 7d, % compra 7d/30d, R$ compra ltv ÷ install, sessões/install,
+        % retidos 7d, custo ÷ cadastro 7d e custo ÷ compra 30d (só onde há custo = campanhas de Download)."""
+        i7, i30 = _janela(cp_k, c_s, mat7), _janela(cp_k, c_s, mat30)
+        c7, c30 = _janela(coh, c_s, mat7), _janela(coh, c_s, mat30)
+        if chave == 'campanha':
+            i7, i30 = i7[i7['classe'] == 'download'], i30[i30['classe'] == 'download']
+            keys = ['rede', 'campanha']
+        else:
+            keys = ['rede']
+        g7 = i7.groupby(keys)[['installs', 'custo']].sum(); g30 = i30.groupby(keys)[['installs', 'custo']].sum()
+        k7 = c7.groupby(keys)[['cadastros_7d', 'compras_7d', 'sessoes_7d', 'retidos_7d']].sum()
+        k30 = c30.groupby(keys)[['compras_30d', 'receita_compra_ltv', 'compras_ltv']].sum()
+        rows = []
+        for idx in g7.sort_values('installs', ascending=False).index:
+            inst7 = float(g7.loc[idx, 'installs']); cst7 = float(g7.loc[idx, 'custo'])
+            inst30 = float(g30.loc[idx, 'installs']) if idx in g30.index else 0.0; cst30 = float(g30.loc[idx, 'custo']) if idx in g30.index else 0.0
+            if inst7 <= 0:
+                continue
+            cad = float(k7.loc[idx, 'cadastros_7d']) if idx in k7.index else 0.0
+            cmp7 = float(k7.loc[idx, 'compras_7d']) if idx in k7.index else 0.0
+            ses = float(k7.loc[idx, 'sessoes_7d']) if idx in k7.index else 0.0
+            ret = float(k7.loc[idx, 'retidos_7d']) if idx in k7.index else 0.0
+            cmp30 = float(k30.loc[idx, 'compras_30d']) if idx in k30.index else 0.0
+            rec = float(k30.loc[idx, 'receita_compra_ltv']) if idx in k30.index else 0.0
+            r = {'Rede': idx[0] if isinstance(idx, tuple) else idx}
+            if chave == 'campanha':
+                nome = idx[1] if isinstance(idx[1], str) else '(sem nome)'
+                r['Campanha'] = (nome[:60] + '…') if len(nome) > 60 else nome
+            r.update({'Instalações (coortes maduras)': _num(inst7), 'Cadastro 7d': _pct(cad, inst7), 'Compra 7d': _pct(cmp7, inst7, 2),
+                      'Compra 30d': _pct(cmp30, inst30, 2) if inst30 > 0 else "—", 'R$ compra (ltv) ÷ install': _brl(rec / inst30) if inst30 > 0 else "—",
+                      'Sessões ÷ install (7d)': _razao(ses, inst7), 'Retidos 7d': _pct(ret, inst7),
+                      'Custo ÷ cadastro 7d': _brl(cst7 / cad) if cst7 > 0 and cad > 0 else "—",
+                      'Custo ÷ compra 30d': _brl(cst30 / cmp30) if cst30 > 0 and cmp30 > 0 else "—"})
+            rows.append(r)
+        return pd.DataFrame(rows), pd.concat([g7.add_suffix('_7'), k7, g30.add_suffix('_30'), k30], axis=1).reset_index()
+
+    e1, e2 = st.columns([1, 1.6])
+    with e1:
+        t, raw = _taxas('rede')
+        st_df(t if not t.empty else pd.DataFrame([{'Rede': 'sem coortes maduras no período'}]), csv=raw, csv_nome="singular_coortes_por_rede",
+              use_container_width=True, hide_index=True)
+        fonte(f"vw_singular_cohort_campanha_dia × vw_singular_campanha_dia · coortes 7d = instalações de {c_s:%d/%m} a {mat7:%d/%m}; 30d até {mat30:%d/%m} "
+              f"(última coorte carregada {ult_c:%d/%m}) · custo só das campanhas de Download.")
+    with e2:
+        t, raw = _taxas('campanha')
+        st_df(t if not t.empty else pd.DataFrame([{'Rede': 'sem coortes maduras no período'}]), csv=raw, csv_nome="singular_coortes_por_campanha",
+              use_container_width=True, hide_index=True, height=min(60 + 35 * max(len(t), 1), 480))
+        fonte("campanhas de Download · 'Compra' = evento de compra do app na Singular (inclui cashback/Ultragaz — NÃO é só filiação; a conferência "
+              "com o NOMINAL App do Filiado está pendente) · 'Cadastro' = App Lead (~69% dos installs em 7d, coerente com o cadastro).")
+    e3, e4 = st.columns(2)
+    with e3:
+        # janela fixa das últimas coortes com 30 dias fechados (não segue o Período: num período recente não haveria coorte madura)
+        rt_a, rt_b = ult_c - pd.Timedelta(days=60), ult_c - pd.Timedelta(days=30)
+        base30 = _janela(coh, rt_a, rt_b)
+        inst30 = _janela(cp_k, rt_a, rt_b).groupby('rede')['installs'].sum()
+        if not base30.empty and not inst30.empty:
+            rr = base30.groupby('rede')[['retidos_1d', 'retidos_3d', 'retidos_7d', 'retidos_14d', 'retidos_30d']].sum()
+            pts = []
+            for rede, row in rr.iterrows():
+                den = float(inst30.get(rede, 0))
+                if den <= 0:
+                    continue
+                for dcol, dd in (('retidos_1d', 1), ('retidos_3d', 3), ('retidos_7d', 7), ('retidos_14d', 14), ('retidos_30d', 30)):
+                    pts.append({'dia': dd, 'serie': rede, 'valor': float(row[dcol]) / den * 100})
+            if pts:
+                dfp = pd.DataFrame(pts)
+                titulo("Curva de retenção por rede — % da coorte que voltou ao app", f"instalações de {rt_a:%d/%m} a {rt_b:%d/%m} (últimas coortes com 30 dias fechados) · Retained Users ÷ installs", "B")
+                fig = px.line(dfp, x='dia', y='valor', color='serie', markers=True, color_discrete_sequence=cores, template=tpl_b)
+                fig.update_traces(line_width=2.5, marker_size=7)
+                fig.update_layout(height=320, xaxis_title='dias após a instalação', yaxis_title='', showlegend=True, legend=dict(orientation='h', x=0, y=1.08, title_text=''))
+                fig.update_yaxes(ticksuffix='%'); fig.update_xaxes(tickvals=[1, 3, 7, 14, 30])
+                st.plotly_chart(fig, use_container_width=True)
+                fonte("alex_singular_cohort · App Retained Users por período · a Singular só fecha a retenção em período encerrado (ltv = 0 por desenho)")
+    with e4:
+        mm = coh[(coh['mes'].isin(list(mg))) & (coh['dia'] <= ult_c - pd.Timedelta(days=7))]
+        im = cp_k[(cp_k['dia'].dt.to_period('M').dt.to_timestamp().isin(list(mg))) & (cp_k['dia'] <= ult_c - pd.Timedelta(days=7))].copy()
+        if not mm.empty and not im.empty:
+            im['mes'] = im['dia'].dt.to_period('M').dt.to_timestamp()
+            den = im.groupby(['mes', 'rede'])['installs'].sum()
+            num = mm.groupby(['mes', 'rede'])['cadastros_7d'].sum()
+            j = pd.concat([num, den], axis=1).dropna()
+            j = j[j['installs'] > 0]
+            if not j.empty:
+                j['valor'] = j['cadastros_7d'] / j['installs'] * 100
+                lm = j.reset_index().rename(columns={'rede': 'serie'})[['mes', 'serie', 'valor']]
+                lm = lm[lm['serie'].isin(['Google', 'Meta', 'TikTok', 'Jampp', 'Orgânico'])]
+                linhas_mensal(lm, "Cadastro em 7 dias por rede — % das instalações do mês", "%", pct=True, rotulos=True,
+                              subtitle="instalações até 7 dias antes da última coorte carregada · a Singular só tem coortes desde abr/25 (backfill)")
+                fonte("vw_singular_cohort_campanha_dia (App Lead 7d) ÷ vw_singular_campanha_dia (installs)")
+    note("<b>🧪 Como ler as coortes.</b> Uma coorte é o conjunto de quem instalou num dia; '7d' conta quem fez o evento até 7 dias depois, então os últimos 7 dias "
+         "do período ficam fora das taxas (e 30 dias para as de 30d). <b>Cadastro</b> (App Lead) é o evento mais estável. <b>Compra</b> é o evento de compra "
+         "dentro do app — vale R$ 5–6 por compra em média, ou seja, mistura cashback/Ultragaz com filiação; a venda oficial continua sendo o NOMINAL. "
+         "<b>Orgânico</b> no iOS carrega mídia (ATT). Métricas de conversão (Purchase/Generate Lead sem coorte) e as demais 50 da API ficam na "
+         "alex_singular_cohort para seleção depois.", bg="#f8fafc", icon="🧪")
