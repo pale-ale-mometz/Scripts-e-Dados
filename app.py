@@ -24,15 +24,14 @@ except ImportError:
 
 # --- 1. CONFIGURE PAGE & AUTHENTICATION ---
 st.set_page_config(page_title="Vendas Dashboard", page_icon="📊", layout="wide",
-                   initial_sidebar_state="collapsed" if st.session_state.get("perfil") == "gerencial" else "auto")  # R74
+                   initial_sidebar_state="auto")
 
 # R42 (22/09/2026): perfis de acesso. Cada senha em st.secrets abre um perfil; o perfil define quais abas existem.
 #   app_password → "analista"   (todas as abas)          tv_password → "televendas" (só 📞 Televendas)
-#   ger_password → "gerencial"  (só 🎯 Dashboard Gerencial; R74, 21/10/2026 — módulo gerencial_tab.py)
+#   R76 (26/10/2026): o perfil "gerencial" (ger_password, aba 🎯 Dashboard Gerencial) saiu — o Dashboard Gerencial vive só no Lovable.
 # Sessões que só têm password_correct=True (smokes antigos) caem em "analista".
-_PERFIS_SENHA = [("analista", "app_password"), ("televendas", "tv_password"), ("gerencial", "ger_password")]
-_PERFIL_ROTULO = {"analista": "Analista — todas as abas", "televendas": "Televendas — só a aba 📞",
-                  "gerencial": "Gerencial — só a aba 🎯 Dashboard Gerencial"}
+_PERFIS_SENHA = [("analista", "app_password"), ("televendas", "tv_password")]
+_PERFIL_ROTULO = {"analista": "Analista — todas as abas", "televendas": "Televendas — só a aba 📞"}
 
 
 def check_password():
@@ -1962,11 +1961,11 @@ def load_lake_proto():
 _ABAS = [("tab1", "📈 Desempenho de Vendas"), ("tab2", "🗺️ Mapa Regional (UF)"), ("tab3", "💰 Investimento"),
          ("tab4", "📣 Campanhas"), ("tab5", "🌐 Site"), ("tab6", "📞 Televendas"), ("tab7", "📱 App"),
          ("tab8", "📨 CRM"), ("tab10", "🧲 Aquisição"), ("tab11", "🧭 Funil Ponta a Ponta"),
-         ("tab12", "🔁 Retenção (Lake)"), ("tab13", "🎯 Dashboard Gerencial")]
-_ABAS_PERFIL = {"televendas": {"tab6"}, "gerencial": {"tab13"}}
+         ("tab12", "🔁 Retenção (Lake)")]   # R76: tab13 (🎯 Dashboard Gerencial) removida — só no Lovable
+_ABAS_PERFIL = {"televendas": {"tab6"}}
 _abas_vis = [(v, r) for v, r in _ABAS if _PERFIL_FULL or v in _ABAS_PERFIL.get(_PERFIL, set())]
 _abas_obj = dict(zip([v for v, _ in _abas_vis], st.tabs([r for _, r in _abas_vis])))
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab10, tab11, tab12, tab13 = (_abas_obj.get(v) for v, _ in _ABAS)
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab10, tab11, tab12 = (_abas_obj.get(v) for v, _ in _ABAS)
 
 
 def _aba(tab):
@@ -8752,12 +8751,18 @@ def _aba_tab7():
         _d8 = _os8.path.dirname(_os8.path.abspath(__file__))
         if _d8 not in _sys8.path:          # AppTest/smokes não põem a pasta do app no sys.path (o `streamlit run` põe)
             _sys8.path.insert(0, _d8)
-        import midia_app_tab
-        midia_app_tab.render(dict(
-            cquery=cquery, c_s=c_s, c_e=ref_datetime, p_s=p_s, p_e=p_partial, reference_date=reference_date, m_fim=_tv_m_fim,
-            meses_grafico=_tv_meses_grafico, kpi=_tv_kpi, n=_tv_n, delta=_tv_delta, pct=_tv_pct, note=_tv_note, titulo=_tv_titulo,
-            fonte=_tv_fonte, chart_mensal=_tv_chart_mensal, linhas_mensal=_tv_linhas_mensal, st_df=_st_df, format_br=format_br,
-            cores=_TV_CORES_A, tema=_CDT_THEME))
+        try:                               # R76: módulo ausente no deploy não pode derrubar as abas seguintes (CRM → Lake)
+            import midia_app_tab
+        except ImportError as _e8:
+            midia_app_tab = None
+            st.warning(f"Sub-aba indisponível: o módulo `midia_app_tab.py` não está neste deploy ({_e8}). "
+                       "Confira se o arquivo foi commitado junto com o app.py.", icon="⚠️")
+        if midia_app_tab is not None:
+            midia_app_tab.render(dict(
+                cquery=cquery, c_s=c_s, c_e=ref_datetime, p_s=p_s, p_e=p_partial, reference_date=reference_date, m_fim=_tv_m_fim,
+                meses_grafico=_tv_meses_grafico, kpi=_tv_kpi, n=_tv_n, delta=_tv_delta, pct=_tv_pct, note=_tv_note, titulo=_tv_titulo,
+                fonte=_tv_fonte, chart_mensal=_tv_chart_mensal, linhas_mensal=_tv_linhas_mensal, st_df=_st_df, format_br=format_br,
+                cores=_TV_CORES_A, tema=_CDT_THEME))
 
 # =====================================================================
 # TAB 8: CRM — WhatsApp/SMS da Instância de Aquisição: gasto por disparo × vendas GA4 × CPA
@@ -11605,21 +11610,4 @@ def _aba_tab12():
 | 4 · MGM | Filiado / R$ | `fl_contagem_filiado` (MGM) ⋈ `fl_filiado_mgm` (`cpf_indicado`, ciclo 2/3/4, `status`) | bônus pago = `authorized` | coortes recentes ainda sem 2º–4º mês |
 """)
 
-# =====================================================================
-# TAB 13: 🎯 DASHBOARD GERENCIAL (R74, 21/10/2026)
-# =====================================================================
-#   Porta o blueprint "Metas Comerciais CDT v6" (Claude Design): 01 Meta do mês · 02 Dia a dia · 03 Canais · 04 Leads e funil ·
-#   05 Histórico, com barra própria (Período · Canal · Ajustes · Legenda · CSV). Código em gerencial_tab.py (ao lado do app.py —
-#   vai junto no commit/deploy, como cdt_theme.py). Fontes: df_raw (vendas), df_goals (alex_metas), df_fcst (Prophet), df_cal,
-#   alex_leads_diario e alex_ger_dash_dia (pipeline gt7 run gerencial_dash, depois do funil_journey na recarga).
-#   Perfil "gerencial" (ger_password) vê só esta aba; o analista vê todas.
-@_aba(tab13)
-def _aba_tab13():
-    global gerencial_tab
-    import os, sys
-    _d = os.path.dirname(os.path.abspath(__file__))
-    if _d not in sys.path:          # AppTest/smokes não põem a pasta do app no sys.path (o `streamlit run` põe)
-        sys.path.insert(0, _d)
-    import gerencial_tab
-    gerencial_tab.render(df_raw=df_raw, df_goals=df_goals, df_fcst=df_fcst, df_cal=df_cal, cquery=cquery,
-                         reference_date=reference_date, perfil=_PERFIL)
+# R76 (26/10/2026): a TAB 13 (🎯 Dashboard Gerencial, R74) foi removida do app — vive só no Lovable (gerencial_tab.py fica no repo).
