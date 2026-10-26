@@ -431,6 +431,18 @@ GLOSSARIO = {
     'Instalação (CleverTap · App Installed)': dict(sec="App do Filiado",
         d="1ª abertura do app num aparelho novo, vista pelo SDK do CleverTap. Não é download da loja nem 1º login: são três réguas (CleverTap, Singular e 1º login no lake) e a sub-aba 7 da 📱 mostra as três lado a lado, sem somar.",
         o="CleverTap (API counts/trends)", a="📱", s=["App Installed", "Instalações CleverTap"]),
+    'Instalação (Singular · tracker_installs)': dict(sec="App do Filiado",
+        d="1ª abertura do app num aparelho novo vista pelo SDK da Singular, com atribuição de mídia: cada instalação recebe a rede e a campanha do último toque válido na janela de atribuição, ou vai para 'Organic'. É a régua oficial de Installs/Downloads nos relatórios (RMA, metas) desde 20/10/2026. Não é download da loja nem 1º login.",
+        p="É a única régua que separa o que a mídia trouxe do que veio sozinho — e a que a Mesa já usava (os 529 k de agosto).",
+        o="Singular (Reporting API → alex_singular_installs, GAS 09:30, janela D-8 → D-1)", a="📱 🧲", s=["Instalações (Singular)", "Instalações (Singular · régua oficial)", "Singular · installs (RMA)", "tracker_installs", "installs"]),
+    'Install orgânico × pago (Singular)': dict(sec="App do Filiado",
+        d="Pago = instalação atribuída a uma campanha de mídia (Google, Meta, TikTok, Jampp ou outra fonte rastreada); orgânico = sem toque de mídia na janela. No iOS o pago é subestimado: sem IDFA (ATT) o SDK não casa o clique com a instalação e ela cai em orgânico — compare Android e iOS separadamente e leia '% pago' só no Android.",
+        p="Diz quanto do volume depende da mídia; o '% pago' do RMA mensal é pago ÷ total nesta régua.",
+        o="Singular (vw_singular_downloads_dia)", a="📱", s=["Pago (atribuído a mídia)", "Orgânico (sem mídia)", "Instalações pagas (atribuídas a mídia)", "% pago", "is_organic", "ATT"]),
+    'CPI (Singular)': dict(sec="Investimento e mídia",
+        d="Custo por instalação: custo da campanha de Download (o que a rede reporta à Singular; Jampp pelo spend_brl do jampp.gs) ÷ instalações atribuídas pelo SDK (tracker_installs). Só campanhas com 'download' no nome — o custo da Singular cobre todas as campanhas da rede, inclusive as do site. 'CPI (rede)' usa as instalações que a própria rede declara (adn_installs); a Meta costuma declarar ~1,4× o SDK.",
+        p="Compara a eficiência entre redes na mesma régua. Não é o investimento oficial (RESUMO_INVESTIMENTO_DIARIO): restatement e janela D-8 mudam o custo por alguns dias; a conciliação está na sub-aba 📣 8 da 📱.",
+        o="Singular × Jampp (vw_singular_cpi_mes, vw_singular_campanha_dia)", a="📱", s=["CPI", "Custo por instalação", "CPI por rede", "CPI das campanhas de Download — Android", "cpi_rede", "installs_rede", "adn_installs"]),
     'Vendas assistidas pelo CRM do app (piso)': dict(sec="App do Filiado",
         d="Filiação pelo app (evento Charged, product = filiation) até 24 h depois de um clique em push ou in-app do mesmo usuário (objectId). É o piso: o painel do CleverTap conta como 'convertido' quem comprou depois de receber ou ver a mensagem, mesmo sem clicar — na Mesa isso deu 82% das vendas do app (jul/26) e mede alcance, não efeito.",
         o="CleverTap (export events.json) × MySQL", a="📱", s=["assistida_24h", "Vendas assistidas", "Mkt Direto App"]),
@@ -7226,7 +7238,7 @@ def _aba_tab7():
         ts = pd.Timestamp(ts)
         return f"{_AP_MESES_PT[ts.month - 1]}/{ts.strftime('%y')}"
 
-    _ap_tabs = st.tabs(["📲 1 · Funil do app", "🧩 2 · Uso de produtos", "🌱 3 · Freemium", "💰 4 · LTV e entrada no app", "🎯 5 · Leads do app", "🔗 6 · Uso × conversão × LTV", "📡 7 · CleverTap · app e site"])
+    _ap_tabs = st.tabs(["📲 1 · Funil do app", "🧩 2 · Uso de produtos", "🌱 3 · Freemium", "💰 4 · LTV e entrada no app", "🎯 5 · Leads do app", "🔗 6 · Uso × conversão × LTV", "📡 7 · CleverTap · app e site", "📣 8 · Mídia do app (Singular)"])
 
     # =================================================================
     # 1 · FUNIL DO APP
@@ -8728,6 +8740,24 @@ def _aba_tab7():
                    + (f"Export cobre {_ct_cov[0]:%d/%m/%Y} a {_ct_cov[1]:%d/%m/%Y}" if _ct_cov[0] is not None else "Export ainda sem dados")
                    + (f"; no período, UTM Visited pelo counts/trends = {_tv_n(_ct_utm_tot)} × export = {_tv_n(_ct_vis)}" if _ct_utm_tot and _ct_vis else "")
                    + " — diferenças pequenas são eventos tardios; grandes, backfill ainda em andamento.")
+
+    # =================================================================
+    # 8 · MÍDIA DO APP (Singular) — R75 (23/10/2026): módulo midia_app_tab.py (ao lado do app.py, como gerencial_tab.py)
+    #   Para a analista de mídia do app: campanhas de Download (CPI, CTR, rede × SDK), ritmo da meta Download APP, orgânico × pago
+    #   por semana, instalações vindas de campanhas do site, reengajamentos, conciliação custo Singular × RESUMO, nomenclatura.
+    #   Fontes: vw_singular_campanha_dia (nova, sql/singular_views.sql) · vw_singular_downloads_dia · alex_metas · RESUMO_INVESTIMENTO_DIARIO.
+    # =================================================================
+    with _ap_tabs[7]:
+        import os as _os8, sys as _sys8
+        _d8 = _os8.path.dirname(_os8.path.abspath(__file__))
+        if _d8 not in _sys8.path:          # AppTest/smokes não põem a pasta do app no sys.path (o `streamlit run` põe)
+            _sys8.path.insert(0, _d8)
+        import midia_app_tab
+        midia_app_tab.render(dict(
+            cquery=cquery, c_s=c_s, c_e=ref_datetime, p_s=p_s, p_e=p_partial, reference_date=reference_date, m_fim=_tv_m_fim,
+            meses_grafico=_tv_meses_grafico, kpi=_tv_kpi, n=_tv_n, delta=_tv_delta, pct=_tv_pct, note=_tv_note, titulo=_tv_titulo,
+            fonte=_tv_fonte, chart_mensal=_tv_chart_mensal, linhas_mensal=_tv_linhas_mensal, st_df=_st_df, format_br=format_br,
+            cores=_TV_CORES_A, tema=_CDT_THEME))
 
 # =====================================================================
 # TAB 8: CRM — WhatsApp/SMS da Instância de Aquisição: gasto por disparo × vendas GA4 × CPA
