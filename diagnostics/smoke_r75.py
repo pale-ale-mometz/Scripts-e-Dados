@@ -1,4 +1,4 @@
-"""Smoke R75: sub-aba 📣 8 · Mídia do app (Singular) — Semana Atual e Último Mês; sem exceções e com os blocos A–D presentes.
+"""Smoke R75/R75c: sub-aba 📣 8 · Mídia do app (Singular) — Semana Atual e Último Mês; sem exceções e com os blocos A–E presentes.
 Uso: $env:PYTHONIOENCODING='utf-8'; .venv\\Scripts\\python.exe diagnostics\\smoke_r75.py
 """
 import os, sys, time, pathlib, re
@@ -35,8 +35,9 @@ def checa(at, presentes, ausentes=()):
 
 NOVOS = ["Mídia do app — campanhas, CPI, ritmo da meta e efeito cruzado", "Instalações pagas (atribuídas a mídia)",
          "CPI das campanhas de Download — Android", "A · Campanhas de Download", "B · Ritmo da meta de instalações",
-         "C · Efeito cruzado", "D · Conciliação de custo", "Rede diz × SDK vê"]
-AUSENTES = ["vw_singular_campanha_dia` vazia ou inexistente", "Falha ao ler `vw_singular_campanha_dia`"]
+         "C · Efeito cruzado", "D · Conciliação de custo", "Rede diz × SDK vê",
+         "E · O que a instalação vira", "Curva de retenção por rede", "Cadastro em 7 dias por rede"]
+AUSENTES = ["vw_singular_campanha_dia` vazia ou inexistente", "Falha ao ler `vw_singular_campanha_dia`", "Coortes ainda indisponíveis"]
 at = AppTest.from_file(str(pathlib.Path.cwd() / "app.py"), default_timeout=1800)
 at.session_state["password_correct"] = True
 if not run(at, "Semana Atual"):

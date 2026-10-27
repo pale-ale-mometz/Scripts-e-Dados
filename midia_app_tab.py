@@ -23,7 +23,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-VERSAO = "R75b · 26/10/2026 (bloco E · coortes)"
+VERSAO = "R75c · 27/10/2026 (bloco E · rótulos da compra)"
 
 CLASSE_LBL = {
     'download': 'Download (app)', 'retargeting': 'Retargeting (Jampp RTGT)', 'site_venda': 'Site · Venda', 'site_lead': 'Site · Lead',
@@ -495,7 +495,7 @@ def render(H):
         return df[(df['dia'] >= a) & (df['dia'] <= b)] if not df.empty else df
 
     def _taxas(chave):
-        """Tabela por `chave` (rede ou campanha): installs maduros, % cadastro 7d, % compra 7d/30d, R$ compra ltv ÷ install, sessões/install,
+        """Tabela por `chave` (rede ou campanha): installs maduros, % cadastro 7d, % compra no app 7d/30d (evento), R$ do evento ÷ install, sessões/install,
         % retidos 7d, custo ÷ cadastro 7d e custo ÷ compra 30d (só onde há custo = campanhas de Download)."""
         i7, i30 = _janela(cp_k, c_s, mat7), _janela(cp_k, c_s, mat30)
         c7, c30 = _janela(coh, c_s, mat7), _janela(coh, c_s, mat30)
@@ -523,11 +523,11 @@ def render(H):
             if chave == 'campanha':
                 nome = idx[1] if isinstance(idx[1], str) else '(sem nome)'
                 r['Campanha'] = (nome[:60] + '…') if len(nome) > 60 else nome
-            r.update({'Instalações (coortes maduras)': _num(inst7), 'Cadastro 7d': _pct(cad, inst7), 'Compra 7d': _pct(cmp7, inst7, 2),
-                      'Compra 30d': _pct(cmp30, inst30, 2) if inst30 > 0 else "—", 'R$ compra (ltv) ÷ install': _brl(rec / inst30) if inst30 > 0 else "—",
+            r.update({'Instalações (coortes maduras)': _num(inst7), 'Cadastro 7d': _pct(cad, inst7), 'Compra no app 7d (evento)': _pct(cmp7, inst7, 2),
+                      'Compra no app 30d (evento)': _pct(cmp30, inst30, 2) if inst30 > 0 else "—", 'R$ do evento (ltv) ÷ install': _brl(rec / inst30) if inst30 > 0 else "—",
                       'Sessões ÷ install (7d)': _razao(ses, inst7), 'Retidos 7d': _pct(ret, inst7),
                       'Custo ÷ cadastro 7d': _brl(cst7 / cad) if cst7 > 0 and cad > 0 else "—",
-                      'Custo ÷ compra 30d': _brl(cst30 / cmp30) if cst30 > 0 and cmp30 > 0 else "—"})
+                      'Custo ÷ compra no app 30d': _brl(cst30 / cmp30) if cst30 > 0 and cmp30 > 0 else "—"})
             rows.append(r)
         return pd.DataFrame(rows), pd.concat([g7.add_suffix('_7'), k7, g30.add_suffix('_30'), k30], axis=1).reset_index()
 
@@ -542,8 +542,9 @@ def render(H):
         t, raw = _taxas('campanha')
         st_df(t if not t.empty else pd.DataFrame([{'Rede': 'sem coortes maduras no período'}]), csv=raw, csv_nome="singular_coortes_por_campanha",
               use_container_width=True, hide_index=True, height=min(60 + 35 * max(len(t), 1), 480))
-        fonte("campanhas de Download · 'Compra' = evento de compra do app na Singular (inclui cashback/Ultragaz — NÃO é só filiação; a conferência "
-              "com o NOMINAL App do Filiado está pendente) · 'Cadastro' = App Lead (~69% dos installs em 7d, coerente com o cadastro).")
+        fonte("campanhas de Download · 'Compra no app (evento)' = sng_ecommerce_purchase visto pela Singular, qualquer produto (R$ ~5,50 por evento; "
+              "NÃO é filiação confirmada — conferência de 27/10: não é comparável ao NOMINAL por construção e o valor não é o da adesão; a confirmação "
+              "depende do time do app) · 'Cadastro' = App Lead (~69% dos installs em 7d, coerente com o cadastro).")
     e3, e4 = st.columns(2)
     with e3:
         # janela fixa das últimas coortes com 30 dias fechados (não segue o Período: num período recente não haveria coorte madura)
@@ -585,7 +586,7 @@ def render(H):
                               subtitle="instalações até 7 dias antes da última coorte carregada · a Singular só tem coortes desde abr/25 (backfill)")
                 fonte("vw_singular_cohort_campanha_dia (App Lead 7d) ÷ vw_singular_campanha_dia (installs)")
     note("<b>🧪 Como ler as coortes.</b> Uma coorte é o conjunto de quem instalou num dia; '7d' conta quem fez o evento até 7 dias depois, então os últimos 7 dias "
-         "do período ficam fora das taxas (e 30 dias para as de 30d). <b>Cadastro</b> (App Lead) é o evento mais estável. <b>Compra</b> é o evento de compra "
-         "dentro do app — vale R$ 5–6 por compra em média, ou seja, mistura cashback/Ultragaz com filiação; a venda oficial continua sendo o NOMINAL. "
-         "<b>Orgânico</b> no iOS carrega mídia (ATT). Métricas de conversão (Purchase/Generate Lead sem coorte) e as demais 50 da API ficam na "
-         "alex_singular_cohort para seleção depois.", bg="#f8fafc", icon="🧪")
+         "do período ficam fora das taxas (e 30 dias para as de 30d). <b>Cadastro</b> (App Lead) é o evento mais estável. <b>Compra no app (evento)</b> é o evento de compra que o SDK da Singular vê, de qualquer produto "
+         "— R$ ~5,50 por evento em média, ou seja, não é a adesão; a venda oficial continua sendo o NOMINAL (a confirmação do que o evento carrega "
+         "depende do time do app). <b>Orgânico</b> no iOS carrega mídia (ATT). As métricas de conversão da API medem o SITE (os = Web/Unknown) e "
+         "ficaram fora da carga (27/10); a carga diária traz 7 métricas: cadastro, compra, receita, sessões, retidos, logins, receita total.", bg="#f8fafc", icon="🧪")
