@@ -1867,21 +1867,26 @@ def load_crm_cpa():
 
 # R71 (21/10/2026): gasto do CRM de Aquisição (templates GT7) por dia × NÚMERO de origem — mesma régua de _load_crm_cpa_raw,
 # aberta por channel_number (crawler GT7_WhatsApp v6). Base dos pré-filtros de número do topo da aba 📨.
-_CPA_NUM_COLS = ['dia', 'num_tel', 'numero', 'gasto_zenvia', 'gasto_bd']
+_CPA_NUM_COLS = ['dia', 'num_tel', 'numero', 'gt7', 'aqui', 'gasto_zenvia', 'gasto_bd']
 
 
 @st.cache_data(ttl=43200)
 def _load_crm_cpa_num_raw():
+    """R77b: TODOS os templates, dia × número × flags (gt7 = 'GT7' no nome; aqui = 'AQUI' no nome). A régua (GT7, ou GT7 + 3535) é
+    aplicada na aba 📨 por `_crm_regua_mask`, não no SQL — assim o 3535 (Lia Disparos) pode entrar em três visões."""
     d = cquery("""SELECT report_date AS dia,
                          COALESCE(channel_number, channel_name, '(sem canal)') AS num_tel,
                          COALESCE(channel_name, '(sem canal - antes de 2026)') AS numero,
+                         CASE WHEN UPPER(template_name) LIKE '%%GT7%%' THEN 1 ELSE 0 END AS gt7,
+                         CASE WHEN UPPER(template_name) LIKE '%%AQUI%%' AND UPPER(template_name) NOT LIKE '%%AINDAPORAQUI%%' THEN 1 ELSE 0 END AS aqui,
                          ROUND(SUM(total_cost), 2) AS gasto_zenvia,
                          ROUND(SUM(CASE WHEN status IN ('Enviada','Entregue','Lida') THEN total_messages ELSE 0 END) * 0.32, 2) AS gasto_bd
                   FROM alex_zenvia_template_status
-                  WHERE UPPER(template_name) LIKE '%%GT7%%'
-                  GROUP BY 1, 2, 3""", ttl=0)
+                  GROUP BY 1, 2, 3, 4, 5""", ttl=0)
     for c in ['gasto_zenvia', 'gasto_bd']:
         d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0.0)
+    for c in ['gt7', 'aqui']:
+        d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0).astype(int)
     d['num_tel'] = d['num_tel'].astype(str)
     d['numero'] = d['numero'].astype(str)
     d['dia'] = pd.to_datetime(d['dia'])
@@ -1893,6 +1898,21 @@ def load_crm_cpa_num():
         return _load_crm_cpa_num_raw()
     except Exception:
         return pd.DataFrame(columns=_CPA_NUM_COLS)
+
+
+# R77b: as três visões do 3535 (Lia Disparos) na régua do gasto da aba 📨. Investigação 27/10: no relatório do middleware o 3535 só tem
+# 3 templates 'CDT - AQUI - disparo N leads sem CEP …' (24, 25 e 28/09/2026; R$ 5.208 na régua BD_CRM), sem 'GT7' no nome.
+_CRM_REG_3535 = {"Fora (régua GT7 — padrão)": 'fora', "Todo o 3535": 'todo', "Só 3535 de aquisição ('AQUI'/'GT7' no nome)": 'aqui'}
+
+
+def _crm_regua_mask(df, regua):
+    """Linhas que entram na régua da Instância de Aquisição: templates GT7 + (conforme a visão) o número 3535 inteiro ou só os de aquisição."""
+    m = df['gt7'] == 1
+    if regua == 'todo':
+        m = m | (df['num_tel'] == '3535')
+    elif regua == 'aqui':
+        m = m | ((df['num_tel'] == '3535') & ((df['aqui'] == 1) | (df['gt7'] == 1)))
+    return m
 
 
 @st.cache_data(ttl=43200)
@@ -1924,7 +1944,7 @@ _CRM_UTM_NUM = {'crmjunho26': '9713', 'crmmarço26': '9713', 'crmfevereiro26': '
                 'crmmaio26': '9713', 'crmetapascheckout': '9713', 'reguanutriçao2026': '9713'}
 
 
-_FUNIL_COLS = ['dia', 'canal', 'gt7', 'numero', 'num_tel', 'enviadas', 'entregues', 'lidas', 'nao_disparadas', 'custo']  # R70 numero · R71 num_tel
+_FUNIL_COLS = ['dia', 'canal', 'gt7', 'aqui', 'numero', 'num_tel', 'enviadas', 'entregues', 'lidas', 'nao_disparadas', 'custo']  # R70 numero · R71 num_tel · R77b aqui
 
 
 @st.cache_data(ttl=43200)
@@ -1941,6 +1961,7 @@ def _load_crm_funil_raw():
     d = cquery("""SELECT report_date AS dia,
                          CASE WHEN template_name LIKE '%%SMS%%' THEN 'SMS' ELSE 'WhatsApp' END AS canal,
                          CASE WHEN UPPER(template_name) LIKE '%%GT7%%' THEN 1 ELSE 0 END AS gt7,
+                         CASE WHEN UPPER(template_name) LIKE '%%AQUI%%' AND UPPER(template_name) NOT LIKE '%%AINDAPORAQUI%%' THEN 1 ELSE 0 END AS aqui,
                          COALESCE(channel_name, '(sem canal - antes de 2026)') AS numero,
                          COALESCE(channel_number, channel_name, '(sem canal)') AS num_tel,
                          SUM(CASE WHEN status_code IN (2, 3, 4, 6) THEN total_messages ELSE 0 END) AS enviadas,
@@ -1949,10 +1970,11 @@ def _load_crm_funil_raw():
                          SUM(CASE WHEN status_code IN (1, 5, 8) THEN total_messages ELSE 0 END) AS nao_disparadas,
                          SUM(total_cost) AS custo
                   FROM alex_zenvia_template_status
-                  GROUP BY 1, 2, 3, 4, 5""", ttl=0)
+                  GROUP BY 1, 2, 3, 4, 5, 6""", ttl=0)
     for c in ['enviadas', 'entregues', 'lidas', 'nao_disparadas', 'custo']:
         d[c] = pd.to_numeric(d[c], errors='coerce').fillna(0).astype(float)
     d['gt7'] = pd.to_numeric(d['gt7'], errors='coerce').fillna(0).astype(int)
+    d['aqui'] = pd.to_numeric(d['aqui'], errors='coerce').fillna(0).astype(int)   # R77b
     d['canal'] = d['canal'].astype(str)
     d['numero'] = d['numero'].astype(str)   # R70: número de origem (channel_name do middleware; v6 do crawler)
     d['num_tel'] = d['num_tel'].astype(str)  # R71: só o número (channel_number) — chave dos pré-filtros; 'SMS'/'RCS' para os canais
@@ -8887,6 +8909,14 @@ def _aba_tab8():
         }
         _cn8 = load_crm_cpa_num()
         _cl8, _cv8 = load_crm_wpp_sms()
+        # R77b: as três visões do 3535 (Lia Disparos) — fora (régua GT7), todo o número, só os de aquisição ('AQUI'/'GT7' no nome)
+        _reg3535_lbl = st.radio("Número 3535 (Lia Disparos) na régua do gasto:", list(_CRM_REG_3535.keys()), index=0, horizontal=True, key='t8_reg_3535',
+                                help="Os disparos do 3535 não levam 'GT7' no nome ('CDT - AQUI - disparo N leads sem CEP …', 24–28/09/2026, R$ 5.208) e por "
+                                     "isso ficam fora da régua padrão. 'Todo o 3535' soma tudo que saiu pelo número; 'Só 3535 de aquisição' soma só os "
+                                     "templates do 3535 com 'AQUI' ou 'GT7' no nome (hoje as duas visões coincidem). Vale para o gasto do topo e para o "
+                                     "funil de entrega no escopo Instância de Aquisição; o canal CRM da aba 💰 e o RMA seguem na régua GT7 pura.")
+        _reg3535 = _CRM_REG_3535[_reg3535_lbl]
+        _cnr = _cn8[_crm_regua_mask(_cn8, _reg3535)] if not _cn8.empty else _cn8
         _fx1, _fx2 = st.columns([1.15, 1])
         with _fx1:
             _num_grp = st.radio("Números de origem (custo Zenvia):", list(_NUM_PRESETS.keys()), index=0, horizontal=True, key='t8_num_grp',
@@ -8896,8 +8926,8 @@ def _aba_tab8():
                                      "Vendas e leads do GA4 não têm número: para eles use o filtro de UTM ao lado.")
             _nums_sel = _NUM_PRESETS[_num_grp]
             if _nums_sel == 'custom':
-                _num_opts = (_cn8[_cn8['dia'] >= pd.Timestamp(reference_date) - pd.DateOffset(months=12)]
-                             .groupby(['num_tel', 'numero'])['gasto_zenvia'].sum().sort_values(ascending=False).reset_index()) if not _cn8.empty else pd.DataFrame(columns=['num_tel', 'numero'])
+                _num_opts = (_cnr[_cnr['dia'] >= pd.Timestamp(reference_date) - pd.DateOffset(months=12)]
+                             .groupby(['num_tel', 'numero'])['gasto_zenvia'].sum().sort_values(ascending=False).reset_index()) if not _cnr.empty else pd.DataFrame(columns=['num_tel', 'numero'])
                 _num_lbls = {r['num_tel']: f"{r['num_tel']} · {r['numero']}" for _, r in _num_opts.iterrows()}
                 _nums_sel = st.multiselect("Escolha os números:", list(_num_lbls.keys()), default=[], key='t8_num_sel',
                                            format_func=lambda k: _num_lbls.get(k, k),
@@ -8916,15 +8946,23 @@ def _aba_tab8():
                                            "mkt_direto). Ordenado pelas vendas dos últimos 12 meses. Vazio = todas. Filtra VENDAS e LEADS; o custo não "
                                            "tem UTM (o relatório da Zenvia só traz template e número) — combine com o filtro de número se as UTMs "
                                            "forem as das campanhas disparadas por esses números.")
-        if _nums_sel is not None and not _cn8.empty:
+        if not _cnr.empty:
+            # R77b: o gasto do topo é sempre recomposto de _cnr (régua do 3535 escolhida) × filtro de número; dias só com custo do 3535
+            # (sem template GT7 e sem venda) entram como linhas novas em _c8
             _gz0, _gb0 = _c8['gasto_zenvia'].copy(), _c8['gasto_bd'].copy()
-            _g8 = _cn8[_cn8['num_tel'].isin(_nums_sel)].groupby('dia')[['gasto_zenvia', 'gasto_bd']].sum()
+            _cns = _cnr[_cnr['num_tel'].isin(_nums_sel)] if _nums_sel is not None else _cnr
+            _g8 = _cns.groupby('dia')[['gasto_zenvia', 'gasto_bd']].sum()
+            _novos = sorted(set(_g8.index) - set(_c8['dia']))
+            if _novos:
+                _c8 = pd.concat([_c8, pd.DataFrame({'dia': _novos})], ignore_index=True).fillna(0.0).sort_values('dia').reset_index(drop=True)
             _c8['gasto_zenvia'] = _c8['dia'].map(_g8['gasto_zenvia']).fillna(0.0)
             _c8['gasto_bd'] = _c8['dia'].map(_g8['gasto_bd']).fillna(0.0)
-            if not (_c8['gasto_bd'] > 0).any():
-                st.warning(f"Nenhum custo de templates GT7 para **{_num_lbl}** — voltando para todos os números.")
-                _c8['gasto_zenvia'], _c8['gasto_bd'] = _gz0, _gb0
+            if _nums_sel is not None and not (_c8['gasto_bd'] > 0).any():
+                st.warning(f"Nenhum custo na régua escolhida para **{_num_lbl}** — voltando para todos os números.")
                 _nums_sel, _num_lbl = None, "todos os números"
+                _g8 = _cnr.groupby('dia')[['gasto_zenvia', 'gasto_bd']].sum()
+                _c8['gasto_zenvia'] = _c8['dia'].map(_g8['gasto_zenvia']).fillna(0.0)
+                _c8['gasto_bd'] = _c8['dia'].map(_g8['gasto_bd']).fillna(0.0)
         if _utm_sel:
             _vv = _cv8[_cv8['session_campaign_name'].isin(_utm_sel)]
             _ll = _cl8[_cl8['session_campaign_name'].isin(_utm_sel)]
@@ -8934,7 +8972,7 @@ def _aba_tab8():
         # R77 (27/10/2026): varredura da aba — templates de AQUISIÇÃO sem 'GT7' no nome ('CDT - AQUI - disparo N leads sem CEP …', número 3535
         # Lia Disparos, set/26 R$ 5.208) ficam fora da régua e do preset 'c/ Lia' (que, por isso, hoje é igual ao 's/ Lia'). A planilha do time
         # de CRM conta esses disparos; a decisão de incluir 'AQUI' na régua muda o CPA publicado e está com o Álex — até lá, só o aviso.
-        _aqui_fora = load_crm_aqui_fora()
+        _aqui_fora = load_crm_aqui_fora() if _reg3535 == 'fora' else pd.DataFrame(columns=['dia', 'num_tel', 'gasto_bd'])   # R77b: só na visão 'Fora'
         if not _aqui_fora.empty:
             _af12 = _aqui_fora[_aqui_fora['dia'] >= pd.Timestamp(reference_date) - pd.DateOffset(months=12)]
             if not _af12.empty:
@@ -8943,6 +8981,8 @@ def _aba_tab8():
                 st.caption(f"⚠️ **Templates de aquisição fora da régua GT7** ('CDT - AQUI - …', sem 'GT7' no nome; números "
                            f"{', '.join(sorted(_af12['num_tel'].unique()))}): {_af_txt} na régua BD_CRM — a planilha do time de CRM conta esses "
                            "disparos, o dashboard ainda não (regra `GT7` no nome). Padronizar o nome com 'GT7' ou decidir a inclusão de 'AQUI' na régua.")
+        if _reg3535 != 'fora':
+            st.caption(f"🔎 Régua do gasto: **templates GT7 + {_reg3535_lbl}** — diferente da régua GT7 pura do canal CRM da aba 💰 e do RMA.")
         if _nums_sel is not None or _utm_sel:
             st.caption(f"🔎 Filtros ativos — gasto: **{_num_lbl}**" + (f" · vendas/leads: **{len(_utm_sel)} UTM campaign** ({', '.join(_utm_sel[:4])}{'…' if len(_utm_sel) > 4 else ''})" if _utm_sel else "")
                        + ". Gasto vem do número de origem (Zenvia) e vendas/leads vêm da UTM do link (GA4): são populações diferentes — o CPA/CPL "
@@ -9106,7 +9146,7 @@ def _aba_tab8():
         elif _f8.empty:
             st.warning("⚠️ Sem dados em alex_zenvia_template_status para o funil.")
         else:
-            _ESC_GT7 = "Instância de Aquisição (templates GT7)"
+            _ESC_GT7 = "Instância de Aquisição (templates GT7" + ("" if _reg3535 == 'fora' else " + " + _reg3535_lbl) + ")"
             _ESC_ALL = "Todos os templates (empresa inteira)"
             _fc1, _fc2 = st.columns([1, 1.5])
             with _fc1:
@@ -9119,7 +9159,7 @@ def _aba_tab8():
                                  help="GT7 = templates com 'GT7' no nome (Instância de Aquisição, mesmo recorte do custo/CPA "
                                       "acima). Todos = mensageria da empresa inteira (relacionamento, engajamento, outras "
                                       "unidades). No recorte GT7 só houve SMS em jan–abr/2026.")
-            _fb = _f8 if _esc8 == _ESC_ALL else _f8[_f8['gt7'] == 1]
+            _fb = _f8 if _esc8 == _ESC_ALL else _f8[_crm_regua_mask(_f8, _reg3535)]   # R77b: mesma régua do topo
             if _can8 != "Total":
                 _fb = _fb[_fb['canal'] == _can8]
             # ---- R70/R71: número de origem = canal do middleware (channel_number); o funil segue o filtro de números do TOPO da aba ----
