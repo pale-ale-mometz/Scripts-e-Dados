@@ -23,7 +23,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-VERSAO = "R75c · 27/10/2026 (bloco E · rótulos da compra)"
+VERSAO = "R77 · 27/10/2026 (guia da sub-aba · conciliação Jampp UA+RTGT · legenda C sem HTML cru)"
 
 CLASSE_LBL = {
     'download': 'Download (app)', 'retargeting': 'Retargeting (Jampp RTGT)', 'site_venda': 'Site · Venda', 'site_lead': 'Site · Lead',
@@ -231,6 +231,45 @@ def render(H):
          "Singular (Jampp: spend_brl do jampp.gs) — serve para comparar redes; o investimento oficial continua sendo a RESUMO (bloco D). "
          "Os últimos ~8 dias mudam (atribuição tardia, restatement).", icon="📏")
 
+    # R77 (27/10/2026): guia da sub-aba para quem gere as campanhas do app — respostas às dúvidas levantadas em 27/10
+    with st.expander("📖 Guia desta sub-aba — o que cada bloco e coluna significa, e por que os números diferem das outras sub-abas"):
+        st.markdown(
+            "**O que muda em relação à 📡 7 (CleverTap · app e site).** A régua de instalação é a **mesma** (Singular `tracker_installs`, "
+            "orgânico + pago, Android + iOS, lida da mesma `vw_singular_downloads_dia`). O que muda é o grão e o corte: aqui tudo é **dia a dia e por "
+            "campanha/rede** (`vw_singular_campanha_dia`), no Período de Análise; na 📡 7 a Singular aparece **por mês** ao lado das outras duas réguas "
+            "(CleverTap App Installed e 1º login do lake) para contextualizar o uso do app. Esta sub-aba lê a view **ao vivo** (carga das 09:30); a "
+            "📲 1 · Funil do app lê o **agregado diário** `alex_app_dash_mes` (`s1_dia`), recalculado às 11:00 — por isso o card 'Instalações (Singular)' "
+            "do funil pode ficar algumas centenas abaixo do daqui até a recarga seguinte (em 27/10: 114.250 × 114.742 para 19–25/10 = restatement "
+            "dos últimos 8 dias carregado às 09:30 e ainda não refletido no agregado das 11:00 do dia anterior). Depois da recarga das 11:00 os dois "
+            "batem; a diferença volta a aparecer todo dia entre 09:30 e 11:00.\n\n"
+            "**Colunas do bloco A (campanhas de Download).**\n\n"
+            "| Coluna | O que é | Como ler |\n|---|---|---|\n"
+            "| Instalações (SDK) | 1ª abertura do app num aparelho novo vista pelo SDK da Singular, atribuída à campanha (último toque dentro da janela de atribuição) | a régua oficial; é o denominador do CPI |\n"
+            "| And. / iOS | as mesmas instalações separadas por sistema | no iOS o ATT esconde a mídia: a maior parte do pago cai em orgânico — compare redes pelo Android |\n"
+            "| Rede declara | instalações que a **própria rede** contabiliza para a campanha (`adn_installs` do Google/Meta/TikTok; para a Jampp, os installs do relatório dela) e, entre parênteses, a razão rede ÷ SDK | divergem por natureza: a rede conta view-through e usa janelas mais longas (Meta ≈ 1,4×; Google ≈ 1×). Serve para discutir com a rede, **nunca para somar** com o SDK |\n"
+            "| Impressões · Cliques · CTR | declarados pela rede à Singular (cliques ÷ impressões) | — |\n"
+            "| Custo | o que a rede reporta à Singular (`adn_cost`); Jampp = `spend_brl` do relatório da Jampp (câmbio PTAX) | comparável entre redes; **não** é o investimento oficial (esse é a RESUMO, bloco D) |\n"
+            "| CPI · CPI comp. | custo ÷ instalações SDK, no período e no trecho de comparação | — |\n"
+            "| % do pago | participação da rede nas instalações das campanhas de Download | — |\n\n"
+            "**Bloco C — 'campanhas que não são de Download'.** Campanhas do **site** (Search, Pmax, Lead/Cadastro, Branding) também geram instalação "
+            "do app (a pessoa clica no anúncio e acaba instalando). Elas aparecem aqui para dimensionar o efeito cruzado, mas o custo delas é do site "
+            "— não entra no CPI do app. **Reengajamentos** = app já instalado reaberto depois de um toque de mídia (re-engagement attribution).\n\n"
+            "**Bloco D — conciliação de custo (Singular × RESUMO).** A RESUMO_INVESTIMENTO_DIARIO (canal 'App do Filiado') é o **investimento oficial** "
+            "que vai para os relatórios; o custo da Singular é o que cada rede reporta ao MMP. A tabela põe os dois lado a lado por mês × plataforma "
+            "para mostrar **se toda campanha de app está sendo vista pela Singular e classificada como Download**. Como usar: Δ perto de zero = ok; "
+            "Δ positivo grande no RESUMO = há campanha de app cujo custo a Singular não vê (conta sem data connector, campanha fora da taxonomia "
+            "`GT7_…_Download_…`, restatement ainda não recarregado) — ou, no caso da Jampp, custo de **retargeting** (RTGT), que a RESUMO soma como app "
+            "e aqui é separado do Download (desde o R77 a coluna Singular da Jampp inclui UA + RTGT, para comparar igual com igual: em 08/2026 o Δ de "
+            "R$ 23.356 e em 09/2026 o de R$ 16.207 eram exatamente a campanha RTGT). Δ negativo = a Singular viu custo que a RESUMO não lançou.\n\n"
+            "**'Campanha fora do padrão GT7_…'.** A classificação Download / Lead / Venda / Branding (que alimenta a RESUMO e esta sub-aba) é feita "
+            "pelo **nome** da campanha: `GT7_CDT_Nacional_Performance_Download_…`. Uma campanha Google/Meta/TikTok com instalação e nome fora desse "
+            "padrão (ex.: 'CDT Eng | Figurinhas Copa App…', 'Copy 1 of …', nomes antigos) não é classificada — o custo dela não entra no CPI nem na "
+            "conciliação e, se for campanha de app, fica invisível para a RESUMO. A lista existe para **renomear na plataforma**. A Jampp tem taxonomia "
+            "própria (UA / RTGT) e fica de fora da regra.\n\n"
+            "**Bloco E — coortes.** 'Cadastro 7d' é o evento **App Lead** que o SDK da Singular recebe do app (quem instalou e cadastrou em até 7 dias), "
+            "não o cadastro do lake (`fl_plano_usuario`) usado nas sub-abas 📲 1 e 🎯 5 — as duas réguas são coerentes (~69% dos installs viram cadastro "
+            "em 7 dias), mas não são o mesmo número: a do lake é por CPF e por mês de cadastro; a daqui é por aparelho e por dia de instalação.")
+
     mg = H['meses_grafico']('t7_sg8_ano')
 
     # ==================================================================================================================
@@ -431,17 +470,21 @@ def render(H):
               csv=g, csv_nome="singular_reengajamentos", use_container_width=True, hide_index=True, height=min(60 + 35 * max(len(rows), 1), 480))
         fonte("vw_singular_campanha_dia · tracker_reengagements = app já instalado reaberto após um toque de mídia (re-engagement attribution) · "
               "'Custo ÷ reeng.' só quando o custo é da própria campanha de app (Download/Retargeting); para campanhas do site fica '—'.")
-        st.caption(f"Reengajamentos no período: **{n_(reeng)}** {delta(reeng, reeng_p)} — concentrados nas campanhas de Lead/Cadastro da Meta (retargeting de quem já tem o app).")
+        st.caption(f"Reengajamentos no período: **{n_(reeng)}** {delta(reeng, reeng_p)} — concentrados nas campanhas de Lead/Cadastro da Meta (retargeting de quem já tem o app).",
+                   unsafe_allow_html=True)   # R77: o chip do delta é HTML
 
     # ==================================================================================================================
     # D · conciliação de custo (Singular × RESUMO) e higiene de nomenclatura
     # ==================================================================================================================
     titulo("D · Conciliação de custo (Singular × RESUMO) e nomenclatura das campanhas",
-           "por mês × plataforma · a diferença esperada é pequena e positiva no RESUMO (Jampp fora da Singular, restatement, câmbio)", "A")
+           "por mês × plataforma · Singular = campanhas de Download (+ RTGT da Jampp) · a diferença esperada é pequena (restatement, câmbio, campanha fora da taxonomia)", "A")
     d1, d2 = st.columns([1.4, 1])
     with d1:
         meses_d = list(mg)
-        sg = camp[(camp['classe'] == 'download') & (camp['mes'].isin(meses_d))].groupby(['mes', 'rede'])['custo'].sum()
+        # R77: a RESUMO lança TODO o spend da Jampp (UA + RTGT) como App do Filiado; para comparar igual com igual, a coluna Singular da Jampp
+        # inclui o retargeting (em 08 e 09/2026 o Δ de R$ 23,4 k / 16,2 k era exatamente a campanha RTGT).
+        sg = camp[((camp['classe'] == 'download') | ((camp['rede'] == 'Jampp') & (camp['classe'] == 'retargeting')))
+                  & (camp['mes'].isin(meses_d))].groupby(['mes', 'rede'])['custo'].sum()
         rs = resumo[resumo['mes'].isin(meses_d)].groupby(['mes', 'plataforma'])['venda'].sum() if not resumo.empty else pd.Series(dtype=float)
         plat = {'Google': 'Google', 'Meta': 'Meta', 'TikTok': 'TikTok', 'Jampp': 'Jampp'}
         rows = []
@@ -451,15 +494,16 @@ def render(H):
                 s = float(sg.get((mes, rede), 0.0)); r = float(rs.get((mes, pl), 0.0)) if not rs.empty else 0.0
                 tot_s += s; tot_r += r
                 if s or r:
-                    rows.append({'Mês': f"{mes:%m/%Y}", 'Plataforma': rede, 'Custo Singular (Download)': _brl(s, 0), 'RESUMO (App do Filiado)': _brl(r, 0),
+                    rows.append({'Mês': f"{mes:%m/%Y}", 'Plataforma': rede, 'Custo Singular (Download + Jampp RTGT)': _brl(s, 0), 'RESUMO (App do Filiado)': _brl(r, 0),
                                  'Δ RESUMO − Singular': _brl(r - s, 0), 'Δ %': _pct(r - s, s) if s else "—"})
-            rows.append({'Mês': f"{mes:%m/%Y}", 'Plataforma': 'Total', 'Custo Singular (Download)': _brl(tot_s, 0), 'RESUMO (App do Filiado)': _brl(tot_r, 0),
+            rows.append({'Mês': f"{mes:%m/%Y}", 'Plataforma': 'Total', 'Custo Singular (Download + Jampp RTGT)': _brl(tot_s, 0), 'RESUMO (App do Filiado)': _brl(tot_r, 0),
                          'Δ RESUMO − Singular': _brl(tot_r - tot_s, 0), 'Δ %': _pct(tot_r - tot_s, tot_s) if tot_s else "—"})
         csv = pd.DataFrame([{'mes': m, 'rede': k, 'custo_singular': float(v)} for (m, k), v in sg.items()])
         st_df(pd.DataFrame(rows), csv=csv, csv_nome="singular_x_resumo_custo", use_container_width=True, hide_index=True)
-        fonte("Singular: adn_cost das campanhas de Download (Google/Meta/TikTok) e spend_brl Jampp (alex_jampp_campaigns) · RESUMO_INVESTIMENTO_DIARIO canal "
-              "'App do Filiado', coluna venda (sp_update_resumo_investimento: campanhas com 'download' no nome + Jampp). Diferenças grandes (> 10%) = "
-              "campanha de Download fora da taxonomia, conta não conectada à Singular ou restatement ainda não recarregado.")
+        fonte("Singular: adn_cost das campanhas de Download (Google/Meta/TikTok) e spend_brl Jampp UA + RTGT (alex_jampp_campaigns, câmbio PTAX) · "
+              "RESUMO_INVESTIMENTO_DIARIO canal 'App do Filiado', coluna venda (sp_update_resumo_investimento: campanhas com 'download' no nome + todo "
+              "o spend da Jampp). Δ grande no RESUMO = campanha de app fora da taxonomia GT7_…_Download_…, conta sem data connector na Singular ou "
+              "restatement ainda não recarregado; Δ negativo = custo visto pela Singular e não lançado na RESUMO. Como usar: ver o guia 📖 no topo.")
     with d2:
         nm = cp[(cp['nome_padrao'] == 0) & (cp['installs'] > 0)]
         g = nm.groupby(['rede', 'campanha'], as_index=False)[['installs', 'custo']].sum().sort_values('installs', ascending=False).head(20)
@@ -467,8 +511,10 @@ def render(H):
                 for _, r in g.iterrows()]
         st_df(pd.DataFrame(rows) if rows else pd.DataFrame([{'Rede': '✓', 'Campanha fora do padrão GT7_…': 'todas as campanhas Google/Meta/TikTok com instalação seguem a taxonomia'}]),
               csv=g, csv_nome="singular_campanhas_fora_padrao", use_container_width=True, hide_index=True)
-        fonte("vw_singular_campanha_dia · nome_padrao = 0 (Google/Meta/TikTok sem prefixo GT7_) — 'Copy 1 of …' e nomes antigos quebram a classificação "
-              "Download/Lead/Venda da RESUMO e da conciliação; renomear na plataforma. Jampp tem taxonomia própria (UA/RTGT) e fica fora.")
+        fonte("vw_singular_campanha_dia · nome_padrao = 0 = campanha Google/Meta/TikTok com instalação no período e nome fora do padrão "
+              "GT7_CDT_…_<Download|Lead|Venda|Branding>_… ('Copy 1 of …', 'CDT Eng | …', nomes antigos). Sem o padrão a campanha não é classificada: "
+              "o custo não entra no CPI nem na conciliação e, se for campanha de app, fica invisível para a RESUMO — a lista é para renomear na "
+              "plataforma. Jampp tem taxonomia própria (UA/RTGT) e fica fora.")
         sem_custo = dl.groupby(['rede', 'campanha'], as_index=False)[['installs', 'custo']].sum()
         sem_custo = sem_custo[(sem_custo['installs'] >= 50) & (sem_custo['custo'] <= 0)]
         if not sem_custo.empty:
