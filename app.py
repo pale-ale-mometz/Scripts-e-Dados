@@ -372,6 +372,11 @@ GLOSSARIO = {
         p="Compra reportada (Talkerchat) superestima ~23%: registra intenção/relato; o CTN registra a filiação.",
         o="NOMINAL_VENDAS por IDPV (DT_FILIACAO); hora pelas fotos diárias do CTN (NOMINAL_VENDAS_DIARIO_CONSOLIDADO)", a="📞",
         s=["Vendas Lia (CTN)", "Vendas Lia", "Televendas humano (CTN)", "NOMINAL por IDPV"]),
+    'Ticket receptivo × ativo (Talkerchat)': dict(sec="WhatsApp (Talkerchat)",
+        d="Receptivo = a conversa começou com uma mensagem do cliente. Ativo = a primeira mensagem foi nossa: disparo em massa (campanha), fluxo automático ou atendente. O disparo em massa abre um ticket para cada destinatário, mesmo que a pessoa nunca responda. Desde 16/11/2026 o funil do Talkerchat (sub-abas 📞 7, 9 e 10) conta os tickets receptivos e os ativos que o cliente respondeu; envio sem resposta fica fora e aparece só no bloco 📣 Envios nossos.",
+        p="Out/26: 314.271 tickets ao todo, 245.590 no funil (74.434 de disparo em massa, 6.034 respondidos). Antes de out/26 nenhum ticket vem marcado como campanha. Resposta que chega mais de 7 dias depois do envio não é vista; quem responde depois de o ticket fechar abre um ticket novo, que conta como receptivo.",
+        o="alex_talkerchat_api.origem / campanha / respondeu (1ª mensagem do ticket em alex_talkerchat_msg) → alex_tv_dash_mes · s7f_* e s7_campanha", a="📞",
+        s=["Ticket receptivo", "Ticket ativo", "Envios nossos", "Disparo em massa", "Tickets de disparo em massa", "Responderam ao disparo", "Envios sem resposta (fora do funil)"]),
     'Fechamento WhatsApp (funil do deck)': dict(sec="WhatsApp (Talkerchat)",
         d="Sub-abas 📞 9 e 10: o funil do mês no formato do Relatório Saray WhatsApp — Tickets → Oportunidades comerciais (fora do SAC) → Usuários únicos sem SAC → Qualificados únicos → ramos Lia (sem transbordo) × Humano (transbordo) → Vendas (CTN) → Total. Desvios em âmbar: Tickets SAC e Sem qualificação. A unidade muda de Ticket para Usuário único (telefone) no 3º degrau e para Venda (CTN) nos ramos.",
         p="Vendas Humano = todos os IDPVs humanos de Televendas (R58); o degrau 'pelo IDPV WhatsApp' é a fatia que o deck chama de 'Vendas Humano'. Voz = humano − WhatsApp. Mês cheio, com fins de semana (o deck usa dias úteis na tabela de transferência).",
@@ -5671,10 +5676,18 @@ def _aba_tab6():
     # Seções do pipeline (televendas_dash.py, s7): s7_talkerchat (funil + CRM + NOMINAL) · s7_tempos (mediana/p90/média
     # em minutos: espera até humano, duração humano, duração bot) · s7_atendente (dim = atendente) · s7_hora (dim = 'D-HH')
     # · s7_motivo (dim = 'id · motivo') · s7_estoque (retrato dos tickets abertos, por status, gravado no período corrente).
-    # Grão: segue _tvd (semana quando o período é curto). Frescor D-1 (tkcDaily 06h + tkcWorker 10 min; recarga 11:00).
+    # Grão: segue _tvd (semana quando o período é curto). Frescor D-1 (Nekt: notebook-192d ~06:10, notebook-vl5s 08:10;
+    # recarga_televendas 09:30). R78: funil pela regra receptivo × ativo (seções s7f_*).
     # =================================================================
     with _tv_tabs[3]:
-        S = 's7_talkerchat'
+        # R78 (16/11/2026): funil pela regra receptivo × ativo. S0 = tudo (inclui envios sem resposta), usado só na nota 📌 e no bloco 📣;
+        # S e as seções de tempos / hora / motivo / estoque leem as versões filtradas (s7f_*) quando o agregado já as tem.
+        S0 = 's7_talkerchat'
+        _tkf_ok = (not _tvd.empty) and bool((_tvd['secao'] == 's7f_talkerchat').any())
+        S = 's7f_talkerchat' if _tkf_ok else S0
+
+        def _s7x(secao):
+            return secao.replace('s7_', 's7f_', 1) if _tkf_ok else secao
         tk = _tv_val(S, 'tickets'); tl = _tv_val(S, 'leads'); tlc_id = _tv_val(S, 'leads_contato'); tcpf = _tv_val(S, 'com_cpf')
         th = _tv_val(S, 'leads_humano'); tk_h = _tv_val(S, 'tickets_humano'); tk_b = _tv_val(S, 'tickets_bot')
         tk_sac = _tv_val(S, 'tickets_sac'); tk_lia = _tv_val(S, 'tickets_lia'); tl_sac = _tv_val(S, 'leads_sac')  # 18/09: triagem → SAC × Lia vendas
@@ -5725,7 +5738,7 @@ def _aba_tab6():
             """Estatística de tempo (minutos) do período: exata em um período; em vários, média das
             estatísticas ponderada pelo nº de tickets (n) de cada período."""
             meses = _tv_per if meses is None else meses
-            d = _tvd[(_tvd['secao'] == 's7_tempos') & (_tvd['mes'].isin(list(meses)))]
+            d = _tvd[(_tvd['secao'] == _s7x('s7_tempos')) & (_tvd['mes'].isin(list(meses)))]
             v = d[d['metrica'] == f'{name}_{stat}_min'][['mes', 'valor']]
             n = d[d['metrica'] == f'{name}_n'][['mes', 'valor']].rename(columns={'valor': 'n'})
             m = v.merge(n, on='mes')
@@ -5744,6 +5757,24 @@ def _aba_tab6():
         if not _tk_api:
             st.warning("⚠️ O agregado ainda não tem as seções da API do Talkerchat (s7_tempos, s7_atendente, s7_hora, s7_motivo, "
                        "s7_estoque). Rode `gt7 run televendas_dash --arg only=s7 --arg nv=skip` (claude-toolkit) e recarregue os dados.")
+
+        # ---- R78: o que conta neste funil (receptivo × ativo) ----
+        _tk_all = _tv_val(S0, 'tickets'); _tl_all = _tv_val(S0, 'leads')
+        _tk_rec = _tv_val(S0, 'tickets_receptivos'); _tk_atv = _tv_val(S0, 'tickets_ativos'); _tk_atv_r = _tv_val(S0, 'tickets_ativos_resp')
+        _tk_fora = (_tk_atv - (_tk_atv_r or 0)) if _tk_atv is not None else None
+        if _tkf_ok and _tk_all:
+            _tv_note(
+                f"<b>O que conta neste funil.</b> Entram as conversas que o <b>cliente iniciou</b> (tickets receptivos) e os <b>envios nossos "
+                f"que o cliente respondeu</b>. Quando disparamos uma mensagem em massa, o Talkerchat abre um ticket para cada destinatário, "
+                f"mesmo que a pessoa nunca responda; esses tickets sem resposta não são atendimento e ficam fora de todos os números desta "
+                f"sub-aba. No período: {_tv_n(_tk_all)} tickets ao todo, sendo {_tv_n(_tk_rec)} receptivos e {_tv_n(_tk_atv)} envios nossos "
+                f"({_tv_n(_tk_atv_r)} com resposta). <b>{_tv_n(_tk_fora)} envios sem resposta ficaram fora</b> ({_tv_pct(_tk_fora, _tk_all)} "
+                f"dos tickets). Usuários únicos: {_tv_n(_tl_all)} contando tudo, {_tv_n(tl)} no funil. Os envios, disparo a disparo, estão "
+                f"no bloco 📣 mais abaixo.",
+                bg="#eff6ff", icon="📌")
+        elif not _tkf_ok:
+            st.caption("ℹ️ O agregado ainda não tem o funil pela regra receptivo × ativo (seções s7f_*): os números abaixo contam também os "
+                       "envios em massa sem resposta. Rode `gt7 run televendas_dash --arg only=s7 --arg nv=skip` e recarregue os dados.")
 
         # ---- KPIs linha 1: volume e conversão ----
         k1, k2, k3, k4 = st.columns(4)
@@ -5787,7 +5818,7 @@ def _aba_tab6():
         _esp = _tv_tempo('espera'); _esp90 = _tv_tempo('espera', 'p90')
         _dur_h = _tv_tempo('duracao_humano'); _dur_h90 = _tv_tempo('duracao_humano', 'p90')
         _dur_b = _tv_tempo('duracao_bot'); _dur_b90 = _tv_tempo('duracao_bot', 'p90')
-        _est = _tvd[_tvd['secao'] == 's7_estoque']
+        _est = _tvd[_tvd['secao'] == _s7x('s7_estoque')]
         _est_dt = None
         if not _est.empty:
             _est_dt = _est['atualizado_em'].max() if 'atualizado_em' in _est.columns else None
@@ -5913,13 +5944,54 @@ def _aba_tab6():
                 f"({_tv_pct(tcrm_dq, tcrm_l)} têm algum Negócio em qualquer época). O Talkerchat não está integrado ao CRM (L2).",
                 bg="#fff7ed", icon="⚠️")
             _tv_note(
-                "<b>Fonte: API pública do Talkerchat</b> (<code>alex_talkerchat_api</code>, carga GAS: <code>tkcDaily</code> 06h + "
-                "<code>tkcWorker</code> a cada 10 min; frescor D-1, histórico desde 16/04/2026). Horários em America/Sao_Paulo — "
-                "o export CSV antigo gravava UTC como hora local (heatmap deslocado 3 h). "
-                "Perdas em relação ao export: etiquetas, equipe e CEP não vêm pela API; o CPF é lido das mensagens "
-                "(<code>cpf_source = 'messages'</code>, ~75% dos tickets com motivo de compra/cadastro) até a D3 expor o campo. "
+                "<b>Fonte: API pública do Talkerchat</b> (<code>alex_talkerchat_api</code>, uma linha por ticket, histórico desde "
+                "16/04/2026). A carga roda uma vez por dia, de manhã, pelo Nekt (tickets a partir das ~06:10; conversas completas às "
+                "08:10) e o painel é recalculado às 09:30: os números vão <b>até ontem</b> e o dia de hoje aparece incompleto. "
+                "Horários em America/Sao_Paulo. O que a API não traz: etiquetas, equipe, CEP e o número de WhatsApp pelo qual a "
+                "conversa entrou. O <b>CPF</b> vem do cadastro do contato no Talkerchat (preenchido durante a conversa); a leitura do "
+                "CPF no texto das mensagens ficou só como reserva, e as filas SAC e SAC Coleta NPS não são consultadas. A <b>origem "
+                "do ticket</b> (receptivo × envio nosso) vem da primeira mensagem de cada conversa. "
                 "Compras confirmadas por CPF ±3 dias no NOMINAL.",
                 bg="#f8fafc", icon="ℹ️")
+
+        # ---- R78: envios nossos (tickets ativos) — enviados × responderam por disparo ----
+        if _tkf_ok:
+            _cp = _tv_pivot7('s7_campanha')
+            _tk_camp = _tv_val(S0, 'tickets_ativos_campanha')
+            _cp_resp = float(_cp['responderam'].sum()) if (not _cp.empty and 'responderam' in _cp.columns) else None
+            _tk_outros = (_tk_atv - (_tk_camp or 0)) if _tk_atv is not None else None
+            with st.expander(f"📣 Envios nossos (tickets ativos) — {_tv_n(_tk_atv)} no período, {_tv_n(_tk_atv_r)} com resposta"):
+                st.caption("Ticket ativo = a primeira mensagem da conversa foi nossa: disparo em massa (campanha), fluxo automático ou "
+                           "atendente. Só os que o cliente respondeu entram no funil acima; os demais ficam registrados aqui.")
+                v1, v2, v3, v4 = st.columns(4)
+                _tv_kpi(v1, "📣", "Tickets de disparo em massa", _tv_n(_tk_camp),
+                        f"{0 if _cp.empty else len(_cp)} disparos no período · um ticket por destinatário", color="#1d4ed8")
+                _tv_kpi(v2, "↩️", "Responderam ao disparo", f"{_tv_n(_cp_resp)} · {_tv_pct(_cp_resp, _tk_camp)}",
+                        "o cliente mandou ao menos uma mensagem no ticket aberto pelo disparo", color="#1d4ed8")
+                _tv_kpi(v3, "🤝", "Outros envios nossos", _tv_n(_tk_outros),
+                        "fluxo automático ou atendente que iniciou a conversa", color="#1d4ed8")
+                _tv_kpi(v4, "🚫", "Envios sem resposta (fora do funil)", f"{_tv_n(_tk_fora)} · {_tv_pct(_tk_fora, _tk_all)}",
+                        "fatia de todos os tickets do período", color="#64748b")
+                if not _cp.empty:
+                    for _c in ('enviados', 'responderam', 'com_humano', 'com_cpf', 'abertos', 'compras'):
+                        if _c not in _cp.columns:
+                            _cp[_c] = 0
+                    _cp = _cp.sort_values('enviados', ascending=False)
+                    _cpt = pd.DataFrame({
+                        'Disparo': _cp['dim'].values,
+                        'Enviados': _cp['enviados'].astype(int).values,
+                        'Responderam': _cp['responderam'].astype(int).values,
+                        '% resposta': (_cp['responderam'] / _cp['enviados'].replace(0, pd.NA) * 100).astype(float).round(1).values,
+                        'Chegaram a atendente': _cp['com_humano'].astype(int).values,
+                        'Com CPF': _cp['com_cpf'].astype(int).values,
+                        'Ainda abertos': _cp['abertos'].astype(int).values,
+                        'Compras reportadas': _cp['compras'].astype(int).values,
+                    })
+                    _st_df(_cpt, use_container_width=True, hide_index=True)
+                else:
+                    st.caption("Nenhum disparo em massa no período (o nome do disparo só existe de out/2026 em diante).")
+                _tv_fonte("alex_tv_dash_mes · s7_campanha e s7_talkerchat (pipeline televendas_dash, R73) · origem do ticket pela 1ª mensagem "
+                          "(alex_talkerchat_api.origem / campanha / respondeu)")
 
         # ---- R58: compra reportada (tabulação do atendente/bot) sai do funil e fica como registro da operação ----
         if _r58:
@@ -6113,7 +6185,7 @@ def _aba_tab6():
             st.markdown("---")
             t1, t2 = st.columns([1.9, 1])
             with t1:
-                _tv_linhas_mensal(_tv_long('s7_tempos', ['espera_med_min', 'duracao_humano_med_min', 'duracao_bot_med_min'], meses=_mg7,
+                _tv_linhas_mensal(_tv_long(_s7x('s7_tempos'), ['espera_med_min', 'duracao_humano_med_min', 'duracao_bot_med_min'], meses=_mg7,
                                            labels={'espera_med_min': 'Espera até humano', 'duracao_humano_med_min': 'Duração humano',
                                                    'duracao_bot_med_min': 'Duração só Lia'}),
                                   "Tempos por mês — mediana em minutos", y_label="min", rotulos=True,
@@ -6124,7 +6196,7 @@ def _aba_tab6():
                                   ('duracao_bot', 'Duração conversa só Lia')]:
                     _rows_t.append({'Tempo': _lbl, 'Mediana': _tv_min(_tv_tempo(_nm, 'med')), 'p90': _tv_min(_tv_tempo(_nm, 'p90')),
                                     'Média': _tv_min(_tv_tempo(_nm, 'avg')),
-                                    'Tickets': _tv_n(_tv_val('s7_tempos', f'{_nm}_n'))})
+                                    'Tickets': _tv_n(_tv_val(_s7x('s7_tempos'), f'{_nm}_n'))})
                 st.markdown(f"**Tempos no período** <span style='color:#64748b;font-size:12px'>({_tv_per_lbl})</span>", unsafe_allow_html=True)
                 _st_df(pd.DataFrame(_rows_t), use_container_width=True, hide_index=True)
                 st.caption("Mediana e p90 calculados por período no MySQL (ROW_NUMBER); em vários períodos, ponderados pelo nº de "
@@ -6203,7 +6275,7 @@ def _aba_tab6():
 
             # ---- heatmap dia × hora ----
             st.markdown("---")
-            _hr = _tv_pivot7('s7_hora')
+            _hr = _tv_pivot7(_s7x('s7_hora'))
             h1, h2 = st.columns([3, 1])
             with h2:
                 _hm_m = st.radio("Métrica do mapa", ["Tickets criados", "Compras reportadas", "% com humano"],
@@ -6241,7 +6313,7 @@ def _aba_tab6():
             st.markdown("---")
             m1, m2 = st.columns([1.6, 1])
             with m1:
-                _mot = _tv_pivot7('s7_motivo')
+                _mot = _tv_pivot7(_s7x('s7_motivo'))
                 _tv_titulo("Motivos de fechamento (close_reason_id · título)", f"tickets fechados criados em {_tv_per_lbl} · top 12", "A")
                 if _mot.empty:
                     st.caption("sem motivos no período.")
@@ -6603,7 +6675,9 @@ def _aba_tab6():
     def _w2_m_nome(ts):
         return _W2_MESES_PT[ts.month]
 
-    _w2_s7 = _tvd_m[_tvd_m['secao'] == 's7_talkerchat'] if not _tvd_m.empty else _tvd_m
+    # R78: mesma regra do funil (receptivos + envios com resposta) quando o agregado já tem a seção filtrada
+    _w2_sec = 's7f_talkerchat' if ((not _tvd_m.empty) and bool((_tvd_m['secao'] == 's7f_talkerchat').any())) else 's7_talkerchat'
+    _w2_s7 = _tvd_m[_tvd_m['secao'] == _w2_sec] if not _tvd_m.empty else _tvd_m
     _w2_piv = (_w2_s7.pivot_table(index='mes', columns='metrica', values='valor', aggfunc='sum')
                if not _w2_s7.empty else pd.DataFrame())
 
@@ -7038,7 +7112,8 @@ A régua por fila (R60, só ≥ out/26) não é usada aqui, para a comparação 
                     _w2_mini_bar(['Lia', 'Humano', '└ IDPV WhatsApp'], [_w2_A['vendas_lia'], _w2_A['vendas_humano'], _w2_A['vendas_wpp']],
                                  [_W2_GREENS[1], _W2_GREENS[0], _W2_GREENS[3]],
                                  "Lia vs. Humano — vendas (CTN)", "NOMINAL por IDPV · humano = todos os IDPVs de operador; fatia WhatsApp à parte")
-                _tv_fonte("alex_tv_dash_mes · s7_talkerchat (pipeline televendas_dash) · Talkerchat (tickets, filas, CPF do objeto de contato) × NOMINAL_VENDAS por IDPV")
+                _tv_fonte(f"alex_tv_dash_mes · {_w2_sec} (pipeline televendas_dash) · Talkerchat (tickets, filas, CPF do objeto de contato) × NOMINAL_VENDAS por IDPV"
+                          + (" · tickets = conversas iniciadas pelo cliente + envios nossos com resposta (envio em massa sem resposta fica fora)" if _w2_sec == 's7f_talkerchat' else ""))
             with st.expander("📐 Réguas deste fechamento (e onde ele difere do deck)"):
                 st.markdown(_w2_regua_md)
 
@@ -7067,7 +7142,8 @@ A régua por fila (R60, só ≥ out/26) não é usada aqui, para a comparação 
                 with _w2_d2:
                     st.markdown(f"<div style='border:1px solid {_W2_LINE};border-radius:14px;padding:10px 12px 4px;background:#fff;'>"
                                 + _w2_svg_comp(_w2_A2, _w2_B2) + "</div>", unsafe_allow_html=True)
-                    _tv_fonte("alex_tv_dash_mes · s7_talkerchat · variação = mês cheio vs mês cheio (sem corte de mesmo trecho)")
+                    _tv_fonte(f"alex_tv_dash_mes · {_w2_sec} · variação = mês cheio vs mês cheio (sem corte de mesmo trecho)"
+                              + (" · tickets = receptivos + envios nossos com resposta" if _w2_sec == 's7f_talkerchat' else ""))
 
 
 # =====================================================================
