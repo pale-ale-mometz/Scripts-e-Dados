@@ -165,7 +165,7 @@ GLOSSARIO = {
         p="Duas etapas com chips diferentes não são comparáveis diretamente.",
         o="Convenção dos funis", a="🧲 🧭", s=["chip", "legenda dos funis"]),
     'Meta Parcial / Meta Total': dict(sec="Como ler o dashboard",
-        d="Total é a meta do período inteiro; Parcial é a meta proporcional aos dias já decorridos. Em períodos encerrados as duas coincidem.",
+        d="Total é a meta do período inteiro. Parcial é a meta até a data de referência: a soma das metas diárias da planilha de metas de aquisição (Site, App, Televendas e leads). Quem não tem meta por dia (Franquias, Canais Nacionais, CDT, investimento) não tem meta parcial (a célula mostra —). Não se usa mais meta proporcional aos dias. Em períodos encerrados as duas coincidem.",
         o="Planilha de metas mensais", a="📈 💰", s=["meta", "Progresso da Meta"]),
     'Teto × piso': dict(sec="Como ler o dashboard",
         d="Quando não dá para atribuir uma venda com certeza, mostra-se o máximo plausível (teto) e o mínimo registrado (piso). A verdade está entre os dois.",
@@ -789,6 +789,21 @@ def load_invest_data():
         return df_inv
     except Exception:
         return pd.DataFrame(columns=['data_investimento', 'canal', 'plataforma', 'branding', 'leads', 'venda', 'vol_leads', 'vol_vendas'])
+
+@st.cache_data(ttl=43200)
+def load_goals_daily():
+    """R79 (17/11/2026): metas diárias de aquisição (alex_metas_dia, carregada da planilha da governança por
+    `gt7 run metas_dia_load`). Devolve {(metrica, escopo): Series de meta indexada por dia}; vazio se a tabela não existir."""
+    try:
+        d = cquery("SELECT dia, metrica, escopo, meta FROM alex_metas_dia")
+        if d.empty:
+            return {}
+        d['dia'] = pd.to_datetime(d['dia']).dt.normalize()
+        d['meta'] = pd.to_numeric(d['meta'], errors='coerce')
+        return {k: g.set_index('dia')['meta'].sort_index() for k, g in d.dropna(subset=['meta']).groupby(['metrica', 'escopo'])}
+    except Exception:
+        return {}
+
 
 @st.cache_data(ttl=43200)
 def load_goals_data():
@@ -1494,6 +1509,15 @@ if not _crm_inv_rows.empty:
     for _c in ['branding', 'leads', 'venda', 'vol_leads', 'vol_vendas']:
         df_invest_raw[_c] = pd.to_numeric(df_invest_raw[_c], errors='coerce').fillna(0.0)
 df_goals = load_goals_data()
+GOALS_DAILY = load_goals_daily()   # R79: metas diárias da planilha de metas (alex_metas_dia)
+# R79: coluna da alex_metas -> (metrica, escopo) da alex_metas_dia. Só estas têm meta por dia.
+GOAL_DAILY_COL = {
+    'Site': ('vendas_site', 'total'),
+    'App': ('vendas_app', 'total'),
+    'Televendas': ('vendas_televendas', 'total'),
+    'Leads unicos Total': ('leads_unicos', 'total'),
+    'Leads transbordado': ('transb_franquias', 'total'),
+}
 
 if df_raw.empty:
     st.error(
@@ -1543,19 +1567,36 @@ prophet_map = {
 }
 
 def get_prorated_goal(df_goals_db, start_d, end_d, column_name):
+    """Meta da coluna no período [start_d, end_d]. R79 (17/11/2026, decisão do Álex): não há mais meta proporcional.
+    Por mês tocado pelo período: (1) coluna com meta diária em TODOS os dias do trecho (alex_metas_dia) -> soma das metas
+    diárias; (2) senão, trecho = mês inteiro -> meta do mês (alex_metas); (3) senão o período não tem meta -> 0.0 (as telas
+    mostram N/A). O nome ficou por compatibilidade com as chamadas."""
     if df_goals_db.empty or column_name not in df_goals_db.columns:
         return 0.0
-    
+    start_d, end_d = pd.Timestamp(start_d).normalize(), pd.Timestamp(end_d).normalize()
+    if end_d < start_d:
+        return 0.0
+    serie = GOALS_DAILY.get(GOAL_DAILY_COL.get(column_name))
     total_goal = 0.0
-    current_d = start_d
-    while current_d <= end_d:
-        month_mask = (df_goals_db['mes_ano'] == current_d.replace(day=1))
-        if month_mask.any():
-            month_goal = df_goals_db.loc[month_mask, column_name].iloc[0]
-            if pd.notna(month_goal):
-                days_in_month = pd.Period(current_d, freq='M').days_in_month
-                total_goal += float(month_goal) / float(days_in_month)
-        current_d += pd.Timedelta(days=1)
+    cur = start_d.replace(day=1)
+    while cur <= end_d:
+        m_end = cur + pd.offsets.MonthEnd(0)
+        lo, hi = max(start_d, cur), min(end_d, m_end)
+        seg = None
+        if serie is not None:
+            s_ = serie[(serie.index >= lo) & (serie.index <= hi)]
+            if len(s_) == (hi - lo).days + 1:
+                seg = float(s_.sum())
+        if seg is None and lo == cur and hi == m_end:
+            month_mask = (df_goals_db['mes_ano'] == cur)
+            if month_mask.any():
+                month_goal = df_goals_db.loc[month_mask, column_name].iloc[0]
+                if pd.notna(month_goal):
+                    seg = float(month_goal)
+        if seg is None:
+            return 0.0
+        total_goal += seg
+        cur = cur + pd.offsets.MonthBegin(1)
     return float(total_goal)
 
 # Maps a chart group / channel label to its target column(s) in alex_metas.
@@ -1579,30 +1620,25 @@ def get_goal_for_group(start_d, end_d, grupo_nome):
     return sum(get_prorated_goal(df_goals, start_d, end_d, c) for c in cols)
 
 def build_goal_trend(grupo, t_start, t_end, cumulative):
-    """Daily (or cumulative) target line for a group over [t_start, t_end], shaped
-    like get_trend_data's output so it can be concatenated straight into the trend
-    chart. In cumulative mode the line ramps to the FULL-period target: its endpoint
-    is the total goal and its value at 'today' is the proportional (parcial) goal.
-    The per-day rate is month-aware, so multi-month periods ramp correctly."""
+    """Linha de meta do grupo em [t_start, t_end], no formato de get_trend_data (concatena direto no gráfico de tendência).
+    R79 (17/11/2026): sem meta proporcional. Grupo com meta diária em todos os dias (alex_metas_dia: Site, App, Televendas e a
+    soma Digital) -> meta de cada dia, ou acumulada. Grupo sem meta diária -> não há linha por dia nem rampa; no modo acumulado
+    sai uma linha reta na meta total do período, quando o período tem meta total (meses inteiros)."""
     cols = GOAL_COL_MAP.get(grupo.strip(), [])
     if df_goals.empty or not cols:
         return pd.DataFrame()
-    days = pd.date_range(t_start, t_end, freq='D')
-    daily_vals = []
-    for d in days:
-        day_total = 0.0
-        mask = (df_goals['mes_ano'] == d.replace(day=1))
-        if mask.any():
-            row = df_goals.loc[mask].iloc[0]
-            dim = pd.Period(d, freq='M').days_in_month
-            for c in cols:
-                v = row.get(c)
-                if pd.notna(v):
-                    day_total += float(v) / dim
-        daily_vals.append(day_total)
-    out = pd.DataFrame({'data_venda': days, 'Vendas': daily_vals})
-    if cumulative:
-        out['Vendas'] = out['Vendas'].cumsum()
+    days = pd.date_range(pd.Timestamp(t_start).normalize(), pd.Timestamp(t_end).normalize(), freq='D')
+    series = [GOALS_DAILY.get(GOAL_DAILY_COL.get(c)) for c in cols]
+    series = [s.reindex(days) if s is not None else None for s in series]
+    if series and all(s is not None and s.notna().all() for s in series):
+        out = pd.DataFrame({'data_venda': days, 'Vendas': sum(s.values for s in series)})
+        if cumulative:
+            out['Vendas'] = out['Vendas'].cumsum()
+    else:
+        _tot = get_goal_for_group(t_start, t_end, grupo)
+        if not cumulative or _tot <= 0:
+            return pd.DataFrame()
+        out = pd.DataFrame({'data_venda': days, 'Vendas': float(_tot)})
     out['Grupo'] = grupo
     out['Dia'] = (out['data_venda'] - t_start).dt.days + 1
     out['Traço'] = grupo + " (Meta)"
@@ -2077,9 +2113,17 @@ def _aba_tab1():
     ch_lf = get_channel_sums(df_slice_lf)
 
     # Dynamic Sales Goal Progress Bar
+    # R79: o CDT não tem meta diária -> sem meta parcial. A barra mostra o realizado sobre a meta total do período.
     goal_vendas = get_prorated_goal(df_goals, c_s, ref_datetime, 'CDT (Total)')
+    _goal_rot = "atingidos"
+    if goal_vendas <= 0:
+        goal_vendas = get_prorated_goal(df_goals, c_s, c_e, 'CDT (Total)')
+        _goal_rot = "da meta total do período"
     pct_goal = agg_c['CDT'] / goal_vendas if goal_vendas > 0 else 0
-    st.markdown(f"🎯 **Progresso da Meta de Vendas (CDT):** {format_br(agg_c['CDT'])} / {format_br(goal_vendas)} atingidos (**{pct_goal*100:.1f}%**)")
+    if goal_vendas > 0:
+        st.markdown(f"🎯 **Progresso da Meta de Vendas (CDT):** {format_br(agg_c['CDT'])} / {format_br(goal_vendas)} {_goal_rot} (**{pct_goal*100:.1f}%**)")
+    else:
+        st.markdown(f"🎯 **Progresso da Meta de Vendas (CDT):** {format_br(agg_c['CDT'])} · este período não tem meta (a meta do CDT é mensal, sem meta por dia)")
     st.progress(min(max(pct_goal, 0.0), 1.0))
     st.divider()
 
@@ -2261,8 +2305,8 @@ def _aba_tab1():
             show_metas = st.checkbox(
                 "🎯 Mostrar Metas (Parcial + Total)", value=False, key='t1_show_metas',
                 help="Linha tracejada da meta por grupo selecionado: o ponto final é a meta TOTAL "
-                     "do período e onde a linha está 'hoje' é a meta PARCIAL (proporcional aos dias "
-                     "decorridos). Use junto com 'Mostrar Previsão' para ver se a projeção termina "
+                     "do período e onde a linha está 'hoje' é a meta PARCIAL (soma das metas diárias até a data de referência; grupo sem meta por dia "
+                     "mostra só a linha reta da meta total). Use junto com 'Mostrar Previsão' para ver se a projeção termina "
                      "acima ou abaixo da meta total, e se as vendas atuais já alcançaram a meta parcial."
             )
 
@@ -2551,7 +2595,7 @@ def _aba_tab1():
                     mp = get_goal_for_group(c_s, ref_datetime, g)
                     mt = get_goal_for_group(c_s, c_e, g)
                     if mt > 0:
-                        meta_txt.append(f"**{g}** — parcial: {format_br(mp)} · total: {format_br(mt)}")
+                        meta_txt.append(f"**{g}** — parcial: {format_br(mp) if mp > 0 else 'N/A (sem meta por dia)'} · total: {format_br(mt)}")
                 if meta_txt:
                     st.markdown("🎯 **Metas do período** → " + "  |  ".join(meta_txt))
 
@@ -3133,18 +3177,27 @@ def _aba_tab3():
     inv_global_total = df_c_global['Total_Investido'].sum()
     leads_global_total = df_c_global['vol_leads'].sum()
 
+    # R79: investimento não tem meta diária -> sem meta parcial; a barra usa a meta total do período.
     goal_invest = get_prorated_goal(df_goals, c_s, ref_datetime, 'Investimento Total')
+    _inv_rot = "utilizados"
+    if goal_invest <= 0:
+        goal_invest = get_prorated_goal(df_goals, c_s, c_e, 'Investimento Total')
+        _inv_rot = "da meta total do período"
     pct_goal_inv = inv_global_total / goal_invest if goal_invest > 0 else 0
     
-    goal_leads = get_prorated_goal(df_goals, c_s, ref_datetime, 'Leads unicos Total')
+    goal_leads = get_prorated_goal(df_goals, c_s, ref_datetime, 'Leads unicos Total')   # R79: soma das metas diárias, quando há
+    _leads_rot = "gerados"
+    if goal_leads <= 0:
+        goal_leads = get_prorated_goal(df_goals, c_s, c_e, 'Leads unicos Total')
+        _leads_rot = "da meta total do período"
     pct_goal_leads = leads_global_total / goal_leads if goal_leads > 0 else 0
 
     col_gb1, col_gb2 = st.columns(2)
     with col_gb1:
-        st.markdown(f"🎯 **Meta de Investimento Global:** {format_money(inv_global_total)} / {format_money(goal_invest)} utilizados (**{pct_goal_inv*100:.1f}%**)")
+        st.markdown(f"🎯 **Meta de Investimento Global:** {format_money(inv_global_total)} / {format_money(goal_invest)} {_inv_rot} (**{pct_goal_inv*100:.1f}%**)")
         st.progress(min(max(pct_goal_inv, 0.0), 1.0))
     with col_gb2:
-        st.markdown(f"🎯 **Meta de Leads Global (Volume):** {format_br(leads_global_total)} / {format_br(goal_leads)} gerados (**{pct_goal_leads*100:.1f}%**)")
+        st.markdown(f"🎯 **Meta de Leads Global (Volume):** {format_br(leads_global_total)} / {format_br(goal_leads)} {_leads_rot} (**{pct_goal_leads*100:.1f}%**)")
         st.progress(min(max(pct_goal_leads, 0.0), 1.0))
         
     st.divider()
@@ -3219,7 +3272,7 @@ def _aba_tab3():
 
     st.caption(
         "**Atual** = gasto realizado no período selecionado, respeitando os filtros acima. "
-        "**Meta (Parcial)** = meta proporcional aos dias já decorridos; **Meta (Total)** = meta do período "
+        "**Meta (Parcial)** = soma das metas diárias até a data de referência, quando a métrica tem meta por dia (senão —); **Meta (Total)** = meta do período "
         "inteiro. O **% entre parênteses** é Atual ÷ Meta (o quanto da meta já foi gasto). Em períodos já "
         "encerrados, Parcial e Total coincidem. O ritmo **global** (todos os canais, sem filtro) está nas "
         "barras 🎯 no topo da aba."
