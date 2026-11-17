@@ -165,7 +165,7 @@ GLOSSARIO = {
         p="Duas etapas com chips diferentes não são comparáveis diretamente.",
         o="Convenção dos funis", a="🧲 🧭", s=["chip", "legenda dos funis"]),
     'Meta Parcial / Meta Total': dict(sec="Como ler o dashboard",
-        d="Total é a meta do período inteiro; Parcial é a meta proporcional aos dias já decorridos. Em períodos encerrados as duas coincidem.",
+        d="Total é a meta do período inteiro. Parcial é a meta até a data de referência: a soma das metas diárias da planilha de metas de aquisição (Site, App, Televendas e leads). Quem não tem meta por dia (Franquias, Canais Nacionais, CDT, investimento) não tem meta parcial e mostra N/A. Não se usa mais meta proporcional aos dias. Em períodos encerrados as duas coincidem.",
         o="Planilha de metas mensais", a="📈 💰", s=["meta", "Progresso da Meta"]),
     'Teto × piso': dict(sec="Como ler o dashboard",
         d="Quando não dá para atribuir uma venda com certeza, mostra-se o máximo plausível (teto) e o mínimo registrado (piso). A verdade está entre os dois.",
@@ -176,7 +176,7 @@ GLOSSARIO = {
     # ---- Sistemas ----
     'CTN': dict(sec="Sistemas e fontes",
         d="O sistema corporativo do Cartão de Todos onde a filiação é registrada. É a fonte oficial de 'venda': 'confirmado no CTN' = existe uma filiação registrada lá.",
-        o="Sistema CTN", a="todas", s=["NOMINAL", "nominal", "NOMINAL_VENDAS", "venda real"]),
+        o="Sistema CTN", a="todas", s=["NOMINAL", "nominal", "alex_nominal_vendas", "venda real"]),
     'Vendas nominais (NOMINAL)': dict(sec="Sistemas e fontes",
         d="A lista oficial de vendas do CTN, uma linha por filiação, com CPF, data, tipo de venda, vendedor (IDPV) e franquia. É a régua-mestra: todo funil termina aqui. Uma venda conta uma vez por CPF + data.",
         o="Extração diária do CTN", a="todas"),
@@ -364,13 +364,13 @@ GLOSSARIO = {
         d="Compra reportada = ticket fechado com esse motivo (o que o atendente ou o bot registrou). Confirmada = o CPF aparece no CTN com filiação até 3 dias antes ou depois do fechamento. Desde 01/10 é registro da operação (expander 📋), não etapa do funil: a venda do funil é a do CTN por IDPV, no dia.",
         o="Talkerchat × NOMINAL por CPF", a="📞", s=["Compras reportadas", "Confirmadas por CPF ±3 d", "Registro da operação", "tabulação do atendente"]),
     'Vendas (CTN) por IDPV — WhatsApp humano': dict(sec="WhatsApp (Talkerchat)",
-        d="Filiações do CTN (NOMINAL_VENDAS, CPF × data de filiação no período) com tipo Televendas e IDPV de operador humano (telefone ou '… ATENDIMENTO WHATSAPP'; os bots ficam fora). É o cruzamento por IDPV pedido pelo Badaró, lido no dia da filiação. No ranking, o IDPV é casado ao atendente do Talkerchat pelo nome.",
+        d="Filiações do CTN (alex_nominal_vendas, CPF × data de filiação no período) com tipo Televendas e IDPV de operador humano (telefone ou '… ATENDIMENTO WHATSAPP'; os bots ficam fora). É o cruzamento por IDPV pedido pelo Badaró, lido no dia da filiação. No ranking, o IDPV é casado ao atendente do Talkerchat pelo nome.",
         p="Inclui vendas que o operador fechou por telefone — a fatia 'pelo IDPV WhatsApp' isola a superfície. A régua por telefone (tel-8 × CTN) fica na nota como referência.",
-        o="NOMINAL_VENDAS por IDPV (DT_FILIACAO) × alex_idpvs", a="📞", s=["Vendas (CTN) humano", "IDPV WhatsApp", "vendas por IDPV"]),
+        o="alex_nominal_vendas por IDPV (DT_FILIACAO) × alex_idpvs", a="📞", s=["Vendas (CTN) humano", "IDPV WhatsApp", "vendas por IDPV"]),
     'Vendas Lia (NOMINAL por IDPV)': dict(sec="WhatsApp (Talkerchat)",
-        d="Filiações do CTN (NOMINAL_VENDAS, CPF × data de filiação) cujo IDPV é o da Lia (LIA - GT7). É a régua da planilha de controle do Talkerchat ('Numeros Lia'): venda de fato, não o que o bot reportou. Humano = tipo Televendas sem os IDPVs dos bots.",
+        d="Filiações do CTN (alex_nominal_vendas, CPF × data de filiação) cujo IDPV é o da Lia (LIA - GT7). É a régua da planilha de controle do Talkerchat ('Numeros Lia'): venda de fato, não o que o bot reportou. Humano = tipo Televendas sem os IDPVs dos bots.",
         p="Compra reportada (Talkerchat) superestima ~23%: registra intenção/relato; o CTN registra a filiação.",
-        o="NOMINAL_VENDAS por IDPV (DT_FILIACAO); hora pelas fotos diárias do CTN (NOMINAL_VENDAS_DIARIO_CONSOLIDADO)", a="📞",
+        o="alex_nominal_vendas por IDPV (DT_FILIACAO); hora pelas fotos diárias do CTN (NOMINAL_VENDAS_DIARIO_CONSOLIDADO)", a="📞",
         s=["Vendas Lia (CTN)", "Vendas Lia", "Televendas humano (CTN)", "NOMINAL por IDPV"]),
     'Ticket receptivo × ativo (Talkerchat)': dict(sec="WhatsApp (Talkerchat)",
         d="Receptivo = a conversa começou com uma mensagem do cliente. Ativo = a primeira mensagem foi nossa: disparo em massa (campanha), fluxo automático ou atendente. O disparo em massa abre um ticket para cada destinatário, mesmo que a pessoa nunca responda. Desde 16/11/2026 o funil do Talkerchat (sub-abas 📞 7, 9 e 10) conta os tickets receptivos e os ativos que o cliente respondeu; envio sem resposta fica fora e aparece só no bloco 📣 Envios nossos.",
@@ -789,6 +789,21 @@ def load_invest_data():
         return df_inv
     except Exception:
         return pd.DataFrame(columns=['data_investimento', 'canal', 'plataforma', 'branding', 'leads', 'venda', 'vol_leads', 'vol_vendas'])
+
+@st.cache_data(ttl=43200)
+def load_goals_daily():
+    """R79 (17/11/2026): metas diárias de aquisição (alex_metas_dia, carregada da planilha da governança por
+    `gt7 run metas_dia_load`). Devolve {(metrica, escopo): Series de meta indexada por dia}; vazio se a tabela não existir."""
+    try:
+        d = cquery("SELECT dia, metrica, escopo, meta FROM alex_metas_dia")
+        if d.empty:
+            return {}
+        d['dia'] = pd.to_datetime(d['dia']).dt.normalize()
+        d['meta'] = pd.to_numeric(d['meta'], errors='coerce')
+        return {k: g.set_index('dia')['meta'].sort_index() for k, g in d.dropna(subset=['meta']).groupby(['metrica', 'escopo'])}
+    except Exception:
+        return {}
+
 
 @st.cache_data(ttl=43200)
 def load_goals_data():
@@ -1494,13 +1509,22 @@ if not _crm_inv_rows.empty:
     for _c in ['branding', 'leads', 'venda', 'vol_leads', 'vol_vendas']:
         df_invest_raw[_c] = pd.to_numeric(df_invest_raw[_c], errors='coerce').fillna(0.0)
 df_goals = load_goals_data()
+GOALS_DAILY = load_goals_daily()   # R79: metas diárias da planilha de metas (alex_metas_dia)
+# R79: coluna da alex_metas -> (metrica, escopo) da alex_metas_dia. Só estas têm meta por dia.
+GOAL_DAILY_COL = {
+    'Site': ('vendas_site', 'total'),
+    'App': ('vendas_app', 'total'),
+    'Televendas': ('vendas_televendas', 'total'),
+    'Leads unicos Total': ('leads_unicos', 'total'),
+    'Leads transbordado': ('transb_franquias', 'total'),
+}
 
 if df_raw.empty:
     st.error(
         "⚠️ **RESUMO_VENDAS_DIARIAS não retornou nenhuma venda** (tabela vazia ou sem dados "
         "nos últimos 3 anos). Por isso todas as vendas aparecem como 0 — não é um erro do "
         "dashboard. Repopule a tabela: rode `CALL SP_Atualizar_Resumo_Vendas();` (recupera a "
-        "janela recente) ou o backfill completo a partir de NOMINAL_VENDAS se a tabela estiver "
+        "janela recente) ou o backfill completo a partir de alex_nominal_vendas se a tabela estiver "
         "totalmente vazia."
     )
 
@@ -1543,19 +1567,36 @@ prophet_map = {
 }
 
 def get_prorated_goal(df_goals_db, start_d, end_d, column_name):
+    """Meta da coluna no período [start_d, end_d]. R79 (17/11/2026, decisão do Álex): não há mais meta proporcional.
+    Por mês tocado pelo período: (1) coluna com meta diária em TODOS os dias do trecho (alex_metas_dia) -> soma das metas
+    diárias; (2) senão, trecho = mês inteiro -> meta do mês (alex_metas); (3) senão o período não tem meta -> 0.0 (as telas
+    mostram N/A). O nome ficou por compatibilidade com as chamadas."""
     if df_goals_db.empty or column_name not in df_goals_db.columns:
         return 0.0
-    
+    start_d, end_d = pd.Timestamp(start_d).normalize(), pd.Timestamp(end_d).normalize()
+    if end_d < start_d:
+        return 0.0
+    serie = GOALS_DAILY.get(GOAL_DAILY_COL.get(column_name))
     total_goal = 0.0
-    current_d = start_d
-    while current_d <= end_d:
-        month_mask = (df_goals_db['mes_ano'] == current_d.replace(day=1))
-        if month_mask.any():
-            month_goal = df_goals_db.loc[month_mask, column_name].iloc[0]
-            if pd.notna(month_goal):
-                days_in_month = pd.Period(current_d, freq='M').days_in_month
-                total_goal += float(month_goal) / float(days_in_month)
-        current_d += pd.Timedelta(days=1)
+    cur = start_d.replace(day=1)
+    while cur <= end_d:
+        m_end = cur + pd.offsets.MonthEnd(0)
+        lo, hi = max(start_d, cur), min(end_d, m_end)
+        seg = None
+        if serie is not None:
+            s_ = serie[(serie.index >= lo) & (serie.index <= hi)]
+            if len(s_) == (hi - lo).days + 1:
+                seg = float(s_.sum())
+        if seg is None and lo == cur and hi == m_end:
+            month_mask = (df_goals_db['mes_ano'] == cur)
+            if month_mask.any():
+                month_goal = df_goals_db.loc[month_mask, column_name].iloc[0]
+                if pd.notna(month_goal):
+                    seg = float(month_goal)
+        if seg is None:
+            return 0.0
+        total_goal += seg
+        cur = cur + pd.offsets.MonthBegin(1)
     return float(total_goal)
 
 # Maps a chart group / channel label to its target column(s) in alex_metas.
@@ -1579,30 +1620,25 @@ def get_goal_for_group(start_d, end_d, grupo_nome):
     return sum(get_prorated_goal(df_goals, start_d, end_d, c) for c in cols)
 
 def build_goal_trend(grupo, t_start, t_end, cumulative):
-    """Daily (or cumulative) target line for a group over [t_start, t_end], shaped
-    like get_trend_data's output so it can be concatenated straight into the trend
-    chart. In cumulative mode the line ramps to the FULL-period target: its endpoint
-    is the total goal and its value at 'today' is the proportional (parcial) goal.
-    The per-day rate is month-aware, so multi-month periods ramp correctly."""
+    """Linha de meta do grupo em [t_start, t_end], no formato de get_trend_data (concatena direto no gráfico de tendência).
+    R79 (17/11/2026): sem meta proporcional. Grupo com meta diária em todos os dias (alex_metas_dia: Site, App, Televendas e a
+    soma Digital) -> meta de cada dia, ou acumulada. Grupo sem meta diária -> não há linha por dia nem rampa; no modo acumulado
+    sai uma linha reta na meta total do período, quando o período tem meta total (meses inteiros)."""
     cols = GOAL_COL_MAP.get(grupo.strip(), [])
     if df_goals.empty or not cols:
         return pd.DataFrame()
-    days = pd.date_range(t_start, t_end, freq='D')
-    daily_vals = []
-    for d in days:
-        day_total = 0.0
-        mask = (df_goals['mes_ano'] == d.replace(day=1))
-        if mask.any():
-            row = df_goals.loc[mask].iloc[0]
-            dim = pd.Period(d, freq='M').days_in_month
-            for c in cols:
-                v = row.get(c)
-                if pd.notna(v):
-                    day_total += float(v) / dim
-        daily_vals.append(day_total)
-    out = pd.DataFrame({'data_venda': days, 'Vendas': daily_vals})
-    if cumulative:
-        out['Vendas'] = out['Vendas'].cumsum()
+    days = pd.date_range(pd.Timestamp(t_start).normalize(), pd.Timestamp(t_end).normalize(), freq='D')
+    series = [GOALS_DAILY.get(GOAL_DAILY_COL.get(c)) for c in cols]
+    series = [s.reindex(days) if s is not None else None for s in series]
+    if series and all(s is not None and s.notna().all() for s in series):
+        out = pd.DataFrame({'data_venda': days, 'Vendas': sum(s.values for s in series)})
+        if cumulative:
+            out['Vendas'] = out['Vendas'].cumsum()
+    else:
+        _tot = get_goal_for_group(t_start, t_end, grupo)
+        if not cumulative or _tot <= 0:
+            return pd.DataFrame()
+        out = pd.DataFrame({'data_venda': days, 'Vendas': float(_tot)})
     out['Grupo'] = grupo
     out['Dia'] = (out['data_venda'] - t_start).dt.days + 1
     out['Traço'] = grupo + " (Meta)"
@@ -2077,9 +2113,17 @@ def _aba_tab1():
     ch_lf = get_channel_sums(df_slice_lf)
 
     # Dynamic Sales Goal Progress Bar
+    # R79: o CDT não tem meta diária -> sem meta parcial. A barra mostra o realizado sobre a meta total do período.
     goal_vendas = get_prorated_goal(df_goals, c_s, ref_datetime, 'CDT (Total)')
+    _goal_rot = "atingidos"
+    if goal_vendas <= 0:
+        goal_vendas = get_prorated_goal(df_goals, c_s, c_e, 'CDT (Total)')
+        _goal_rot = "da meta total do período"
     pct_goal = agg_c['CDT'] / goal_vendas if goal_vendas > 0 else 0
-    st.markdown(f"🎯 **Progresso da Meta de Vendas (CDT):** {format_br(agg_c['CDT'])} / {format_br(goal_vendas)} atingidos (**{pct_goal*100:.1f}%**)")
+    if goal_vendas > 0:
+        st.markdown(f"🎯 **Progresso da Meta de Vendas (CDT):** {format_br(agg_c['CDT'])} / {format_br(goal_vendas)} {_goal_rot} (**{pct_goal*100:.1f}%**)")
+    else:
+        st.markdown(f"🎯 **Progresso da Meta de Vendas (CDT):** {format_br(agg_c['CDT'])} · este período não tem meta (a meta do CDT é mensal, sem meta por dia)")
     st.progress(min(max(pct_goal, 0.0), 1.0))
     st.divider()
 
@@ -2261,8 +2305,8 @@ def _aba_tab1():
             show_metas = st.checkbox(
                 "🎯 Mostrar Metas (Parcial + Total)", value=False, key='t1_show_metas',
                 help="Linha tracejada da meta por grupo selecionado: o ponto final é a meta TOTAL "
-                     "do período e onde a linha está 'hoje' é a meta PARCIAL (proporcional aos dias "
-                     "decorridos). Use junto com 'Mostrar Previsão' para ver se a projeção termina "
+                     "do período e onde a linha está 'hoje' é a meta PARCIAL (soma das metas diárias até a data de referência; grupo sem meta por dia "
+                     "mostra só a linha reta da meta total). Use junto com 'Mostrar Previsão' para ver se a projeção termina "
                      "acima ou abaixo da meta total, e se as vendas atuais já alcançaram a meta parcial."
             )
 
@@ -2551,7 +2595,7 @@ def _aba_tab1():
                     mp = get_goal_for_group(c_s, ref_datetime, g)
                     mt = get_goal_for_group(c_s, c_e, g)
                     if mt > 0:
-                        meta_txt.append(f"**{g}** — parcial: {format_br(mp)} · total: {format_br(mt)}")
+                        meta_txt.append(f"**{g}** — parcial: {format_br(mp) if mp > 0 else 'N/A (sem meta por dia)'} · total: {format_br(mt)}")
                 if meta_txt:
                     st.markdown("🎯 **Metas do período** → " + "  |  ".join(meta_txt))
 
@@ -3133,18 +3177,27 @@ def _aba_tab3():
     inv_global_total = df_c_global['Total_Investido'].sum()
     leads_global_total = df_c_global['vol_leads'].sum()
 
+    # R79: investimento não tem meta diária -> sem meta parcial; a barra usa a meta total do período.
     goal_invest = get_prorated_goal(df_goals, c_s, ref_datetime, 'Investimento Total')
+    _inv_rot = "utilizados"
+    if goal_invest <= 0:
+        goal_invest = get_prorated_goal(df_goals, c_s, c_e, 'Investimento Total')
+        _inv_rot = "da meta total do período"
     pct_goal_inv = inv_global_total / goal_invest if goal_invest > 0 else 0
     
-    goal_leads = get_prorated_goal(df_goals, c_s, ref_datetime, 'Leads unicos Total')
+    goal_leads = get_prorated_goal(df_goals, c_s, ref_datetime, 'Leads unicos Total')   # R79: soma das metas diárias, quando há
+    _leads_rot = "gerados"
+    if goal_leads <= 0:
+        goal_leads = get_prorated_goal(df_goals, c_s, c_e, 'Leads unicos Total')
+        _leads_rot = "da meta total do período"
     pct_goal_leads = leads_global_total / goal_leads if goal_leads > 0 else 0
 
     col_gb1, col_gb2 = st.columns(2)
     with col_gb1:
-        st.markdown(f"🎯 **Meta de Investimento Global:** {format_money(inv_global_total)} / {format_money(goal_invest)} utilizados (**{pct_goal_inv*100:.1f}%**)")
+        st.markdown(f"🎯 **Meta de Investimento Global:** {format_money(inv_global_total)} / {format_money(goal_invest)} {_inv_rot} (**{pct_goal_inv*100:.1f}%**)")
         st.progress(min(max(pct_goal_inv, 0.0), 1.0))
     with col_gb2:
-        st.markdown(f"🎯 **Meta de Leads Global (Volume):** {format_br(leads_global_total)} / {format_br(goal_leads)} gerados (**{pct_goal_leads*100:.1f}%**)")
+        st.markdown(f"🎯 **Meta de Leads Global (Volume):** {format_br(leads_global_total)} / {format_br(goal_leads)} {_leads_rot} (**{pct_goal_leads*100:.1f}%**)")
         st.progress(min(max(pct_goal_leads, 0.0), 1.0))
         
     st.divider()
@@ -3219,7 +3272,7 @@ def _aba_tab3():
 
     st.caption(
         "**Atual** = gasto realizado no período selecionado, respeitando os filtros acima. "
-        "**Meta (Parcial)** = meta proporcional aos dias já decorridos; **Meta (Total)** = meta do período "
+        "**Meta (Parcial)** = soma das metas diárias até a data de referência, quando a métrica tem meta por dia (senão N/A); **Meta (Total)** = meta do período "
         "inteiro. O **% entre parênteses** é Atual ÷ Meta (o quanto da meta já foi gasto). Em períodos já "
         "encerrados, Parcial e Total coincidem. O ritmo **global** (todos os canais, sem filtro) está nas "
         "barras 🎯 no topo da aba."
@@ -4219,7 +4272,7 @@ def _aba_tab5():
 #   1 Escallo · Ativo      discados → ligação qualificada ≥10s → (em negociação, tabulação) → Vendas (CTN) [R45]
 #   2 Escallo · Receptivo  recebidas (total) → distribuídas aos operadores → atendidas → (abandono na fila) → Vendas (CTN); taxas sobre as distribuídas [R45/R66] + apropriação
 #   3 Ganhos por porta     Negócio GANHO: tabulação (porta 1) × checkout (porta 2) × outros
-#   4 Três réguas          GANHO × Contato (CTN) × NOMINAL_VENDAS — como ler
+#   4 Três réguas          GANHO × Contato (CTN) × alex_nominal_vendas — como ler
 #   5 Pipeline CRM         LEAD → EM NEGOCIAÇÃO → CONTATO SEM SUCESSO → PERDIDO → GANHO + auditoria
 #   6 Grupos A–D           entradas por grupo de roteamento (de-para em GRUPOS_CANAL abaixo)
 #   7 Talkerchat           usuários sem SAC → qualificados (CPF validado, não cliente) → humano → Vendas (CTN) por IDPV [R58]; Lia à parte
@@ -4571,14 +4624,14 @@ def _aba_tab6():
             f"(a semana corrente é parcial); leads do Escallo entram na semana do 1º contato. "
             + (f"Comparação: {_tv_per_p_lbl}. " if _tv_per_p else "")
             + "As séries 'mensais' continuam por mês. Fontes: ESCALLO_LEADS_MES · hubspot_contacts_raw / hubspot_deals_raw · "
-              "v_alex_talkerchat · NOMINAL_VENDAS.")
+              "v_alex_talkerchat · alex_nominal_vendas.")
     else:
         _tv_hdr1.caption(
             f"Período: **{_tv_per_lbl}** — **grão mensal** (meses tocados pelo período dos Controles Globais). "
             + (f"Comparação: {_tv_per_p_lbl}. " if _tv_per_p
                else "Sem mês anterior fora do período para comparar (os chips de variação ficam vazios). ")
             + "Períodos de até duas semanas (ex.: Semana Atual) usam o grão semanal quando o agregado semanal está carregado. "
-              "Fontes: ESCALLO_LEADS_MES · hubspot_contacts_raw / hubspot_deals_raw · v_alex_talkerchat · NOMINAL_VENDAS.")
+              "Fontes: ESCALLO_LEADS_MES · hubspot_contacts_raw / hubspot_deals_raw · v_alex_talkerchat · alex_nominal_vendas.")
         if _tv_periodo_curto and not _tv_tem_sem:
             st.info("ℹ️ O período tem até duas semanas, mas o agregado semanal ainda não cobre essas semanas — mostrando o mês "
                     "inteiro. Rode `gt7 run televendas_dash` (grão MW: meses + últimas 8 semanas) ou "
@@ -4918,7 +4971,7 @@ def _aba_tab6():
                     ("🗣️", "└ conversaram (≥ 10 s) e filiaram", v_ctn_alo, f"{_tv_pct(v_ctn_alo, alo)} das ligações qualificadas · seq. = % das vendas", 1),
                     ("📞", "└ com tipo Televendas (CTN) — inclui bots e vendas em outro dia", v_ctn_tv, f"{_tv_n(v_ctn_alo_tv)} com conversa ≥ 10 s · {_tv_n(_sem_alo_tv)} sem · seq. = % das vendas", 1),
                 ], subtitle=_tv_per_lbl)
-            st.caption("Fonte: ESCALLO_LEADS_MES (REL003 ativo + REL086 classificação; carga diária 8h) × NOMINAL_VENDAS por tel-8 + IDPV. "
+            st.caption("Fonte: ESCALLO_LEADS_MES (REL003 ativo + REL086 classificação; carga diária 8h) × alex_nominal_vendas por tel-8 + IDPV. "
                        + ("'Vendas (CTN) atribuídas' (R63, pedido do time): filiação com tipo Televendas pelo IDPV de um operador humano "
                           "(bots Lia/Nora/Cris fora) no mesmo dia de uma ligação ao número; 'assistidas' = o telefone filiou no período por outro "
                           "canal, por bot ou em outro dia — o televendas tocou o cliente, não fechou a venda. Atribuídas + assistidas = régua do RMA. "
@@ -5127,7 +5180,7 @@ def _aba_tab6():
                                               f"separação atribuída × assistida indisponível neste período · seq. = % das atendidas · do topo = % das distribuídas", 1),
                     ("📞", "└ com tipo Televendas (CTN) — inclui bots e vendas em outro dia", v10_tv, "seq. = % das vendas", 3),
                 ]), subtitle=_tv_per_lbl)
-                st.caption("Fonte: Televendas_REL002 (uma linha por ligação recebida; carga da TI) × Televendas_REL001 (fila) × NOMINAL_VENDAS por tel-8 + IDPV. "
+                st.caption("Fonte: Televendas_REL002 (uma linha por ligação recebida; carga da TI) × Televendas_REL001 (fila) × alex_nominal_vendas por tel-8 + IDPV. "
                            f"Ligações recebidas (total) = {_tv_n(lg_rec)} {_rec_decomp}. As taxas são lidas sobre as distribuídas: "
                            "uma ligação que chega fora do expediente cai na fila 'Callback - Fora de horário', o sistema derruba e o discador ativo "
                            "liga de volta (ver apropriação abaixo) — contá-la como abandono inflava a taxa (set/26: 13 % → ~1 %). "
@@ -5152,7 +5205,7 @@ def _aba_tab6():
                                               f"separação atribuída × assistida indisponível neste período · seq. = % das ligações atendidas · {_tv_pct(v10, tl_atd)} dos telefones atendidos", 1),
                     ("📞", "└ com tipo Televendas (CTN) — inclui bots e vendas em outro dia", v10_tv, "seq. = % das vendas", 3),
                 ]), subtitle=_tv_per_lbl)
-                st.caption("Fonte: Televendas_REL002 (uma linha por ligação recebida; carga da TI) × NOMINAL_VENDAS por tel-8 + IDPV. "
+                st.caption("Fonte: Televendas_REL002 (uma linha por ligação recebida; carga da TI) × alex_nominal_vendas por tel-8 + IDPV. "
                            + ("'Atribuídas' (R63): filiação com tipo Televendas pelo IDPV de um operador humano no dia de uma ligação atendida; "
                               "'assistidas' = filiou no período por outro canal, bot ou outro dia. " if _r63r else
                               "'Vendas (CTN) — atribuídas + assistidas': o Televendas_REL002 só guarda o mês corrente, então neste período não dá para "
@@ -5193,7 +5246,7 @@ def _aba_tab6():
                     "contato</b>: do <b>1º contato</b> (a primeira ligação desse telefone com o televendas no mês — no receptivo, a "
                     "primeira vez que o cliente ligou; coluna <code>primeiro_contato</code>) até o <b>último contato + 14 dias</b> "
                     "(a última ligação do telefone no mês, coluna <code>ultimo_contato</code>, mais duas semanas). Se esse telefone "
-                    "— casado pelos <b>8 últimos dígitos</b>, porque o Escallo não captura CPF — aparece no NOMINAL_VENDAS com uma "
+                    "— casado pelos <b>8 últimos dígitos</b>, porque o Escallo não captura CPF — aparece no alex_nominal_vendas com uma "
                     "filiação dentro dessa janela, a venda é 'casada' com a ligação.<br>"
                     "<b>Por que a janela.</b> Uma filiação <i>anterior</i> ao 1º contato não pode ter sido causada pela ligação; "
                     "os <b>+14 dias</b> cobrem o tempo típico entre a conversa e a adesão (link enviado, pagamento, retorno do "
@@ -5326,7 +5379,7 @@ def _aba_tab6():
         _tv_kpi(k2, "👤", "Régua 2 · Contato filiado via CTN (todos os canais)", _tv_n(fil),
                 f"{_tv_n(fil_tv_antes)} entraram no fluxo TV antes de filiar ({_tv_pct(fil_tv_antes, fil)}) · "
                 f"{_tv_n(fil_cv)} com canal_de_venda = TELEVENDAS ({_tv_pct(fil_cv, fil)})", color="#2e8a4f")
-        _tv_kpi(k3, "📒", "Régua 3 · NOMINAL_VENDAS · TELEVENDAS", _tv_n(nom_tv),
+        _tv_kpi(k3, "📒", "Régua 3 · alex_nominal_vendas · TELEVENDAS", _tv_n(nom_tv),
                 f"{_tv_pct(nom_tv, nom_tot)} das {_tv_n(nom_tot)} vendas do período (1 por CPF + data)", color="#0f172a")
         _tv_kpi(k4, "☎️", "Régua 4 · Escallo · atribuídas + assistidas (tel-8, janela do contato)", _tv_n(esc_cas),
                 f"ativo {_tv_n(esc_at)} · receptivo {_tv_n(esc_re)} — por mês da venda · telefone tocado pelo Escallo antes de filiar", color="#b45309")
@@ -5352,7 +5405,7 @@ def _aba_tab6():
                 {'Régua': '… que entraram no fluxo DEPOIS de filiar (já cliente / reimpacto)', 'Valor': _tv_n((fil_tv or 0) - (fil_tv_antes or 0)) if fil_tv is not None else '—', '_level': 2, '_is_eff': False},
                 {'Régua': f'… com canal_de_venda = TELEVENDAS ({_tv_pct(fil_cv_pre, fil)} dos filiados têm canal preenchido)', 'Valor': _tv_n(fil_cv), '_level': 1, '_is_eff': False},
                 {'Régua': 'CTN · tipo Televendas (régua-mestra)', 'Valor': _tv_n(nom_tv), '_level': 0, '_is_eff': False},
-                {'Régua': '… NOMINAL_VENDAS · total do período (1 por CPF + data)', 'Valor': _tv_n(nom_tot), '_level': 1, '_is_eff': False},
+                {'Régua': '… alex_nominal_vendas · total do período (1 por CPF + data)', 'Valor': _tv_n(nom_tot), '_level': 1, '_is_eff': False},
                 {'Régua': 'Escallo · vendas confirmadas por tel-8 (teto de influência)', 'Valor': _tv_n(esc_cas), '_level': 0, '_is_eff': False},
             ]
             _st_mt(_rows4, ['Régua', 'Valor'])
@@ -5365,7 +5418,7 @@ def _aba_tab6():
                 "<code>canal_de_venda</code>. Use 'entrou no fluxo ANTES de filiar' para <i>influência</i> e 'canal_de_venda = TELEVENDAS' para "
                 "<i>atribuição</i>. Atenção: a maior parte das datas de entrada no fluxo é posterior à filiação — são clientes "
                 "reimpactados / '[Televendas] É cliente', não influência. Ressalva: CPF sem Contato prévio é apagado pelo CTN (viés de sobrevivência).<br>"
-                "<b>3 · NOMINAL_VENDAS</b> é a régua-mestra (oficial, 1 por CPF + data). "
+                "<b>3 · alex_nominal_vendas</b> é a régua-mestra (oficial, 1 por CPF + data). "
                 "'TELEVENDAS' é o que a empresa credita ao canal — o <code>tipo_venda</code> vem do CTN e reúne os IDPVs dos "
                 "operadores (voz e 'Atendimento WhatsApp') e dos bots GT7 (Lia, Nora, Cris); em jun–ago/26 a Lia sozinha "
                 "respondeu por ~38% do canal. A linha do Escallo (tel-8) é o teto do que o canal pode ter influenciado.<br><br>"
@@ -6010,7 +6063,7 @@ def _aba_tab6():
                                  "Compras reportadas por mês — Lia × humano", subtitle="close_reason = 'Compra reportada' · relato, não filiação",
                                  stacked=True, rotulos=True, fonte="API Talkerchat (alex_talkerchat_api)")
 
-        # ---- R44 (23/09): vendas da Lia no CTN — NOMINAL_VENDAS por IDPV (régua da planilha "Numeros Lia") ----
+        # ---- R44 (23/09): vendas da Lia no CTN — alex_nominal_vendas por IDPV (régua da planilha "Numeros Lia") ----
         #      s7_talkerchat.nv_* (período) · s7_nv_dia (por dia) · s7_hora_nv (dia-da-semana × hora — espelho das fotos
         #      diárias do CTN, dt_filiacao com hora; DT_HOMOLOGACAO não é usado em nada — decisão de 23/09)
         _nv_lia = _tv_val(S, 'nv_lia'); _nv_tv = _tv_val(S, 'nv_tv'); _nv_hum = _tv_val(S, 'nv_tv_humano')
@@ -6066,11 +6119,11 @@ def _aba_tab6():
                                          uniformtext_minsize=7, uniformtext_mode='hide', bargap=0.15)
                     fig_nv.update_xaxes(type='category', tickfont_size=9)
                     st.plotly_chart(fig_nv, use_container_width=True)
-                    _tv_fonte("NOMINAL_VENDAS por DT_FILIACAO · Lia = IDPV DD433C86… (LIA - GT7) · humano = tipo Televendas sem os IDPVs dos bots")
+                    _tv_fonte("alex_nominal_vendas por DT_FILIACAO · Lia = IDPV DD433C86… (LIA - GT7) · humano = tipo Televendas sem os IDPVs dos bots")
                 _tv_chart_mensal(_tv_long(S, ['nv_lia', 'nv_tv_humano'], meses=_mg7,
                                           labels={'nv_lia': 'Lia (IDPV)', 'nv_tv_humano': 'Televendas humano'}),
                                  "Vendas por mês — Lia × humano (CTN)", subtitle="NOMINAL por IDPV · a série de compras reportadas acima é o relato do Talkerchat",
-                                 stacked=True, rotulos=True, fonte="NOMINAL_VENDAS (CTN) · dedup CPF × DT_FILIACAO")
+                                 stacked=True, rotulos=True, fonte="alex_nominal_vendas (CTN) · dedup CPF × DT_FILIACAO")
             with d2:
                 _tv_note(
                     f"<b>Por que o CTN, e não 'Compra reportada'.</b> A planilha de controle do Talkerchat ('Numeros Lia') mede a venda da Lia "
@@ -6249,7 +6302,7 @@ def _aba_tab6():
                     fig_ag.update_layout(height=max(320, 26 * len(_top) + 80), xaxis_title='vendas (CTN) por IDPV' if _ag58 else 'compras reportadas (registro)',
                                          yaxis_title='', showlegend=False, margin=dict(r=90))
                     st.plotly_chart(fig_ag, use_container_width=True)
-                    _tv_fonte("NOMINAL_VENDAS tipo Televendas por IDPV (telefone + WhatsApp), IDPV casado ao atendente pelo nome · rótulo = vendas · "
+                    _tv_fonte("alex_nominal_vendas tipo Televendas por IDPV (telefone + WhatsApp), IDPV casado ao atendente pelo nome · rótulo = vendas · "
                               "taxa (vendas / usuários atendidos)" if _ag58 else
                               "API Talkerchat (alex_talkerchat_api) · rótulo = compras · taxa (compras / tickets)")
                 with r2:
@@ -7112,7 +7165,7 @@ A régua por fila (R60, só ≥ out/26) não é usada aqui, para a comparação 
                     _w2_mini_bar(['Lia', 'Humano', '└ IDPV WhatsApp'], [_w2_A['vendas_lia'], _w2_A['vendas_humano'], _w2_A['vendas_wpp']],
                                  [_W2_GREENS[1], _W2_GREENS[0], _W2_GREENS[3]],
                                  "Lia vs. Humano — vendas (CTN)", "NOMINAL por IDPV · humano = todos os IDPVs de operador; fatia WhatsApp à parte")
-                _tv_fonte(f"alex_tv_dash_mes · {_w2_sec} (pipeline televendas_dash) · Talkerchat (tickets, filas, CPF do objeto de contato) × NOMINAL_VENDAS por IDPV"
+                _tv_fonte(f"alex_tv_dash_mes · {_w2_sec} (pipeline televendas_dash) · Talkerchat (tickets, filas, CPF do objeto de contato) × alex_nominal_vendas por IDPV"
                           + (" · tickets = conversas iniciadas pelo cliente + envios nossos com resposta (envio em massa sem resposta fica fora)" if _w2_sec == 's7f_talkerchat' else ""))
             with st.expander("📐 Réguas deste fechamento (e onde ele difere do deck)"):
                 st.markdown(_w2_regua_md)
@@ -9537,7 +9590,7 @@ def _aba_tab5_b():
             st.plotly_chart(fig, use_container_width=True)
             _tv_fonte("RESUMO_INVESTIMENTO_DIARIO (canal Website) · " +
                       {"HubSpot": "hubspot_contacts_raw (Leads Únicos Abrangente, s1_rma)", "HubSpot pagos": "hubspot_contacts_raw (núcleo × canais pagos, s9_pagos)",
-                       "GA": "alex_ga_checkout_funnel (generate_lead)", "CTN": "vol_leads do RESUMO"}[_cl9] + " · NOMINAL_VENDAS (tipo_venda WEBSITE)")
+                       "GA": "alex_ga_checkout_funnel (generate_lead)", "CTN": "vol_leads do RESUMO"}[_cl9] + " · alex_nominal_vendas (tipo_venda WEBSITE)")
 
         # ---------- gráfico 2: plataformas ----------
         _tv_titulo("Por plataforma — período atual × comparação",
@@ -9605,7 +9658,7 @@ def _aba_tab5_b():
                             'Marketing direto (CRM)': f"{format_br(crm_v)} · {_tv_pct(crm_v, ctn)}",
                             'Mídia + mkt direto': f"{format_br(ga_tot)} · {_tv_pct(ga_tot, ctn)}"})
         _st_df(pd.DataFrame(_rows11), use_container_width=True, hide_index=True)
-        _tv_fonte("alex_ga_checkout_funnel (purchase) · alex_crm_wpp_sms_vendas (GA4, campanhas CRM) · NOMINAL_VENDAS "
+        _tv_fonte("alex_ga_checkout_funnel (purchase) · alex_crm_wpp_sms_vendas (GA4, campanhas CRM) · alex_nominal_vendas "
                   "(tipo_venda WEBSITE)")
         _tv_note(
             "<b>Como ler os percentuais.</b> O denominador é a venda do CTN (a que existe no faturamento). "
@@ -10019,7 +10072,7 @@ def _aba_tab10():
         _long10.append(_sv)
         _tv_chart_mensal(pd.concat(_long10), "Série mensal — apropriação de leads", stacked=False, rotulos=True,
                          subtitle="cada linha da tabela do RMA, mês a mês",
-                         fonte="hubspot_contacts_raw (createdate, data de envio ao engajamento) · hubspot_deals_raw (pipeline CDT - Distribuição) × NOMINAL_VENDAS")
+                         fonte="hubspot_contacts_raw (createdate, data de envio ao engajamento) · hubspot_deals_raw (pipeline CDT - Distribuição) × alex_nominal_vendas")
 
         with st.expander("📖 Definições exatas (RMA · coluna Site)"):
             st.markdown(
@@ -10030,7 +10083,7 @@ def _aba_tab10():
                 "(espelho no contato do Negócio criado no pipeline CDT - Distribuição). |\n"
                 "| **Transbordados para franquias** | Negócios | entrou em `Distribuição de Leads` (1020141703) ou `Validador de "
                 "Distribuição` (1020141709). |\n"
-                "| **Vendas nas franquias** | fora do HubSpot | CPF do lead × `NOMINAL_VENDAS` com `tipo_venda` ∈ porta a porta / "
+                "| **Vendas nas franquias** | fora do HubSpot | CPF do lead × `alex_nominal_vendas` com `tipo_venda` ∈ porta a porta / "
                 "link do vendedor / app do vendedor, filiação a partir da data do lead; dedupe `COUNT(DISTINCT CPF, DT_FILIACAO)`. |\n\n"
                 "**Site aqui é a instância inteira** (site CDT, checkout, formulários de mídia nacional e regional, WhatsApp "
                 "Zenvia, parcerias) — não é o filtro `canal_de_origem_detalhada = 'Site CDT - Checkout Adesão'`, que é outra "
@@ -10243,7 +10296,7 @@ def _aba_tab10():
                                       margin=dict(l=8, r=110, t=8, b=28),
                                       yaxis=dict(automargin=True, showgrid=False, tickfont=dict(size=11)))
                     st.plotly_chart(fig, use_container_width=True)
-                    _tv_fonte("ESCALLO_LEADS_MES (ATIVO) × NOMINAL_VENDAS por tel-8, mesmo mês; % sobre os discados com venda")
+                    _tv_fonte("ESCALLO_LEADS_MES (ATIVO) × alex_nominal_vendas por tel-8, mesmo mês; % sobre os discados com venda")
             with _c8b:
                 _mg8 = _m10[-12:]
                 _l8 = []
@@ -10253,7 +10306,7 @@ def _aba_tab10():
                     d = d.groupby('mes', as_index=False)['valor'].sum().sort_values('mes'); d['serie'] = lbl
                     _l8.append(d)
                 _tv_chart_mensal(pd.concat(_l8), "Série mensal — funil Televendas (ligações ativas)", stacked=False, rotulos=True,
-                                 subtitle="últimos 12 meses carregados", fonte="ESCALLO_LEADS_MES × NOMINAL_VENDAS (tel-8, mesmo mês)")
+                                 subtitle="últimos 12 meses carregados", fonte="ESCALLO_LEADS_MES × alex_nominal_vendas (tel-8, mesmo mês)")
                 _l8 = []
                 _ser8 = ([('leads_unicos_deck', 'Leads Únicos'), ('transbordados_def', 'Transbordados (mesma definição)'), ('vendas_mes_def', 'Vendas nas franquias (mesma definição)')]
                          if _t10_coer else [('leads_unicos_deck', 'Leads Únicos'), ('transbordados', 'Transbordados'), ('vendas_mes', 'Vendas nas franquias')])  # R39
@@ -10263,14 +10316,14 @@ def _aba_tab10():
                     _l8.append(d)
                 _tv_chart_mensal(pd.concat(_l8), "Série mensal — funil Franquias" + (" (mesma definição)" if _t10_coer else ""), stacked=False, rotulos=True,
                                  subtitle="últimos 12 meses carregados",
-                                 fonte="hubspot_contacts_raw · hubspot_deals_raw (pipeline CDT - Distribuição) · NOMINAL_VENDAS")
+                                 fonte="hubspot_contacts_raw · hubspot_deals_raw (pipeline CDT - Distribuição) · alex_nominal_vendas")
 
             with st.expander("📖 Definições exatas (slides 'Funil Televendas' e 'Funil Franquias' do relatório da Mesa)"):
                 st.markdown(
                     "| Etapa | Objeto | Regra |\n|---|---|---|\n"
                     "| **Leads discados (ativo)** | telefone | `ESCALLO_LEADS_MES`, `tipo_lead = 'ATIVO'`, mês do 1º contato. |\n"
                     "| **Ligação Qualificada (≥ 10 s)** | telefone | `alo_humano = 1` — falou ≥ 10 s em alguma ligação do mês. |\n"
-                    "| **Vendas (discados que filiaram)** | telefone × CPF | *inner join* dos discados do mês com `NOMINAL_VENDAS` do **mesmo mês-calendário**, "
+                    "| **Vendas (discados que filiaram)** | telefone × CPF | *inner join* dos discados do mês com `alex_nominal_vendas` do **mesmo mês-calendário**, "
                     "chave tel-8 (`RIGHT(CELULAR, 8) = RIGHT(tel_lead, 8)`; o Escallo não tem CPF), 1 lead contado uma vez. Difere do "
                     "`venda_confirmada` da própria tabela (janela 1º contato → último + 14 d) e do GANHO do HubSpot (write-back da esteira). |\n"
                     "| **└ tipo Televendas** | idem | o subconjunto cuja filiação tem `tipo_venda = 'TELEVENDAS'`; a % sequencial é sobre as filiações dos discados. |\n"
@@ -10285,7 +10338,7 @@ def _aba_tab10():
                     "| **Leads transbordados** | Negócios | pipeline CDT - Distribuição (697831824), 1ª entrada em `Distribuição de Leads` (1020141703) ou "
                     "`Validador de Distribuição` (1020141709) no mês — `hs_v2_date_entered_*` guarda a ÚLTIMA entrada, então redistribuições reescrevem meses passados. |\n"
                     "| **Vendas nas franquias** | CPF | leads criados no mês (regra de abril, **com** os promotores — são eles que mais viram venda de franquia) × "
-                    "`NOMINAL_VENDAS` porta a porta / link / app do vendedor, filiação no mesmo mês; dedupe `COUNT(DISTINCT CPF, DT_FILIACAO)`. |\n"
+                    "`alex_nominal_vendas` porta a porta / link / app do vendedor, filiação no mesmo mês; dedupe `COUNT(DISTINCT CPF, DT_FILIACAO)`. |\n"
                     "| **Mesma definição (toggle ⚖️, R39)** | Negócios × Contatos | `transbordados_def` / `validador_def` = os mesmos Negócios, restritos aos que têm "
                     "algum Contato associado que passa na regra dos Leads Únicos (canal conhecido, fora de Importação / Desfiliados / Engajamento / TIM / promotor); "
                     "`vendas_mes_def` = a venda de franquia com a mesma regra (sem promotores). O resto do numerador é decomposto em promotor · TIM · "
@@ -10464,7 +10517,7 @@ def _aba_tab10():
                 st.caption("Todos os buckets contam na definição Abrangente (verde). 'transb.' = % dos leads do bucket que já foram transbordados "
                            "(qualquer data — leitura de coorte, como na tabela por canal abaixo).")
                 _st_csv(_bk13[['bucket', 'rotulo', 'criados', 'transb', 'venda', 'pct']], f"leads_unicos_buckets_{_ini13}_{_fim13}")
-            _tv_fonte("alex_funil_journey (funil_journey: hubspot_contacts_raw × hubspot_assoc_contact_deal × hubspot_deals_raw × NOMINAL_VENDAS), "
+            _tv_fonte("alex_funil_journey (funil_journey: hubspot_contacts_raw × hubspot_assoc_contact_deal × hubspot_deals_raw × alex_nominal_vendas), "
                       "1 linha por Contato; período exato dos Controles Globais")
 
         st.markdown("---")
@@ -10600,7 +10653,7 @@ def _aba_tab10():
                         st.caption("**Só mídia / Só HubSpot** = nº de meses da seleção em que a campanha só apareceu na landing (sem Contato) / só no HubSpot (sem custo). "
                                    "**Cobertura** = Contatos ÷ leads da plataforma (> 100 % é normal no Google: um Contato pode ter várias conversões). "
                                    "**CPL** = custo ÷ Contatos (Leads Únicos Abrangente); **CPL régua E** = custo ÷ Leads Únicos da régua E.")
-                    _tv_fonte("alex_midia_campanha_mes (midia_campanhas v2.2): alex_google/meta/tiktok_campaigns + alex_google/meta_campaigns_contas (abas Google_All / Meta_All) × hubspot_contacts_raw (1º toque) × hubspot_assoc_contact_deal × hubspot_deals_raw × hubspot_leads_raw × NOMINAL_VENDAS")
+                    _tv_fonte("alex_midia_campanha_mes (midia_campanhas v2.2): alex_google/meta/tiktok_campaigns + alex_google/meta_campaigns_contas (abas Google_All / Meta_All) × hubspot_contacts_raw (1º toque) × hubspot_assoc_contact_deal × hubspot_deals_raw × hubspot_leads_raw × alex_nominal_vendas")
 
         st.markdown("---")
         # ---------- 2 · funis por superfície ----------
@@ -10721,7 +10774,7 @@ def _aba_tab10():
             "<b>Por que não somamos as três superfícies.</b> Cada uma conta uma coisa: o site conta <i>contato criado</i>, "
             "o televendas conta <i>telefone trabalhado no mês</i> e o app conta <i>cadastro</i>. A mesma pessoa aparece em "
             "duas ou três — somar os topos infla a base. O único denominador comum é a <b>venda no CTN</b>, e é por isso "
-            "que os três funis terminam na mesma régua (NOMINAL_VENDAS por tipo_venda). Para o total do período, use o "
+            "que os três funis terminam na mesma régua (alex_nominal_vendas por tipo_venda). Para o total do período, use o "
             "quadro abaixo.", bg="#f8fafc", icon="ℹ️")
 
         _tv_titulo("Vendas por tipo (CTN) — o denominador comum", f"janela {_lbl10}", "A")
@@ -10738,7 +10791,7 @@ def _aba_tab10():
                               margin=dict(l=8, r=110, t=8, b=28),
                               yaxis=dict(automargin=True, side='left', showgrid=False, tickfont=dict(size=11)))
             st.plotly_chart(fig, use_container_width=True)
-            _tv_fonte(f"NOMINAL_VENDAS · dedupe COUNT(DISTINCT CPF, DT_FILIACAO) · total {format_br(_tot10)} vendas na janela")
+            _tv_fonte(f"alex_nominal_vendas · dedupe COUNT(DISTINCT CPF, DT_FILIACAO) · total {format_br(_tot10)} vendas na janela")
 
         st.markdown("---")
         # ---------- 3 · canais de origem ----------
@@ -10888,7 +10941,7 @@ def _aba_tab10():
                 st.markdown(
                     "**Fórmula.** `custo por membro retido (m3) = investimento de mídia do site (RESUMO_INVESTIMENTO_DIARIO) ÷ retidos m3 (def. C)`. Exemplo: R$ 1,5 mi ÷ 5.000 retidos = R$ 300 por membro que continua pagando no 3º mês.\n\n"
                     "**A venda é do canal do primeiro lead.** Um CPF que aparece como lead em dois canais conta uma vez "
-                    "só, no lead mais antigo. A atribuição é a mesma do RMA: CPF do lead único × `NOMINAL_VENDAS`, "
+                    "só, no lead mais antigo. A atribuição é a mesma do RMA: CPF do lead único × `alex_nominal_vendas`, "
                     "`tipo_venda` de franquia (porta a porta, link do vendedor, app do vendedor), filiação em qualquer "
                     "data a partir do lead.\n\n"
                     "**Retido = ainda pagando N meses depois da filiação**, lido no painel mensal do CTN "
