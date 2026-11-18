@@ -313,9 +313,9 @@ GLOSSARIO = {
     'Leads discados (ativo)': dict(sec="Televendas (Escallo)",
         d="Telefones que receberam ao menos uma ligação ativa no mês; uma linha por telefone × mês, no mês do primeiro contato. É a base de todo funil de televendas.",
         o="Escallo", a="📞 🧲", s=["discados", "Leads discados", "Leads ativos discados"]),
-    'Ligação Qualificada (≥ 10 s)': dict(sec="Televendas (Escallo)",
-        d="Uma conversa com pelo menos 10 segundos em alguma ligação do mês — o sinal de que alguém falou com o cliente (era chamada de 'alô' até a R45). Numa linha de sistema, é o cliente ouvindo uma gravação.",
-        o="Escallo", a="📞 🧲", s=["alô", "alô humano", "Falaram ≥ 10 s", "Ligações qualificadas", "conversaram"]),
+    'Ligação Qualificada (contato humano ≥ 10 s)': dict(sec="Televendas (Escallo)",
+        d="Uma pessoa atendeu e falou 10 segundos ou mais com um operador em alguma ligação do mês. Não contam: caixa postal ou secretária eletrônica, ligação muda, chamada com interferência, ligação de teste e a linha de sistema (ramal sem operador, ex. 9902, em que o cliente só ouve uma gravação). Ligação com operador e sem tabulação conta. Régua desde 18/11/2026 (R80), com o histórico recalculado desde jan/26; até então valia qualquer conversa de 10 s ou mais, e cerca de dois terços das ligações ativas 'qualificadas' eram caixa postal. O número da régua antiga continua gravado (alo10_bruto).",
+        o="Escallo", a="📞 🧲", s=["alô", "alô humano", "Falaram ≥ 10 s", "Ligações qualificadas", "conversaram", "Ligação Qualificada (10 s)", "contato humano"]),
     'Em negociação (Escallo)': dict(sec="Televendas (Escallo)",
         d="Tabulação do operador no Escallo depois da conversa: agendamento (privado, público ou via HubSpot), 'confirmação de terceiros' (cliente precisa de outra pessoa para fechar), venda travada (pagamento no cartão não autorizado, erro de cadastro/pagamento no CTN) e a própria venda tabulada. Fatia das ligações qualificadas. Não é o estágio EM NEGOCIAÇÃO do HubSpot.",
         o="Escallo (REL086)", a="📞", s=["negociação", "agendado", "venda travada", "Fase de negociação"]),
@@ -4892,6 +4892,7 @@ def _aba_tab6():
     with _tv_tabs[0]:
         S = 's1_ativo'
         leads = _tv_val(S, 'leads'); lig = _tv_val(S, 'ligacoes'); alo = _tv_val(S, 'alo10')
+        alo_bruto = _tv_val(S, 'alo10_bruto'); alo_grav = _tv_val(S, 'alo_so_gravacao')   # R80: régua antiga e o que saiu
         classif = _tv_val(S, 'classif'); negoc = _tv_val(S, 'negoc'); venda = _tv_val(S, 'venda')
         venda_conf = _tv_val(S, 'venda_conf'); conf_tel8 = _tv_val(S, 'conf_tel8')
         piso_l = _tv_val(S, 'piso_leads'); piso_c = _tv_val(S, 'piso_conf')
@@ -4902,10 +4903,11 @@ def _aba_tab6():
         k1, k2, k3, k4 = st.columns(4)
         _tv_kpi(k1, "📞", "Leads discados (ativo)", f"{_tv_n(leads)} {_tv_delta(leads, leads_p)}",
                 (f"{_tv_n(lig)} ligações · " + f"{lig / leads:.2f}".replace('.', ',') + " por lead") if leads and lig else "")
-        _tv_kpi(k2, "🗣️", "Ligação Qualificada (≥ 10 s)", f"{_tv_pct(alo, leads)} {_tv_delta(alo, alo_p)}",
-                f"{_tv_n(alo)} leads falaram")
+        _tv_kpi(k2, "🗣️", "Ligação Qualificada (contato humano ≥ 10 s)", f"{_tv_pct(alo, leads)} {_tv_delta(alo, alo_p)}",
+                f"{_tv_n(alo)} leads falaram com um operador"
+                + (f" · {_tv_n(alo_grav)} só caixa postal ou gravação (fora)" if alo_grav else ""))
         _tv_kpi(k3, "📝", "Gap qualificada × classificado", f"{_tv_pct(gap, alo)}",
-                f"{_tv_n(gap)} falaram ≥10 s e não receberam estágio ({_tv_n(classif)} classificados)", color="#b45309")
+                f"{_tv_n(gap)} falaram com um operador e não receberam estágio ({_tv_n(classif)} classificados)", color="#b45309")
         v_ctn = _tv_val(S, 'vendas_ctn'); v_ctn_tv = _tv_val(S, 'vendas_ctn_tv'); v_ctn_alo = _tv_val(S, 'vendas_ctn_alo')
         v_ctn_alo_tv = _tv_val(S, 'vendas_ctn_alo_tv'); v_ctn_p = _tv_val(S, 'vendas_ctn', meses=_tv_per_p)
         _sem_alo_tv = ((v_ctn_tv or 0) - (v_ctn_alo_tv or 0)) if v_ctn_tv is not None else None
@@ -4943,7 +4945,9 @@ def _aba_tab6():
                                      "Ligado: todas as tabulações, como fatias das ligações qualificadas (melhor estágio do lead no período). "
                                      "Precisa do agregado R48 (alo_est_*).")
             _stA = [("📞", "Leads discados", leads, "1 linha por telefone × mês (ESCALLO_LEADS_MES, tipo ATIVO)"),
-                    ("🗣️", "Ligação Qualificada (≥ 10 s)", alo, "tempoConversa ≥ 10 s em alguma ligação do mês (o antigo 'alô')")]
+                    ("🗣️", "Ligação Qualificada (contato humano ≥ 10 s)", alo, "uma pessoa atendeu e falou 10 s ou mais com um operador em alguma ligação do mês"
+                     + (f" · ficam fora {_tv_n(alo_grav)} leads que só caíram em caixa postal, ligação muda ou na linha de sistema "
+                        f"(na régua anterior, qualquer conversa de 10 s ou mais: {_tv_n(alo_bruto)})" if alo_grav else ""))]
             if _t6_tab and _ae_ok:
                 for _k, _l in _est_lbl:
                     if _ae.get(_k):
@@ -5018,9 +5022,9 @@ def _aba_tab6():
                         f"{_tv_n(_h_v)} vendas tabuladas &nbsp;|&nbsp; <b>linha de sistema</b> (ramal sem agente — discador/URA, ex. 9902) "
                         f"{_tv_n(_s_l)} leads ({_tv_pct(_s_l, _t_l)}) · alô {_tv_pct(_s_a, _s_l)} · {_tv_n(_s_v)} vendas tabuladas"
                         + (f" &nbsp;|&nbsp; treinamento / sem login / nº externo {_tv_n(_o_l)} leads" if _o_l else "")
-                        + ". O 'alô ≥ 10 s' da linha de sistema é o cliente ouvindo uma gravação ou validação, não uma conversa — "
-                        "por isso a taxa de alô dela costuma ser <i>maior</i> que a dos operadores. Detalhe por ramal e por vendedor "
-                        "na sub-aba 📟 5.", bg="#f8fafc", icon="🎧")
+                        + ". Na linha de sistema o cliente ouve uma gravação ou validação, não uma pessoa — desde 18/11/2026 "
+                        "essas ligações e as de caixa postal não contam como Ligação Qualificada (exige operador logado e conversa "
+                        "de 10 s ou mais). Detalhe por ramal e por vendedor na sub-aba 📟 5.", bg="#f8fafc", icon="🎧")
             # ---- ponte com a régua do relatório (aba 🧲 · s8_mesa): mesma população, outra pergunta ----
             if _tv_grain == 'M':
                 _aq6, _aq6_err = load_aq()
@@ -5051,8 +5055,8 @@ def _aba_tab6():
             _esp_piso = (venda * _piso_rate) if (venda is not None and _piso_rate is not None) else None
             _liq = (venda_conf - _esp_piso) if (venda_conf is not None and _esp_piso is not None) else None
             _tv_note(
-                f"<b>Disciplina de registro.</b> {_tv_pct(classif, alo)} dos alôs recebem um estágio; "
-                f"<b>{_tv_pct(gap, alo)}</b> ({_tv_n(gap)}) falaram ≥10 s e ficaram sem classificação. "
+                f"<b>Disciplina de registro.</b> {_tv_pct(classif, alo)} das ligações qualificadas recebem um estágio; "
+                f"<b>{_tv_pct(gap, alo)}</b> ({_tv_n(gap)}) falaram com um operador e ficaram sem classificação. "
                 f"Tudo que se mede depois do alô (negociação, venda) é piso, não medição.<br><br>"
                 f"<b>Teto × piso — como ler a 'confirmação por telefone'.</b> Confirmar por tel-8 só diz que o telefone "
                 f"discado aparece com uma filiação no NOMINAL dentro da janela — <i>não</i> diz que o televendas vendeu. "
@@ -5070,16 +5074,16 @@ def _aba_tab6():
                    if _liq is not None else ""))
         _mg1 = _tv_meses_grafico('t6_s1_ano')
         _tv_chart_mensal(_tv_long(S, ['leads', 'alo10', 'classif', 'vendas_atrib' if _r63 else 'vendas_ctn'], meses=_mg1,
-                                  labels={'leads': 'Leads discados', 'alo10': 'Ligação Qualificada (≥ 10 s)', 'classif': 'Classificados',
+                                  labels={'leads': 'Leads discados', 'alo10': 'Ligação Qualificada (contato humano ≥ 10 s)', 'classif': 'Classificados',
                                           'vendas_ctn': 'Vendas (CTN) — atribuídas + assistidas', 'vendas_atrib': 'Vendas (CTN) atribuídas'}),
                          "Série mensal — discagem ativa", stacked=False, rotulos=True, fonte="ESCALLO_LEADS_MES (REL003 + REL086)")
         # % mensal
         _s1 = _tv_serie(S, 'leads', meses=_mg1).rename(columns={'valor': 'leads'})
-        for m_, lbl_ in [('alo10', 'Ligação Qualificada (≥ 10 s)'), ('classif', 'Classificados')]:
+        for m_, lbl_ in [('alo10', 'Ligação Qualificada (contato humano ≥ 10 s)'), ('classif', 'Classificados')]:
             _x = _tv_serie(S, m_, meses=_mg1).rename(columns={'valor': m_})
             _s1 = _s1.merge(_x, on='mes', how='left')
         _pl = []
-        for m_, lbl_ in [('alo10', '% qualificadas (≥ 10 s)'), ('classif', '% classificados')]:
+        for m_, lbl_ in [('alo10', '% qualificadas (contato humano)'), ('classif', '% classificados')]:
             _t = _s1[['mes']].copy(); _t['serie'] = lbl_; _t['valor'] = (_s1[m_] / _s1['leads'] * 100).round(2)
             _pl.append(_t)
         _tv_linhas_mensal(pd.concat(_pl), "Taxa de ligações qualificadas e de classificação por mês (%)", pct=True, rotulos=True)
@@ -5488,7 +5492,7 @@ def _aba_tab6():
                 ("📞", "Leads discados no Escallo (ativo, mesmo período)", u_disc,
                  f"tel-8 do lead × ESCALLO_LEADS_MES ATIVO · {_tv_n(u_disc_neg)} deles com Negócio LEAD no período, "
                  f"{_tv_n((u_disc or 0) - (u_disc_neg or 0)) if u_disc is not None else '—'} sem · seq. = % dos leads enviados", 0),
-                ("🗣️", "Ligação Qualificada (≥ 10 s)", u_alo, "conversa ≥ 10 s em alguma ligação do período", 2),
+                ("🗣️", "Ligação Qualificada (contato humano ≥ 10 s)", u_alo, "uma pessoa atendeu e falou 10 s ou mais com um operador no período (sem caixa postal nem linha de sistema)", 2),
                 ("🤝", "↳ Em negociação (tabulação do operador)", u_neg, "agendamento · confirmação de terceiros · venda travada · venda — fatia das qualificadas", 3),
             ] + ([
                 ("🛒", "Vendas (CTN) atribuídas — dos discados", u_atrib, "filiação com tipo Televendas pelo IDPV de um operador humano, no dia de uma ligação · seq. = % dos discados", 2),
@@ -6430,8 +6434,9 @@ def _aba_tab6():
             _s8_idx = next((i for i, m in enumerate(_s8_meses) if m == _s8_alvo), 0)
             _s8_mes = st.selectbox("Mês:", _s8_meses, index=_s8_idx,
                                    format_func=lambda m: f"{pd.Timestamp(m):%m/%Y}", key='t6_s8_mes')
-            st.caption("Cada telefone-lead é atribuído ao **ramal da 1ª ligação que recebeu no mês**; a conversa "
-                       "(≥10 s) conta em qualquer ligação do lead. Venda registrada = tabulação 'venda' no Escallo; conf = "
+            st.caption("Cada telefone-lead é atribuído ao **ramal da 1ª ligação que recebeu no mês**; a ligação qualificada "
+                       "(uma pessoa atendeu e falou 10 s ou mais com um operador; caixa postal e linha de sistema ficam fora) "
+                       "conta em qualquer ligação do lead — na porta (receptivo) vale a conversa de 10 s ou mais. Venda registrada = tabulação 'venda' no Escallo; conf = "
                        "confirmação por tel-8 no NOMINAL (teto de influência). Este funil é sempre mensal, mesmo com o "
                        "período em semana.")
             # R37: o que cada ramal é neste mês (para rótulo, hachura e a tabela explicativa)
@@ -6507,7 +6512,7 @@ def _aba_tab6():
 
             _pr = _s8_piv('s8_ramal', _s8_mes)
             _s8_lista(_pr, "Ramal", {'vol': 'leads', 'vol_lbl': 'Leads trabalhados', 'alo': 'alo10',
-                                     'alo_lbl': 'Conversa ≥10 s', 'venda': 'venda', 'conf': 'conf',
+                                     'alo_lbl': 'Ligação qualificada', 'venda': 'venda', 'conf': 'conf',
                                      'venda_lbl': 'Venda registrada'},
                       "Escallo ativo — o funil de cada ramal",
                       ("cada telefone discado pertence ao ramal da 1ª ligação do mês; sob o ramal, o agente logado (nome · código) — "
@@ -6553,7 +6558,7 @@ def _aba_tab6():
                         'Código': [(str(c) if pd.notna(c) and c else "—") for c in _tab['cod_agente']],
                         'Ligações no mês': _tab['ligacoes'].astype(int).values,
                         '% com agente logado': (_tab['lig_com_agente'].astype(float) / _tab['ligacoes'].astype(float).where(_tab['ligacoes'] > 0) * 100).fillna(0).round(0).astype(int).values,   # R37b
-                        'Ligação Qualificada (≥ 10 s) · ligações': _tab['alo10'].astype(int).values,
+                        'Ligação Qualificada (contato humano ≥ 10 s) · ligações': _tab['alo10'].astype(int).values,
                         'Agentes distintos': _tab['n_agentes'].astype(int).values,
                         'IDPVs no CTN': _tab['n_idpv'].astype(int).values,
                         'Número que o cliente vê': _tab['numero_externo'].fillna(_num_ext).values,
@@ -6561,7 +6566,7 @@ def _aba_tab6():
                     _st_df(_tab_show, hide_index=True, use_container_width=True, height=min(560, 38 + 35 * len(_tab_show)),
                                  column_config={'% com agente logado': st.column_config.NumberColumn(format="%d%%"),
                                                 'Ligações no mês': st.column_config.NumberColumn(format="%d"),
-                                                'Ligação Qualificada (≥ 10 s) · ligações': st.column_config.NumberColumn(format="%d")})
+                                                'Ligação Qualificada (contato humano ≥ 10 s) · ligações': st.column_config.NumberColumn(format="%d")})
                     _tv_fonte(f"alex_tv_ramal_dim (pipeline televendas_dash s9) · REL003 agente logado · REL100 canalEmpresa (saída) · "
                               f"alex_idpvs fonte Televendas · {pd.Timestamp(_s8_mes):%m/%Y}")
 
@@ -6602,7 +6607,7 @@ def _aba_tab6():
                         'Vendedor': [_tv_nome_curto(str(i)) for i in _hum_v.index],
                         'Ramais': _hum_v['ramais'].astype(int).values,
                         'Leads discados': _hum_v['leads'].astype(int).values,
-                        'Ligação Qualificada (≥ 10 s)': _hum_v['alo10'].astype(int).values,
+                        'Ligação Qualificada (contato humano ≥ 10 s)': _hum_v['alo10'].astype(int).values,
                         '% alô': _pct_col(_hum_v['alo10'], _hum_v['leads']).values,
                         'Venda tabulada': _hum_v['venda'].astype(int).values,
                         'Conf. CTN (janela)': _hum_v['conf'].astype(int).values,
@@ -6631,7 +6636,7 @@ def _aba_tab6():
                     _esp_show = pd.DataFrame({
                         'Linha': [str(i).strip('()').capitalize() for i in _esp_v.index],
                         'Leads discados (1º contato)': _esp_v['leads'].astype(int).values,
-                        'Ligação Qualificada (≥ 10 s)': _esp_v['alo10'].astype(int).values,
+                        'Ligação Qualificada (contato humano ≥ 10 s)': _esp_v['alo10'].astype(int).values,
                         'Venda tabulada': _esp_v['venda'].astype(int).values,
                         'Conf. CTN (janela)': _esp_v['conf'].astype(int).values,
                         'Vendas TV no CTN (IDPV)': _esp_v['vendas_idpv'].astype(int).values,
@@ -10203,7 +10208,7 @@ def _aba_tab10():
                     _antes8 = ((_v8 or 0) - (_ap8 or 0)) if (_v8 is not None and _ap8 is not None) else None
                     _tv_funil("🪜 Funil Televendas — último degrau aberto (escada de atribuição)", [
                         ("📵", "Leads discados (ativo)", _d8, "ESCALLO_LEADS_MES, tipo ATIVO"),
-                        ("🗣️", "Ligação Qualificada (≥ 10 s)", _a8, "alô humano em alguma ligação do mês"),
+                        ("🗣️", "Ligação Qualificada (contato humano ≥ 10 s)", _a8, "uma pessoa atendeu e falou 10 s ou mais com um operador no mês (sem caixa postal)"),
                         ("🛒", "Teto — discados que filiaram no mês (qualquer canal)", _v8, "tel-8 × NOMINAL, mesmo mês-calendário; não depende do HubSpot · seq. = % dos discados", 0),
                         ("⏱️", "└ após o 1º contato do mês", _ap8, f"{_tv_n(_antes8)} compraram antes de serem discados · seq. = % do teto", 2),
                         ("🗣️", "└ conversaram (alô ≥ 10 s) e filiaram", _va8x, f"{_tv_pct(_va8x, _a8)} dos alôs · seq. = % do teto", 2),
@@ -10217,7 +10222,7 @@ def _aba_tab10():
                 else:
                     _tv_funil("📵 Funil Televendas — pipeline de ligações ativas", [
                         ("📵", "Leads discados (ativo)", _d8, "ESCALLO_LEADS_MES, tipo ATIVO"),
-                        ("🗣️", "Ligação Qualificada (≥ 10 s)", _a8, "alô humano em alguma ligação do mês"),
+                        ("🗣️", "Ligação Qualificada (contato humano ≥ 10 s)", _a8, "uma pessoa atendeu e falou 10 s ou mais com um operador no mês (sem caixa postal)"),
                         ("🛒", "└ dos alôs: filiaram no mês", _va8x, "fatia dos alôs · tel-8 × NOMINAL, mesmo mês", 1),
                         ("📞", "└ dos alôs: com tipo Televendas (CTN)", _vt8x, "seq. = % das filiações dos alôs", 2),
                         ("🛒", "Filiaram no mês (régua do relatório) — todos os discados", _v8, "todos os discados · inner join por tel-8, 1 lead = 1, mesmo mês-calendário · seq. = % dos discados", 0),
@@ -10322,7 +10327,7 @@ def _aba_tab10():
                 st.markdown(
                     "| Etapa | Objeto | Regra |\n|---|---|---|\n"
                     "| **Leads discados (ativo)** | telefone | `ESCALLO_LEADS_MES`, `tipo_lead = 'ATIVO'`, mês do 1º contato. |\n"
-                    "| **Ligação Qualificada (≥ 10 s)** | telefone | `alo_humano = 1` — falou ≥ 10 s em alguma ligação do mês. |\n"
+                    "| **Ligação Qualificada (contato humano ≥ 10 s)** | telefone | `alo_contato = 1` (view `alex_escallo_leads_v`) — uma pessoa atendeu e falou ≥ 10 s com um operador em alguma ligação do mês; caixa postal, ligação muda, interferência, teste e linha de sistema ficam fora (régua de 18/11/2026; a anterior, qualquer conversa ≥ 10 s, é `alo_humano`). |\n"
                     "| **Vendas (discados que filiaram)** | telefone × CPF | *inner join* dos discados do mês com `alex_nominal_vendas` do **mesmo mês-calendário**, "
                     "chave tel-8 (`RIGHT(CELULAR, 8) = RIGHT(tel_lead, 8)`; o Escallo não tem CPF), 1 lead contado uma vez. Difere do "
                     "`venda_confirmada` da própria tabela (janela 1º contato → último + 14 d) e do GANHO do HubSpot (write-back da esteira). |\n"
@@ -10705,7 +10710,7 @@ def _aba_tab10():
                 _esc_s = bool(st.session_state.get('t10_esc', False)) and _v8s('vendas_alo', 'televendas') is not None
                 _tv_funil("📵 Televendas — Ativo (discador)" + (" · último degrau aberto" if _esc_s else ""), [
                     ("📵", "Leads discados", _v8s('discados', 'televendas'), "ESCALLO_LEADS_MES, tipo ATIVO"),
-                    ("🗣️", "Ligação Qualificada (≥ 10 s)", _v8s('alo10', 'televendas'), "conversa ≥ 10 s com operador humano"),
+                    ("🗣️", "Ligação Qualificada (contato humano ≥ 10 s)", _v8s('alo10', 'televendas'), "conversa ≥ 10 s com operador humano"),
                     ("🛒", "Filiaram no mês (régua do relatório)" + (" — teto" if _esc_s else ""), _v8s('vendas_mes', 'televendas'), "tel-8 × NOMINAL no mesmo mês — régua do relatório", 0),
                 ] + ([
                     ("⏱️", "└ após o 1º contato do mês", _v8s('vendas_apos', 'televendas'), "seq. = % do teto", 2),
@@ -10718,7 +10723,7 @@ def _aba_tab10():
             else:
                 _tv_funil("📵 Televendas — Ativo (discador)", [
                     ("📵", "Leads discados", _v10('s2_super', 'leads', _sel10, 'ativo'), "ESCALLO_LEADS_MES, tipo ATIVO"),
-                    ("🗣️", "Ligação Qualificada (≥ 10 s)", _v10('s2_super', 'alo10', _sel10, 'ativo'), "conversa ≥ 10 s com operador humano"),
+                    ("🗣️", "Ligação Qualificada (contato humano ≥ 10 s)", _v10('s2_super', 'alo10', _sel10, 'ativo'), "conversa ≥ 10 s com operador humano"),
                     ("🛒", "Vendas (CTN) — atribuídas + assistidas (janela do contato)", _v10('s2_super', 'venda_confirmada', _sel10, 'ativo'), "tel-8 × NOMINAL na janela do contato · sem a separação atribuída × assistida (s8 não carregado)"),
                 ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto']],
                     deltas=[_dq10('s2_super', m, 'ativo') for m in ('leads', 'alo10', 'venda_confirmada')])
@@ -10726,7 +10731,7 @@ def _aba_tab10():
             if _v8s('discados', 'receptivo') is not None:
                 _tv_funil("📲 Televendas — Receptivo", [
                     ("📲", "Ligações recebidas", _v8s('discados', 'receptivo'), "ESCALLO_LEADS_MES, tipo RECEPTIVO"),
-                    ("🗣️", "Ligação Qualificada (≥ 10 s)", _v8s('alo10', 'receptivo'), "conversa ≥ 10 s com operador humano"),
+                    ("🗣️", "Ligação Qualificada (contato humano ≥ 10 s)", _v8s('alo10', 'receptivo'), "conversa ≥ 10 s com operador humano"),
                     ("🛒", "Filiaram no mês (régua do relatório)", _v8s('vendas_mes', 'receptivo'), "tel-8 × NOMINAL no mesmo mês — régua do relatório"),
                     ("📞", "└ com tipo Televendas (CTN)", _v8s('vendas_mes_tv', 'receptivo'), "seq. = % das filiações"),
                 ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto'], ['tel_ctn', 'foto']],
@@ -10734,7 +10739,7 @@ def _aba_tab10():
             else:
                 _tv_funil("📲 Televendas — Receptivo", [
                     ("📲", "Ligações recebidas", _v10('s2_super', 'leads', _sel10, 'receptivo'), "ESCALLO_LEADS_MES, tipo RECEPTIVO"),
-                    ("🗣️", "Ligação Qualificada (≥ 10 s)", _v10('s2_super', 'alo10', _sel10, 'receptivo'), "conversa ≥ 10 s com operador humano"),
+                    ("🗣️", "Ligação Qualificada (contato humano ≥ 10 s)", _v10('s2_super', 'alo10', _sel10, 'receptivo'), "conversa ≥ 10 s com operador humano"),
                     ("🛒", "Vendas (CTN) — atribuídas + assistidas (janela do contato)", _v10('s2_super', 'venda_confirmada', _sel10, 'receptivo'), "tel-8 × NOMINAL na janela do contato · sem a separação atribuída × assistida (s8 não carregado)"),
                 ], subtitle=_lbl10, chips=[['tel', 'foto'], ['tel', 'foto'], ['tel_ctn', 'foto']],
                     deltas=[_dq10('s2_super', m, 'receptivo') for m in ('leads', 'alo10', 'venda_confirmada')])
